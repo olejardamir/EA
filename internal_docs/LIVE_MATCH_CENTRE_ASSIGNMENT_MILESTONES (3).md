@@ -115,7 +115,7 @@ Grafana k6
 
 ```text
 production architecture winner: CHANGED / SIMPLIFIED
-selected local POC family:     NCHAN + VALKEY + SSE
+selected local POC family:     NCHAN + REDIS OSS + SSE
 old raw-ws POC contract:       SUPERSEDED
 implementation direction:      REFINED
 ```
@@ -126,7 +126,7 @@ Cloudflare Durable Objects is the strongest external alternative because outgoin
 
 Real sports-feed practice supports the durable-history + live-tail pattern. Sportradar explicitly documents stateless Push complemented by REST history/recovery.
 
-For the POC, stay in the JavaScript/TypeScript ecosystem. Use Node.js + TypeScript with `ws` as the initial WebSocket implementation. If the frozen capacity test fails because of WebSocket/runtime performance, `uWebSockets.js` is the first higher-performance Node.js alternative to evaluate before changing language.
+For the POC, stay in the JavaScript/TypeScript ecosystem. Use Nchan 1.3.8 (built from source on a pinned Nginx base) with Redis OSS 7.2 as the shared backing store, and native browser EventSource/SSE for fan-out. If the frozen capacity test fails because of Nchan/runtime performance, evaluate scaling options before changing the fundamental architecture.
 
 ## Artifact
 
@@ -140,7 +140,7 @@ LIVE_MATCH_CENTRE_THIRD_PARTY_RESEARCH.md
 PASS
 ```
 
-The research subsequently produced a material simplification: Nchan + shared Valkey + native SSE replaces the custom WebSocket/snapshot/replay stack. The architecture must therefore be reconciled before implementation.
+The research subsequently produced a material simplification: Nchan + shared Redis OSS 7.1 + native SSE replaces the custom WebSocket/snapshot/replay stack. The architecture must therefore be reconciled before implementation.
 
 ### FINAL SIMPLIFICATION STOP CONDITION
 
@@ -153,14 +153,14 @@ Artillery SSE load generator: REMOVED
 further safe simplification:  NONE FOUND
 ```
 
-The production architecture is now considered the minimum defensible architecture until POC evidence changes it. Milestone 1 remains reopened because the old raw-`ws` contract is superseded; the replacement experiment must test Nchan + Redis + SSE, including full-history catch-up.
+The production architecture is now considered the minimum defensible architecture until POC evidence changes it. Milestone 1 (freeze the new Nchan + Redis + SSE POC experiment contract) is now DONE. The old raw-`ws` contract was superseded; the replacement Nchan + Redis OSS + SSE experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`.
 
 
 ---
 
 # Milestone 1 — Freeze the POC Experiment Contract
 
-**Status: REOPENED — OLD CONTRACT SUPERSEDED**
+**Status: DONE**
 
 ## Goal
 
@@ -191,10 +191,10 @@ This is architecture-invalidating, but **cannot be tested locally from the suppl
 ### Riskiest locally testable assumption
 
 ```text
-ASM-GW-CAPACITY
+ASM-GW-CAPACITY (refined for Nchan + Redis + SSE)
 ```
 
-The proposed custom WebSocket fan-out tier must plausibly support the required connection count, surge, and event fan-out with enough latency headroom.
+Can Nchan + Redis OSS + SSE provide the required fan-out, full-history catch-up, reconnect/resume and ordering behavior under an assignment-mapped workload?
 
 This is therefore the correct POC target under the assignment's rule:
 
@@ -269,11 +269,25 @@ what counts as pass/fail/inconclusive
 
 without making new architecture decisions.
 
+## Artifact
+
+```text
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md
+```
+
+## Completion gate
+
+```text
+PASS
+```
+
+The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria.
+
 ---
 
 # Milestone 2 — Build the Smallest Runnable POC
 
-**Status: BLOCKED UNTIL NEW M1 FREEZE**
+**Status: NEXT**
 
 ## Goal
 
@@ -284,16 +298,16 @@ Implement only the experiment necessary to test Milestone 1.
 The smallest sufficient implementation should contain approximately these responsibilities:
 
 ```text
-simulated event feed
+deterministic TypeScript sports-event simulator / publisher
         |
         v
-WebSocket gateway under test
+Nchan 1.3.8 + Redis 7.2 (SSE fan-out under test)
         |
         v
-simulated fan/load clients
+TypeScript SSE load generators (EventSource clients)
         |
         v
-measurement/result aggregation
+TypeScript result aggregation / measurement
 ```
 
 The POC may use multiple containers if that produces a cleaner experiment.
@@ -387,7 +401,7 @@ Run the experiment exactly as frozen and obtain a defensible measured result.
 
 ### `ACCEPT`
 
-The measured local evidence supports continuing with the custom gateway architecture under the stated mapping/assumptions.
+The measured local evidence supports continuing with the Nchan + Redis OSS fan-out architecture under the stated mapping/assumptions.
 
 ### `REJECT`
 
@@ -426,7 +440,7 @@ Make the design proposal and measured evidence agree.
 
 ## If result = ACCEPT
 
-- retain the custom gateway decision;
+- retain the Nchan + Redis + SSE fan-out decision;
 - record what was actually measured;
 - avoid claiming the POC proved the full production system;
 - use it as evidence supporting the relevant architecture assumption.
@@ -753,10 +767,10 @@ Remove unexplained precision.
 Be able to explain:
 
 ```text
-Why WebSockets?
-Why not SSE / managed fan-out?
+Why Nchan + SSE instead of custom WebSocket server?
+Why not managed fan-out (AppSync, Ably, etc.)?
 Why this persistence/order model?
-Why snapshots?
+Why Nchan buffer instead of S3 snapshots for late join?
 Why this region strategy?
 Why this POC?
 Why this cost model?
@@ -980,9 +994,9 @@ M0  Requirements + architecture planning                DONE
      |
 M0.5 Industry / third-party solution review             DONE
      |
-M1  Re-freeze POC contract for Nchan + Valkey + SSE    NEXT
+M1  Freeze POC contract for Nchan + Redis + SSE        DONE
      |
-M2  Build smallest runnable POC                         BLOCKED
+M2  Build smallest runnable POC                         NEXT
      |
 M3  Run POC and produce measured result
      |
@@ -1020,4 +1034,4 @@ The earlier milestone list was fundamentally correct, but this audit makes three
 3. **Final delivery cleanup deserves separate milestones.**  
    The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
 
-Because the architecture changed after the original freeze, the correct next task is **Milestone 1 again: freeze a new Nchan + Valkey + SSE POC experiment contract**.
+Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`. The correct next task is **Milestone 2: build the smallest runnable POC**.
