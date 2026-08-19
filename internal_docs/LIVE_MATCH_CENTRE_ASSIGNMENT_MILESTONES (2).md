@@ -1,0 +1,1007 @@
+# Live Match Centre Take-Home — Complete Milestone Plan
+
+**Source of truth:** `requirement.pdf` — *Take-Home Assignment: Senior Fullstack Engineer*  
+**Planning inputs already completed:** `AGENTS.md` and `LIVE_MATCH_CENTRE_EQC_AC_ARCHITECTURE_CONTRACT_v0_24_2.md`  
+**Purpose of this file:** turn the original assignment into an execution sequence with explicit completion gates, while preventing scope creep into building the full production system.
+
+---
+
+# 0. Current Position
+
+The assignment asks for exactly two substantive deliverables:
+
+1. a production **design proposal**; and
+2. a small **proof of concept** that measures the riskiest relevant assumption.
+
+The final submission package additionally needs the POC run/write-up instructions and any AI instruction files actually used.
+
+The production architecture planning itself is already complete enough to begin execution. The remaining work is evidence, POC implementation/measurement, concise proposal writing, reproducibility, and packaging.
+
+Current local artifact status:
+
+```text
+AGENTS.md                                             EXISTS
+EQC-AC architecture contract                         EXISTS
+proposal.md                                           NOT YET CREATED
+poc/                                                  NOT YET CREATED
+README.md                                             NOT YET CREATED
+final submission ZIP                                  NOT YET CREATED
+```
+
+---
+
+# Milestone 0 — Requirements and Architecture Planning
+
+**Status: DONE**
+
+## Goal
+
+Understand the assignment and create the production architecture before writing POC code.
+
+## Work already completed
+
+- Extracted and preserved all scenario requirements.
+- Covered the system from provider feed ingest to the fan's screen.
+- Chosen the production architecture rather than leaving an undecided technology menu.
+- Covered:
+  - anonymous/read-only public use;
+  - lobby behavior;
+  - score/minute;
+  - goals/cards/run of play;
+  - late join/reload/phone wake;
+  - no blank/manual refresh;
+  - ordering/duplicate/history correctness;
+  - score/clock derivation;
+  - 8 live matches;
+  - 10 events/s steady and 50/s burst;
+  - 100,000 concurrent viewers;
+  - +40,000 viewer surge in 2 minutes;
+  - Europe/North America audience split;
+  - 2s/5s latency requirements;
+  - <=2s history join;
+  - <=$3,000/month infrastructure budget;
+  - weekly live deployments;
+  - Next.js App Router/component architecture;
+  - AWS production design.
+- Compared important architecture alternatives.
+- Recorded assumptions, risks, failure boundaries, state ownership, replay semantics, deployment strategy, cost sensitivity, security, observability, and validation needs.
+- Identified the true least-trusted overall assumption and the riskiest locally testable assumption.
+
+## Existing artifacts
+
+```text
+AGENTS.md
+LIVE_MATCH_CENTRE_EQC_AC_ARCHITECTURE_CONTRACT_v0_24_2.md
+```
+
+## Completion gate
+
+```text
+PASS
+```
+
+No further architecture-document expansion is required merely to begin the assignment execution.
+
+
+---
+
+# Milestone 0.5 — Industry / Third-Party Solution Review
+
+**Status: DONE**
+
+## Goal
+
+Check whether mature real-time sports architectures, managed fan-out platforms, recovery patterns, or reusable open-source components materially improve or invalidate the selected architecture before freezing the POC.
+
+## Completed review
+
+Compared:
+
+```text
+AWS AppSync Events
+API Gateway WebSocket APIs
+Ably
+Pusher Channels
+PubNub
+Cloudflare Durable Objects
+AWS live-sports reference architecture/code
+Sportradar Push + REST recovery pattern
+recent AWS sports architectures
+Gorilla WebSocket
+Grafana k6
+```
+
+## Result
+
+```text
+production architecture winner: UNCHANGED
+selected local POC risk:       UNCHANGED
+implementation direction:      REFINED
+```
+
+Managed per-delivery WebSocket services are technically strong but economically misaligned with the assignment's fan-out/budget combination under the current sensitivity model.
+
+Cloudflare Durable Objects is the strongest external alternative because outgoing WebSocket messages and Workers egress are not billed in the same per-recipient way, but it loses the composed decision because it introduces a second cloud/vendor, requires hot-match sharding, departs from the assignment's AWS preference, and its real managed capacity cannot be validated by the required local-only POC.
+
+Real sports-feed practice supports the durable-history + live-tail pattern. Sportradar explicitly documents stateless Push complemented by REST history/recovery.
+
+For the POC, stay in the JavaScript/TypeScript ecosystem. Use Node.js + TypeScript with `ws` as the initial WebSocket implementation. If the frozen capacity test fails because of WebSocket/runtime performance, `uWebSockets.js` is the first higher-performance Node.js alternative to evaluate before changing language.
+
+## Artifact
+
+```text
+LIVE_MATCH_CENTRE_THIRD_PARTY_RESEARCH.md
+```
+
+## Completion gate
+
+```text
+PASS
+```
+
+No architecture-contract revision is required because the selected production decision did not change.
+---
+
+# Milestone 1 — Freeze the POC Experiment Contract
+
+**Status: NEXT**
+
+## Goal
+
+Define exactly what the required local experiment is testing before writing its implementation.
+
+## Architecture risk distinction
+
+### Least-trusted overall assumption
+
+```text
+ASM-PROVIDER-SEMANTICS
+```
+
+The assignment does not provide the real third-party event schema or guarantee sufficient event identity, ordering, correction, or reconciliation semantics.
+
+If those semantics are inadequate, strict claims such as:
+
+```text
+no duplicates
+nothing out of order
+score agrees with history
+```
+
+cannot be reconstructed perfectly downstream.
+
+This is architecture-invalidating, but **cannot be tested locally from the supplied assignment** because there is no real provider feed/schema.
+
+### Riskiest locally testable assumption
+
+```text
+ASM-GW-CAPACITY
+```
+
+The proposed custom WebSocket fan-out tier must plausibly support the required connection count, surge, and event fan-out with enough latency headroom.
+
+This is therefore the correct POC target under the assignment's rule:
+
+> if the genuine riskiest assumption cannot be tested locally, test the riskiest one that can and say so.
+
+## Before implementation, freeze
+
+- exact hypothesis;
+- what the POC proves;
+- what the POC does **not** prove;
+- server implementation under test;
+- client/load-generator model;
+- simulated match/event model;
+- steady event rate;
+- burst event rate;
+- hot-match concentration case;
+- target connection count or scale-normalized mapping;
+- +40,000 / 120-second surge mapping;
+- event payload size(s);
+- container CPU/memory/resource limits;
+- measurement duration;
+- warm-up period;
+- reconnect behavior;
+- metrics;
+- acceptance criteria;
+- `ACCEPT / REJECT / INCONCLUSIVE` decision rule.
+
+## Required metrics
+
+At minimum:
+
+```text
+successful connections
+failed connections
+connection-establishment rate
+active connections
+messages/events sent
+events received
+lost events
+duplicates
+out-of-order events
+p50/p95/p99 fan-out latency
+CPU
+memory
+network throughput
+event-loop/runtime delay
+slow-client/backpressure events
+load-generator saturation indicators
+```
+
+## Critical rule
+
+Success criteria are frozen **before the final evidence-producing run**.
+
+The result cannot be observed first and then the threshold rewritten to make it pass.
+
+## Output
+
+An internal POC experiment contract/specification that directly drives `poc/`.
+
+## Completion gate
+
+Milestone 1 passes only when another engineer could read the experiment contract and know:
+
+```text
+what is being tested
+why it is the correct local risk
+how it is tested
+what gets measured
+what counts as pass/fail/inconclusive
+```
+
+without making new architecture decisions.
+
+---
+
+# Milestone 2 — Build the Smallest Runnable POC
+
+**Status: NOT STARTED**
+
+## Goal
+
+Implement only the experiment necessary to test Milestone 1.
+
+## Required POC contents
+
+The smallest sufficient implementation should contain approximately these responsibilities:
+
+```text
+simulated event feed
+        |
+        v
+WebSocket gateway under test
+        |
+        v
+simulated fan/load clients
+        |
+        v
+measurement/result aggregation
+```
+
+The POC may use multiple containers if that produces a cleaner experiment.
+
+## Mandatory assignment properties
+
+The POC must:
+
+- run locally;
+- run with **one command**, such as `docker compose up`;
+- require nothing beyond a container runtime;
+- require no AWS/cloud account;
+- spend no real cloud infrastructure money;
+- simulate the event stream itself;
+- produce measurements;
+- not be a demonstration UI;
+- be rough experiment-grade code rather than a full product.
+
+## Explicitly do not build
+
+Do **not** implement the full production architecture:
+
+```text
+no complete Next.js product
+no production DynamoDB system
+no production SQS ingest pipeline
+no AWS deployment
+no production CloudFront setup
+no full observability platform
+no full security platform
+```
+
+Only include a component when it is necessary for the selected measurement.
+
+## Load-generator honesty
+
+The POC must distinguish:
+
+```text
+gateway saturation
+from
+load-generator saturation
+```
+
+If the load generator runs out of CPU, ports, descriptors, memory, or network capacity before the server reaches the intended load, the experiment is not allowed to report that as gateway failure.
+
+## Output
+
+```text
+poc/
+```
+
+with source/configuration only.
+
+No generated output should be intended for the final ZIP.
+
+## Completion gate
+
+From a clean checkout/copy:
+
+```text
+one command starts the experiment
+the experiment terminates or reaches a documented completion point
+a measured summary is produced
+no external cloud dependency exists
+```
+
+---
+
+# Milestone 3 — Run the Frozen POC and Produce Evidence
+
+**Status: NOT STARTED**
+
+## Goal
+
+Run the experiment exactly as frozen and obtain a defensible measured result.
+
+## Execution sequence
+
+1. Confirm containers/resources match the frozen experiment contract.
+2. Confirm load-generator health.
+3. Run warm-up.
+4. Run the measured workload.
+5. Run the hot-match/worst-concentration case.
+6. Run the connection-surge case.
+7. Capture the predefined metrics.
+8. Repeat enough runs to detect obvious instability rather than relying on one lucky run.
+9. Preserve the final measured summary used in the README/proposal reasoning.
+
+## Result classification
+
+### `ACCEPT`
+
+The measured local evidence supports continuing with the custom gateway architecture under the stated mapping/assumptions.
+
+### `REJECT`
+
+The result contradicts a critical assumption strongly enough that the selected gateway architecture must be revisited.
+
+### `INCONCLUSIVE`
+
+The experiment itself prevents a valid conclusion, for example:
+
+```text
+load generator saturated first
+host resource ceiling prevented intended test
+measurement was broken
+results were unstable outside the frozen interpretation
+```
+
+`INCONCLUSIVE` is not converted to `ACCEPT`.
+
+## Output
+
+A frozen result set containing the numbers needed for the submission write-up.
+
+## Completion gate
+
+The result can be reproduced and classified without changing the acceptance criteria after the run.
+
+---
+
+# Milestone 4 — Reconcile the POC Result with the Architecture
+
+**Status: NOT STARTED**
+
+## Goal
+
+Make the design proposal and measured evidence agree.
+
+## If result = ACCEPT
+
+- retain the custom gateway decision;
+- record what was actually measured;
+- avoid claiming the POC proved the full production system;
+- use it as evidence supporting the relevant architecture assumption.
+
+## If result = REJECT
+
+- reopen the affected architecture decision;
+- compare the viable alternatives again;
+- revise the architecture;
+- revise cost implications;
+- define a new experiment if the changed architecture creates another critical locally testable uncertainty;
+- repeat Milestones 1–4 as required.
+
+## If result = INCONCLUSIVE
+
+- determine why;
+- fix the experimental limitation;
+- freeze the corrected test;
+- rerun;
+- do not proceed as though the architecture passed.
+
+## Completion gate
+
+The architecture and POC result no longer contradict one another.
+
+This is the final point at which the fundamental production design should change before writing the concise final proposal.
+
+---
+
+# Milestone 5 — Close the Proposal Evidence and Cost Model
+
+**Status: NOT STARTED**
+
+## Goal
+
+Gather enough current, explainable evidence to make the production proposal defensible without pretending the assignment requires an actual production deployment.
+
+## Required work
+
+### 5.1 Current AWS capability verification
+
+Recheck official/current sources for architecture-critical claims that may change, including the services actually named in the final proposal.
+
+Examples:
+
+```text
+CloudFront WebSocket behavior
+ALB WebSocket/connection behavior
+SQS FIFO ordering semantics
+DynamoDB consistency/transaction behavior
+S3 behavior used by snapshots
+relevant service limits/quotas used in calculations
+```
+
+### 5.2 Final cost calculation
+
+Calculate the proposed production architecture using current prices and the workload assumptions we are prepared to defend.
+
+The cost ledger must include every selected resource that materially contributes, including support-network resources if they exist.
+
+The result must:
+
+```text
+state the currency
+state the workload assumptions
+state peak viewer-hour interpretation
+state payload/event assumptions
+state current rate source/date
+avoid omitted infrastructure
+show whether <=$3,000/month is met
+```
+
+If the PDF leaves a workload variable unknown, state the assumption and sensitivity rather than inventing an assignment fact.
+
+### 5.3 POC-to-production mapping
+
+Explain what the local POC result can and cannot say about production:
+
+```text
+measured locally
+inferred for production
+still dependent on AWS/service limits
+still dependent on provider schema
+```
+
+### 5.4 Geographic reasoning
+
+Explain the ~60% Europe / ~40% North America decision and its trade-off.
+
+The assignment does **not** require us to deploy production infrastructure just to run geographic tests. Any unmeasured geographic claim remains a design inference rather than fabricated evidence.
+
+### 5.5 Provider semantics honesty
+
+Keep the real provider schema issue explicit:
+
+```text
+overall weakest architecture assumption
+cannot be locally tested because real feed/schema was not supplied
+would require validation before real production launch
+```
+
+## Important scope boundary
+
+Milestone 5 does **not** mean deploying the full architecture to AWS.
+
+The assignment expressly says:
+
+```text
+no cloud deployment
+no real infrastructure spend
+POC is the only expected code
+```
+
+## Completion gate
+
+Every material number and architecture decision that appears in the final proposal has one of these labels conceptually clear:
+
+```text
+assignment fact
+current authoritative source fact
+calculation
+planning assumption
+POC measurement
+production inference
+unresolved external assumption
+```
+
+---
+
+# Milestone 6 — Write Final `proposal.md`
+
+**Status: NOT STARTED**
+
+## Goal
+
+Compress the complete architecture and evidence into the actual Design Proposal required by the assignment.
+
+## Hard format requirement
+
+```text
+proposal.md
+maximum 1,500 words
+diagrams excluded from word count
+Markdown
+```
+
+## Required content
+
+The proposal must let the reviewer understand the whole production system from:
+
+```text
+third-party feed
+    ->
+ingest/durability/order/state
+    ->
+snapshot/replay/live fan-out
+    ->
+Next.js browser
+    ->
+visible fan experience
+```
+
+It should cover enough to make the case for:
+
+- correctness;
+- live latency;
+- late join/reload/wake;
+- scale;
+- connection surge;
+- geographic distribution;
+- cost;
+- deployment continuity;
+- failure/recovery;
+- frontend architecture;
+- why the selected architecture is preferable to major alternatives.
+
+## Decisions and trade-offs
+
+Include only the decisions important enough to help the reviewer understand why the system looks this way.
+
+The architecture contract is the source; the final proposal is not a 29,000-word architecture dump.
+
+## POC relationship
+
+The proposal must explicitly state:
+
+1. the assumption in the design trusted least;
+2. why the genuine overall weakest assumption cannot be tested locally if applicable;
+3. the riskiest locally testable assumption actually selected;
+4. what the POC measured;
+5. whether the result supported or changed the architecture.
+
+## Diagram
+
+Include at least one concise end-to-end diagram if it improves clarity. ASCII or Mermaid is allowed by the assignment.
+
+## Completion gate
+
+Before approval:
+
+```text
+word count <= 1,500 excluding diagrams
+all hard assignment constraints addressed
+architecture is one coherent selected design
+important alternatives/trade-offs visible
+POC result reflected accurately
+no unsupported performance/cost certainty
+no conflict with README or POC
+```
+
+---
+
+# Milestone 7 — Write Final `README.md`
+
+**Status: NOT STARTED**
+
+## Goal
+
+Create the single README required by the delivery instructions.
+
+## Part A — How to run the POC
+
+The instructions must be sufficient for a reviewer with only a container runtime.
+
+Example form:
+
+```text
+docker compose up --build
+```
+
+Use the actual final command.
+
+State:
+- what starts;
+- expected runtime;
+- where/when the measured summary appears;
+- how to interpret the result if necessary.
+
+## Part B — POC write-up
+
+Maximum:
+
+```text
+<=300 words
+```
+
+Must cover exactly:
+
+```text
+assumption
+    ->
+method
+    ->
+result
+    ->
+what it changes in the proposal
+```
+
+Use actual measured values.
+
+## Part C — AI tools process
+
+Add a few sentences explaining how AI was directed.
+
+This should be factual, for example that the AI was instructed to:
+
+- preserve assignment requirements;
+- separate assumptions from evidence;
+- avoid changing experiment criteria after measurement;
+- use the smallest POC;
+- validate calculations/sources;
+- keep the final candidate responsible for decisions.
+
+`AGENTS.md` is included because it was actually used.
+
+## Completion gate
+
+```text
+run instructions tested
+POC summary <=300 words
+measured values match final POC output
+proposal impact matches proposal.md
+AI process section present
+```
+
+---
+
+# Milestone 8 — Explainability and Reproducibility Audit
+
+**Status: NOT STARTED**
+
+## Goal
+
+Meet the assignment's requirement that every number and every decision is something the candidate can stand behind and explain.
+
+## 8.1 Clean-room POC test
+
+Test from a clean local state:
+
+- no existing containers required;
+- no installed project dependencies;
+- no hidden local services;
+- no credentials;
+- no cloud account;
+- only the documented container runtime;
+- execute the documented one command.
+
+## 8.2 Number audit
+
+For every number in `proposal.md` and `README.md`, know whether it is:
+
+```text
+given by assignment
+measured
+calculated
+assumed
+quoted from current official documentation/pricing
+```
+
+Remove unexplained precision.
+
+## 8.3 Decision audit
+
+Be able to explain:
+
+```text
+Why WebSockets?
+Why not SSE / managed fan-out?
+Why this persistence/order model?
+Why snapshots?
+Why this region strategy?
+Why this POC?
+Why this cost model?
+What happens if provider semantics are insufficient?
+What happens if the POC fails?
+```
+
+## 8.4 Consistency audit
+
+Check for contradictions among:
+
+```text
+proposal.md
+README.md
+POC output
+AGENTS.md
+architecture working document
+```
+
+Only `proposal.md`, `README.md`, POC code, and actual agent instruction files are final deliverables, but the internal documents should still agree with them.
+
+## Completion gate
+
+A reviewer can run the POC and the candidate can explain every submitted claim without relying on hidden chat history.
+
+---
+
+# Milestone 9 — Clean the POC Directory for Submission
+
+**Status: NOT STARTED**
+
+## Goal
+
+Ensure the `poc/` directory contains only source/configuration needed to reproduce the experiment.
+
+## Remove generated material
+
+Do not ship:
+
+```text
+node_modules/
+build/
+dist/
+generated logs
+temporary benchmark output
+cache files
+IDE metadata
+OS junk
+credentials
+cloud state
+```
+
+If a small static result file is genuinely part of the reproducible POC design, confirm that it does not violate the assignment's explicit "nothing generated" requirement. Prefer generating measurements during the reviewer's run and reporting the submission result in `README.md`.
+
+## Completion gate
+
+The POC directory is small, understandable, reproducible, and contains no generated/development debris.
+
+---
+
+# Milestone 10 — Build and Audit the Final ZIP
+
+**Status: NOT STARTED**
+
+## Goal
+
+Produce exactly the package the assignment asks for.
+
+## Final ZIP contents
+
+```text
+proposal.md
+README.md
+poc/
+AGENTS.md
+```
+
+Include another agent instruction file only if it was genuinely used.
+
+## Do not include
+
+```text
+requirement.pdf
+EQC-AC standards
+the 29k-word internal architecture contract
+research notes
+pricing scratch files
+temporary experiment contracts
+generated POC output
+chat exports
+unrequested documentation
+```
+
+unless the assignment is explicitly changed.
+
+## Final package checks
+
+- `proposal.md` <=1,500 words excluding diagrams.
+- `README.md` POC write-up <=300 words.
+- POC runs using the README command.
+- Only container runtime required.
+- No cloud account required.
+- POC produces a measured result.
+- POC simulates its feed.
+- No full-system implementation accidentally included.
+- No generated POC artifacts.
+- AI process disclosed.
+- Agent instruction files actually used are present.
+- Every submitted number/decision is defensible.
+- ZIP contains **only** allowed files.
+
+## Completion gate
+
+Open the ZIP as though you are the reviewer, follow `README.md`, run the experiment, read `proposal.md`, and confirm nothing outside the ZIP is needed.
+
+---
+
+# Assignment Coverage Audit
+
+The milestone sequence above was checked directly against the original assignment.
+
+| Assignment obligation | Covered by |
+|---|---|
+| Design an application for production | M0, M6 |
+| Design Proposal in Markdown | M6 |
+| `proposal.md` <=1,500 words excluding diagrams | M6, M10 |
+| Full stack from feed ingest to fan screen | M0, M6 |
+| Show whole system and reasoning | M0, M6 |
+| Explain decisions, options weighed, why winners won | M0, M6 |
+| Name assumption trusted least | M1, M6 |
+| Identify architecture-invalidating risk | M1 |
+| If true highest risk cannot be local, say so and test riskiest local one | M1, M6, M7 |
+| Small POC rather than full system | M1, M2 |
+| POC runs locally | M2, M8 |
+| POC runs with one command | M2, M7, M8 |
+| Nothing installed beyond container runtime | M2, M8 |
+| No cloud account | M2, M8 |
+| Measured result, not demo UI | M2, M3 |
+| Rough experiment-grade code acceptable | M2 |
+| Simulate event stream | M2 |
+| POC choice follows own design risk | M1 |
+| <=300-word POC write-up | M7, M10 |
+| Write-up covers assumption -> method -> result -> proposal impact | M7 |
+| Do not build full system | M2, M10 |
+| No cloud deployment | M2, M5 |
+| No real infrastructure spend | M2, M5 |
+| Clarity over formatting | M6, M7 |
+| AI tools may be used | all milestones as needed |
+| Include actual AI instruction files used | M7, M10 |
+| Explain how AI tools were directed | M7 |
+| Candidate must stand behind every number/decision | M5, M8 |
+| Final ZIP contains `proposal.md` | M10 |
+| Final ZIP contains `poc/` with nothing generated | M9, M10 |
+| Final ZIP contains `README.md` | M7, M10 |
+| Final ZIP contains actual agent instruction files used | M10 |
+| Final ZIP contains only requested items | M10 |
+
+---
+
+# Scenario Requirement Coverage Audit
+
+The final proposal must make the case that the production design meets all of these. They do **not** each require a separate POC.
+
+| Scenario requirement | Planning / execution milestone |
+|---|---|
+| Anonymous/read-only/public/no accounts | M0 -> M6 |
+| Lobby contains all live matches | M0 -> M6 |
+| Lobby score/minute | M0 -> M6 |
+| Goals/cards live without refresh | M0 -> M6 |
+| Late join | M0 -> M6 |
+| Reload recovery | M0 -> M6 |
+| Phone wake recovery | M0 -> M6 |
+| Everything-so-far then live stream | M0 -> M6 |
+| Never blank/manual refresh | M0 -> M6 |
+| Score agrees with visible history | M0 -> M6 |
+| No duplicates | M0 -> M6 |
+| Nothing disappears | M0 -> M6 |
+| No out-of-order display | M0 -> M6 |
+| Goal p95 <=2s ingest->screen | M0 -> M5/M6; production validation remains an honest inference unless separately measured |
+| Other p95 <=5s | M0 -> M5/M6 |
+| Full history <=2s | M0 -> M5/M6 |
+| 8 live matches | M0 -> M6 |
+| ~10 events/s, burst ~50/s | M0 -> M1/M2/M6 |
+| Best-effort/no long retry | M0 -> M6 |
+| 100,000 concurrent viewers | M0 -> M1/M2/M3/M6 |
+| +40,000 viewers/2 min | M0 -> M1/M2/M3/M6 |
+| ~60% Europe/~40% North America | M0 -> M5/M6 |
+| <=$3,000/month | M0 -> M5/M6 |
+| Weekly live deploy, viewers do not notice | M0 -> M6 |
+| Next.js App Router | M0 -> M6 |
+| Component-based frontend | M0 -> M6 |
+| AWS preferred / alternative justified | M0 -> M5/M6 |
+| Score and clock derived from event stream | M0 -> M6 |
+
+---
+
+# Work That Is Explicitly NOT a Milestone
+
+To avoid scope creep, the following are **not** required before submission:
+
+```text
+building the full Live Match Centre
+deploying the production architecture
+opening an AWS account for the POC
+spending money on production infrastructure
+implementing every architecture component
+performing every production validation listed in the internal EQC-AC contract
+connecting to a real third-party feed
+```
+
+The internal architecture contract contains a production-readiness validation backlog because it describes a real production design. The take-home assignment, however, asks for **one small measured POC** and a defensible proposal, not proof that every production component has been deployed.
+
+Any unexecuted production validation should be described with appropriate uncertainty rather than turned into unnecessary take-home implementation work.
+
+---
+
+# Final Milestone Sequence
+
+```text
+M0  Requirements + architecture planning                DONE
+     |
+M0.5 Industry / third-party solution review             DONE
+     |
+M1  Freeze POC experiment contract                      NEXT
+     |
+M2  Build smallest runnable POC
+     |
+M3  Run POC and produce measured result
+     |
+M4  Reconcile result with architecture
+     |     \
+     |      -> if rejected/inconclusive, loop to M1
+     |
+M5  Close current evidence + final cost model
+     |
+M6  Write proposal.md <=1,500 words
+     |
+M7  Write README.md + <=300-word POC report + AI process
+     |
+M8  Explainability + clean-room reproducibility audit
+     |
+M9  Clean poc/ for delivery
+     |
+M10 Build and audit final ZIP
+```
+
+---
+
+# Completeness Verdict
+
+**YES — this milestone plan covers all work explicitly required by the original assignment.**
+
+The earlier milestone list was fundamentally correct, but this audit makes three important refinements:
+
+1. **Production validation backlog is not the same thing as take-home milestones.**  
+   We must not turn the assignment into a full cloud implementation.
+
+2. **Explainability deserves its own completion gate.**  
+   The assignment explicitly says every number and decision must be something the candidate can stand behind and explain.
+
+3. **Final delivery cleanup deserves separate milestones.**  
+   The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
+
+At this point the correct next task is **Milestone 1: freeze the POC experiment contract**.
