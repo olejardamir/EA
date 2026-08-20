@@ -483,6 +483,43 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | Reduced end-to-end HTTP integration: real coordinator server + 2 HTTP shard clients complete a full barrier lifecycle and persist one ACCEPT global result | coordinator-server.ts + coordinator-client.ts | coordinator-http-integration.test.ts "registers shards over HTTP..." (exit code 0, persisted global-result.json verified) | PASS |
 | One shard's abort rejects other shards' subsequent barriers over HTTP | coordinator.abort → pending/rejected barriers | coordinator-http-integration.test.ts "aborts the whole experiment when one shard reports failure" | PASS |
 
+## §3.3 Nginx worker RLIMIT_NOFILE preflight
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| Actual Nginx container FD limits read from /preflight API (not runner's /proc/self/limits) | topology-preflight.ts nginxFdLimits parameter + NginxPreflight.fd_soft_limit/hard_limit | topology-preflight.ts test with explicit Nginx FD limits | PASS |
+| Runner-vs-Nginx CPU coupling removed | topology-preflight.ts: no cpuQuota < nginxWorkers warning | code inspection | PASS |
+| Control server /preflight reads Nginx container's /proc/self/limits | control-server.js lines 131-140 | infrastructure-contract.test.ts | PASS |
+
+## §3.9 Per-service CPU normalization with independent periods
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| Nchan cpu_max_period from control server /metrics | control-server.js cpu_max_period field + cgroup-resource-monitor.ts nchanCpuMaxPeriod | control-server metrics test | PASS |
+| Redis cpu_max_period from env var | REDIS_CPU_MAX_PERIOD env + cgroup-resource-monitor.ts redisCpuMaxPeriod | code inspection | PASS |
+| Per-service effective_cores = min(quota/period, cpuset) | main.ts + evidence-suite.ts: separate nchanCpuPeriod/redisCpuPeriod | code inspection | PASS |
+| Runner CPU normalized by runner's own period; Nchan by Nchan's; Redis by Redis's | main.ts lines 456-465, evidence-suite.ts lines 400-412 | code inspection | PASS |
+
+## §3.14 Per-scenario active population output
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| Surge active population in machine-readable JSON | main.ts ctx._surgeHealth wiring + result-printer.ts surge_active_population | code inspection | PASS |
+| Reconnect active population in machine-readable JSON | main.ts ctx._reconnectHealth wiring + result-printer.ts reconnect_health | code inspection | PASS |
+| Late-join active population wired in single-run mode | main.ts ctx._lateJoinActivePopulation wiring | code inspection | PASS |
+| Burst active population wired in single-run mode | main.ts ctx._burstActivePopulation wiring | code inspection | PASS |
+| Slow-consumer active population wired in single-run mode | main.ts ctx._slowConsumerActivePopulation wiring | code inspection | PASS |
+| Restart active population wired in single-run mode | main.ts ctx._restartActivePopulation wiring | code inspection | PASS |
+| Per-scenario detail strings include active_start/peak/end | burst.ts, late-join.ts, slow-consumer.ts, nchan-restart.ts detail strings | code inspection | PASS |
+
+## §3.17-§3.19 Source-port safety margin + commit identity + documentation
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| Per-shard target 25000 (safe within ~28k ephemeral range) | compose.evidence-100k.yaml TARGET_CONNECTIONS=25000 | code inspection | PASS |
+| GIT_COMMIT_SHA required (no unknown fallback) | compose files: ${GIT_COMMIT_SHA:?Set via: ...}, Dockerfile ARG without default | code inspection | PASS |
+| Traceability matrix covers §3.3/§3.9/§3.14 | This file | — | PASS |
+
 ## Blocking status
 
 | Row | BLOCKED items | Reason |
