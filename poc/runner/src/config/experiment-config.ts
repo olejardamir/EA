@@ -1,6 +1,7 @@
 export interface ExperimentConfig {
   nchanPubUrl: string
   nchanSubUrl: string
+  nchan2SubUrl: string
   redisUrl: string
   workerCount: number
   targetConnections: number
@@ -10,6 +11,13 @@ export interface ExperimentConfig {
   cooldownSeconds: number
   slowConsumerFraction: number
   historyUrl: string
+  seed: number
+  steadyDuration: number
+  burstDuration: number
+  warmupDuration: number
+  stabilizationDuration: number
+  cooldownDuration: number
+  runProfile: "smoke" | "evidence"
 }
 
 function requirePositiveInt(value: string | undefined, name: string, fallback: number): number {
@@ -38,6 +46,7 @@ export function loadConfig(): ExperimentConfig {
   return {
     nchanPubUrl,
     nchanSubUrl,
+    nchan2SubUrl: process.env.NCHAN2_SUB_URL ?? "",
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
     workerCount: requirePositiveInt(process.env.WORKER_COUNT, "WORKER_COUNT", 4),
     targetConnections: requirePositiveInt(process.env.TARGET_CONNECTIONS, "TARGET_CONNECTIONS", 10000),
@@ -47,5 +56,12 @@ export function loadConfig(): ExperimentConfig {
     cooldownSeconds: requirePositiveInt(process.env.COOLDOWN_SECONDS, "COOLDOWN_SECONDS", 10),
     slowConsumerFraction: 0.05,
     historyUrl: nchanSubUrl,
+    seed: requirePositiveInt(process.env.SEED, "SEED", 42),
+    steadyDuration: requirePositiveInt(process.env.STEADY_DURATION, "STEADY_DURATION", 60),
+    burstDuration: requirePositiveInt(process.env.BURST_DURATION, "BURST_DURATION", 30),
+    warmupDuration: requirePositiveInt(process.env.WARMUP_DURATION, "WARMUP_DURATION", 30),
+    stabilizationDuration: requirePositiveInt(process.env.STABILIZATION_DURATION, "STABILIZATION_DURATION", 10),
+    cooldownDuration: requirePositiveInt(process.env.COOLDOWN_DURATION, "COOLDOWN_DURATION", 10),
+    runProfile: (process.env.RUN_PROFILE === "evidence" ? "evidence" : "smoke") as "smoke" | "evidence",
   }
 }

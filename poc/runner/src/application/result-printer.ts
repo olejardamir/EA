@@ -1,6 +1,10 @@
-import type { AggregatedMetrics } from "../domain/result.js"
+import type { AggregatedMetrics, VerdictResult } from "../domain/result.js"
 
-export function printSummary(metrics: AggregatedMetrics, eventsPublished: number): void {
+export function printSummary(
+  metrics: AggregatedMetrics,
+  eventsPublished: number,
+  verdictResult: VerdictResult,
+): void {
   metrics.events_published = eventsPublished
 
   console.log("")
@@ -21,6 +25,15 @@ export function printSummary(metrics: AggregatedMetrics, eventsPublished: number
   console.log(`  Missing seqs:      ${metrics.missing_sequences}`)
   console.log(`  Duplicates:        ${metrics.duplicates}`)
   console.log(`  Out of order:      ${metrics.out_of_order}`)
+  console.log("")
+
+  console.log("FAN-DELIVERY ACCOUNTING")
+  console.log(`  Expected:          ${metrics.expected_fan_deliveries}`)
+  console.log(`  Received:          ${metrics.received_fan_deliveries}`)
+  const deliveryRatio = metrics.expected_fan_deliveries > 0
+    ? ((metrics.received_fan_deliveries / metrics.expected_fan_deliveries) * 100).toFixed(2)
+    : "N/A"
+  console.log(`  Delivery ratio:    ${deliveryRatio}%`)
   console.log("")
 
   console.log("FAN-OUT LATENCY (publish -> SSE frame receipt)")
@@ -50,56 +63,26 @@ export function printSummary(metrics: AggregatedMetrics, eventsPublished: number
   console.log("RESOURCES")
   console.log(`  Event loop p99:    ${metrics.event_loop_delay_p99_ms}ms`)
   console.log(`  Memory peak:       ${metrics.memory_mb_peak}MB`)
+  if (metrics.nchan_memory_mb_peak !== null) {
+    console.log(`  Nchan memory peak: ${metrics.nchan_memory_mb_peak}MB`)
+  } else {
+    console.log(`  Nchan memory peak: unavailable`)
+  }
+  if (metrics.redis_memory_mb_peak !== null) {
+    console.log(`  Redis memory peak: ${metrics.redis_memory_mb_peak}MB`)
+  } else {
+    console.log(`  Redis memory peak: unavailable`)
+  }
   console.log("")
 
   console.log("═══════════════════════════════════════════════════════════════")
 
-  const verdicts: string[] = []
-
-  if (metrics.fan_out_latency_p95_ms <= 500) {
-    verdicts.push("PASS  fan_out_p95 <= 500ms")
-  } else if (metrics.fan_out_latency_p95_ms <= 2000) {
-    verdicts.push("WARN  fan_out_p95 <= 2s (assignment threshold)")
-  } else {
-    verdicts.push("FAIL  fan_out_p95 > 2s")
+  for (const check of verdictResult.checks) {
+    const status = check.passed ? "PASS" : "FAIL"
+    console.log(`  ${status.padEnd(5)} ${check.name}: ${check.detail}`)
   }
 
-  if (metrics.late_join_p95_ms <= 2000) {
-    verdicts.push("PASS  late_join_p95 <= 2s")
-  } else {
-    verdicts.push("FAIL  late_join_p95 > 2s")
-  }
-
-  if (metrics.missing_sequences === 0) {
-    verdicts.push("PASS  missing_sequences == 0")
-  } else {
-    verdicts.push("FAIL  missing_sequences > 0")
-  }
-
-  if (metrics.duplicates === 0) {
-    verdicts.push("PASS  duplicates == 0")
-  } else {
-    verdicts.push("FAIL  duplicates > 0")
-  }
-
-  if (metrics.out_of_order === 0) {
-    verdicts.push("PASS  out_of_order == 0")
-  } else {
-    verdicts.push("FAIL  out_of_order > 0")
-  }
-
-  if (metrics.reconnect_gaps === 0) {
-    verdicts.push("PASS  reconnect_gaps == 0")
-  } else {
-    verdicts.push("FAIL  reconnect_gaps > 0")
-  }
-
-  for (const v of verdicts) {
-    console.log(`  ${v}`)
-  }
-
-  const allPass = verdicts.every((v) => v.startsWith("PASS"))
   console.log("")
-  console.log(`  VERDICT: ${allPass ? "ACCEPT" : "REJECT/INCONCLUSIVE"}`)
+  console.log(`  VERDICT: ${verdictResult.verdict}`)
   console.log("═══════════════════════════════════════════════════════════════")
 }

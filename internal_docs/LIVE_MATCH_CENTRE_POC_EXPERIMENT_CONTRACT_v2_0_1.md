@@ -13,7 +13,7 @@
 
 # 1. Exact Hypothesis
 
-> **Can Nchan 1.3.8, backed by Redis OSS 7.1, deliver SSE fan-out to a large concurrent viewer population, replay a complete retained active-match event history to late-joining viewers within 2 seconds, and sustain reconnect/resume with correct canonical sequence ordering, under an assignment-mapped workload of 8 simulated matches at ~10 events/s steady and ~50 events/s burst, without the Nchan+Redis subsystem being the failure point?**
+> **Can Nchan 1.3.8, backed by Redis OSS 7.2 (aligned with ElastiCache Redis OSS 7.1), deliver SSE fan-out to a large concurrent viewer population, replay a complete retained active-match event history to late-joining viewers within 2 seconds, and sustain reconnect/resume with correct canonical sequence ordering, under an assignment-mapped workload of 8 simulated matches at ~10 events/s steady and ~50 events/s burst, without the Nchan+Redis subsystem being the failure point?**
 
 ---
 
@@ -21,7 +21,7 @@
 
 1. Nchan + Redis OSS can hold and deliver a complete retained active-match event buffer to a late-joining SSE consumer within 2 seconds while the system is under steady + burst fan-out load.
 2. Nchan + Redis can fan out SSE events to a large number of concurrent EventSource connections without the fan-out layer itself becoming the bottleneck (at the scale the local machine can support).
-3. `Last-Event-ID` resume works correctly across Nchan restart when Redis is the shared backing store: a reconnecting client receives no missing canonical sequences, no duplicates, and no out-of-order delivery.
+3. `Last-Event-ID` resume works correctly across Nchan restart when Redis is the shared backing store (Redis 7.2, aligned with ElastiCache Redis OSS 7.1): a reconnecting client receives no missing canonical sequences, no duplicates, and no out-of-order delivery.
 4. The simulated 8-match workload with lobby + per-match channels behaves correctly under steady and burst conditions.
 5. Slow/backpressured consumers are handled without unbounded memory growth on the Nchan side.
 

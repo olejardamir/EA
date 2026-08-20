@@ -50,9 +50,9 @@ export const DESCRIPTIONS: Record<string, string[]> = {
   var_review: ["VAR review in progress", "VAR overturns decision", "VAR confirms on-field call"],
 }
 
-export function weightedRandom(weights: number[]): number {
+export function weightedRandom(weights: number[], random: () => number): number {
   const total = weights.reduce((a, b) => a + b, 0)
-  const r = Math.random() * total
+  const r = random() * total
   let acc = 0
   for (let i = 0; i < weights.length; i++) {
     acc += weights[i]

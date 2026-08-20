@@ -41,6 +41,19 @@ export interface AggregatedMetrics {
   slow_consumer_disconnects: number
   event_loop_delay_p99_ms: number
   memory_mb_peak: number
+  expected_fan_deliveries: number
+  received_fan_deliveries: number
+  connections_target: number
+  burst_fan_out_p95_ms: number
+  nchan_restart_history_replay_correct: boolean
+  nchan_restart_missing_sequences: number
+  non_slow_p95_degradation_pct: number
+  nchan_memory_mb_peak: number | null
+  redis_memory_mb_peak: number | null
+  timing_valid: boolean
+  generator_cpu_percent_peak: number
+  generator_event_loop_p99_ms: number
+  run_profile: "smoke" | "evidence"
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE"

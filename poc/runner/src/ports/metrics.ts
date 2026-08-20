@@ -2,6 +2,7 @@ export interface MetricsRecorder {
   recordFanOutLatency(ms: number): void
   recordLateJoinLatency(ms: number): void
   incrementEventsReceived(): void
+  incrementExpectedFanDeliveries(count: number): void
   incrementMissingSequences(count?: number): void
   incrementDuplicates(): void
   incrementOutOfOrder(): void
@@ -20,6 +21,8 @@ export interface MetricsSnapshot {
   fan_out_latencies_ms: number[]
   late_join_latencies_ms: number[]
   events_received: number
+  expected_fan_deliveries: number
+  received_fan_deliveries: number
   missing_sequences: number
   duplicates: number
   out_of_order: number

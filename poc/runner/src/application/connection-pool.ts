@@ -135,7 +135,7 @@ export class ConnectionPool {
               this.connections.push(entry)
               if (isSlow) onSlowConsumer?.(entry)
             }
-          }).catch(() => {}),
+          }),
         )
       }
 
@@ -172,6 +172,7 @@ export class ConnectionPool {
 
       return entry
     } catch {
+      this.metrics.incrementConnectionFailures()
       return null
     }
   }
@@ -202,6 +203,8 @@ export class ConnectionPool {
       const matchId = this.config.matchIds[matchIdx]
       const lastEventId = old.subscription.lastEventId
 
+      this.metrics.incrementConnectionsAttempted()
+
       try {
         const url = `${this.config.subUrl}/sub/${matchId}`
         const subscription = await stream.connect(url, lastEventId)
@@ -223,7 +226,9 @@ export class ConnectionPool {
         })
 
         this.connections.push(entry)
-      } catch {}
+      } catch {
+        this.metrics.incrementConnectionFailures()
+      }
     }
   }
 }

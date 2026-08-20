@@ -7,12 +7,16 @@ import { CgroupResourceMonitor } from "./adapters/cgroup-resource-monitor.js"
 import { MatchEventPublisher } from "./adapters/match-event-publisher.js"
 import { ConnectionPool } from "./application/connection-pool.js"
 import { createMatchHeadTracker } from "./domain/match-state.js"
+import { createPRNG } from "./domain/prng.js"
+import { MATCH_IDS } from "./domain/event.js"
 import { WarmupScenario } from "./scenarios/warmup.js"
 import { SteadyScenario } from "./scenarios/steady.js"
 import { LateJoinScenario } from "./scenarios/late-join.js"
 import { BurstScenario } from "./scenarios/burst.js"
 import { ReconnectScenario } from "./scenarios/reconnect.js"
 import { SlowConsumerScenario } from "./scenarios/slow-consumer.js"
+import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
+import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
 import { printSummary } from "./application/result-printer.js"
 import type { ScenarioContext } from "./scenarios/scenario.js"
@@ -49,20 +53,27 @@ async function main(): Promise<void> {
   const sseClient = new SSEHttpClient()
   const metrics = new BoundedMetricsRecorder()
   const clock = new SystemClock()
-  const resourceMonitor = new CgroupResourceMonitor()
+  const resourceMonitor = new CgroupResourceMonitor(config.redisUrl)
   const headTracker = createMatchHeadTracker()
+
+  const random = createPRNG(config.seed)
+
+  const pool = new ConnectionPool(
+    { subUrl: config.nchanSubUrl, matchIds: [...MATCH_IDS] },
+    metrics,
+    clock,
+  )
 
   const publisher = new MatchEventPublisher({
     publisher: nchanPublisher,
     headTracker,
     burstMode: false,
+    random,
+    getActiveConnections: () => pool.size,
+    onPublish: (expectedDeliveries) => {
+      metrics.incrementExpectedFanDeliveries(expectedDeliveries)
+    },
   })
-
-  const pool = new ConnectionPool(
-    { subUrl: config.nchanSubUrl, matchIds: publisher.matchIds },
-    metrics,
-    clock,
-  )
 
   await waitForNchan(config.nchanPubUrl)
 
@@ -122,6 +133,16 @@ async function main(): Promise<void> {
   const slowResult = await slowConsumer.execute(ctx)
   log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
 
+  // Phase 7: Connection surge
+  const connectionSurge = new ConnectionSurgeScenario(pool)
+  const surgeResult = await connectionSurge.execute(ctx)
+  log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+
+  // Phase 8: Nchan restart (cross-node Redis history)
+  const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchan2SubUrl)
+  const nchanResult = await nchanRestart.execute(ctx)
+  log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
+
   // Collect metrics
   log("\n--- COLLECTING METRICS ---")
   resourceMonitor.measureEventLoop()
@@ -130,13 +151,35 @@ async function main(): Promise<void> {
   const aggregated = aggregateWorkerMetrics([metrics])
   aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
   aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
+  aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
+  aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
+  aggregated.connections_target = config.targetConnections
+  aggregated.run_profile = config.runProfile
+  aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
 
-  printSummary(aggregated, publisher.totalPublished)
+  // Parse slow consumer degradation from result detail
+  const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
+  aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
+
+  // Parse nchan restart result
+  aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
+  aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
+
+  const generatorHealthy = aggregated.event_loop_delay_p99_ms < 500
+  const timingValid = aggregated.event_loop_delay_p99_ms < 200
+
+  const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid)
+
+  printSummary(aggregated, publisher.totalPublished, verdictResult)
 
   // Shutdown
   log("\nShutting down...")
   publisher.stop()
   await pool.disconnectAll()
+
+  if ("dispose" in resourceMonitor && typeof resourceMonitor.dispose === "function") {
+    resourceMonitor.dispose()
+  }
 
   log("=== POC Runner Complete ===")
 }

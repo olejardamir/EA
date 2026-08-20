@@ -23,7 +23,7 @@ services:
       resources:
         limits:
           cpus: "4"
-          memory: 8G
+          memory: 4G
     ulimits:
       nofile:
         soft: 200000
@@ -44,14 +44,14 @@ services:
       NCHAN_PUB_URL: "http://localhost:8080"
       NCHAN_SUB_URL: "http://localhost:8081"
       REDIS_URL: "redis://localhost:6379"
-      WORKER_COUNT: "1"
-      TARGET_CONNECTIONS: "100"
-      WARMUP_SECONDS: "5"
-      MEASURE_SECONDS: "10"
-      BURST_SECONDS: "5"
-      COOLDOWN_SECONDS: "3"
+      WORKER_COUNT: "4"
+      TARGET_CONNECTIONS: "10000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
       SLOW_SECONDS: "15"
-      RUN_PROFILE: "smoke"
+      RUN_PROFILE: "evidence"
     deploy:
       resources:
         limits:

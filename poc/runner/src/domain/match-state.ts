@@ -16,16 +16,16 @@ export function createInitialMatchStates(): MatchState[] {
   }))
 }
 
-export function advanceMatchState(state: MatchState, eventType: string): void {
+export function advanceMatchState(state: MatchState, eventType: string, random: () => number): void {
   state.seq++
   state.last_event_type = eventType
 
   if (eventType === "goal") {
-    if (Math.random() < 0.5) state.score.home++
+    if (random() < 0.5) state.score.home++
     else state.score.away++
   }
 
-  state.clock.elapsed_seconds += Math.floor(Math.random() * 30) + 15
+  state.clock.elapsed_seconds += Math.floor(random() * 30) + 15
   if (state.clock.elapsed_seconds >= 2700) {
     state.clock.period = "2H"
   }

@@ -4,6 +4,8 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private fanOutLatencies: number[] = []
   private lateJoinLatencies: number[] = []
   private eventsReceived = 0
+  private expectedFanDeliveries = 0
+  private receivedFanDeliveries = 0
   private missingSequences = 0
   private duplicates = 0
   private outOfOrder = 0
@@ -37,6 +39,7 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   }
 
   incrementEventsReceived(): void { this.eventsReceived++ }
+  incrementExpectedFanDeliveries(count: number): void { this.expectedFanDeliveries += count }
   incrementMissingSequences(count = 1): void { this.missingSequences += count }
   incrementDuplicates(): void { this.duplicates++ }
   incrementOutOfOrder(): void { this.outOfOrder++ }
@@ -54,6 +57,8 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       fan_out_latencies_ms: [...this.fanOutLatencies],
       late_join_latencies_ms: [...this.lateJoinLatencies],
       events_received: this.eventsReceived,
+      expected_fan_deliveries: this.expectedFanDeliveries,
+      received_fan_deliveries: this.eventsReceived,
       missing_sequences: this.missingSequences,
       duplicates: this.duplicates,
       out_of_order: this.outOfOrder,

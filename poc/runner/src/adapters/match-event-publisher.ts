@@ -10,7 +10,9 @@ export interface MatchEventPublisherConfig {
   publisher: EventPublisher
   headTracker: MatchHeadTracker
   burstMode: boolean
-  onPublish?: () => void
+  random: () => number
+  onPublish?: (expectedDeliveries: number) => void
+  getActiveConnections?: () => number
 }
 
 export class MatchEventPublisher {
@@ -20,6 +22,7 @@ export class MatchEventPublisher {
   private timers: NodeJS.Timeout[] = []
   private _eventsPublished = 0
   private _totalPublished = 0
+  private _eventsPublishedByMatch: Map<string, number> = new Map()
 
   constructor(config: MatchEventPublisherConfig) {
     this.config = config
@@ -38,6 +41,10 @@ export class MatchEventPublisher {
     return this._totalPublished
   }
 
+  get eventsPublishedByMatch(): ReadonlyMap<string, number> {
+    return this._eventsPublishedByMatch
+  }
+
   get matchIds(): string[] {
     return [...MATCH_IDS]
   }
@@ -50,15 +57,16 @@ export class MatchEventPublisher {
       if (!this.running) return
 
       const weights = this.config.burstMode
-        ? MATCH_WEIGHTS.map((w, i) => (i === 0 ? w * 4 : w * 0.5))
+        ? [80, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7]
         : MATCH_WEIGHTS
 
-      const matchIdx = weightedRandom(weights)
+      const random = this.config.random
+      const matchIdx = weightedRandom(weights, random)
       const state = this.matchStates[matchIdx]
-      const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight))
+      const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight), random)
       const eventType = EVENT_TYPES[eventTypeIdx].type
 
-      advanceMatchState(state, eventType)
+      advanceMatchState(state, eventType, random)
 
       const event = createEventPayload(MATCH_IDS[matchIdx], state.seq, eventType, state.score, state.clock)
       const body = JSON.stringify(event)
@@ -69,13 +77,16 @@ export class MatchEventPublisher {
         if (ok) {
           this._eventsPublished++
           this._totalPublished++
+          const prev = this._eventsPublishedByMatch.get(MATCH_IDS[matchIdx]) ?? 0
+          this._eventsPublishedByMatch.set(MATCH_IDS[matchIdx], prev + 1)
+          const expected = this.config.getActiveConnections?.() ?? 0
+          this.config.onPublish?.(expected)
         }
-        this.config.onPublish?.()
       })
 
       const rate = this.config.burstMode ? 50 : 9
-      const intervalMs = 1000 / (rate / MATCH_IDS.length)
-      const jitter = intervalMs * 0.3 * (Math.random() - 0.5)
+      const intervalMs = 1000 / rate
+      const jitter = intervalMs * 0.3 * (random() - 0.5)
       const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs + jitter))
       this.timers.push(timer)
     }
@@ -94,6 +105,8 @@ export class MatchEventPublisher {
         if (ok) {
           this._eventsPublished++
           this._totalPublished++
+          const expected = this.config.getActiveConnections?.() ?? 0
+          this.config.onPublish?.(expected)
         }
       })
       const timer = setTimeout(scheduleLobby, 1000)

@@ -2,16 +2,43 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import {
   weightedRandom, padToSize, createEventPayload, createLobbyPayload,
-  MATCH_IDS, EVENT_TYPES,
+  MATCH_IDS, EVENT_TYPES, MATCH_WEIGHTS,
 } from "../domain/event.js"
+import { createPRNG } from "../domain/prng.js"
 
 describe("Event generation", () => {
   it("weightedRandom returns valid index", () => {
     const weights = [1, 2, 3]
+    const rng = createPRNG(1)
     for (let i = 0; i < 100; i++) {
-      const idx = weightedRandom(weights)
+      const idx = weightedRandom(weights, rng)
       assert.ok(idx >= 0 && idx < weights.length)
     }
+  })
+
+  it("weightedRandom with seeded PRNG produces deterministic match selection", () => {
+    const rng1 = createPRNG(42)
+    const rng2 = createPRNG(42)
+    const seq1 = Array.from({ length: 200 }, () => weightedRandom(MATCH_WEIGHTS, rng1))
+    const seq2 = Array.from({ length: 200 }, () => weightedRandom(MATCH_WEIGHTS, rng2))
+    assert.deepEqual(seq1, seq2)
+  })
+
+  it("weightedRandom with seeded PRNG produces deterministic event-type selection", () => {
+    const weights = EVENT_TYPES.map((e) => e.weight)
+    const rng1 = createPRNG(123)
+    const rng2 = createPRNG(123)
+    const seq1 = Array.from({ length: 200 }, () => weightedRandom(weights, rng1))
+    const seq2 = Array.from({ length: 200 }, () => weightedRandom(weights, rng2))
+    assert.deepEqual(seq1, seq2)
+  })
+
+  it("hot-match weights sum correctly for 80/20 split", () => {
+    const burstWeights = MATCH_WEIGHTS.map((w, i) => (i === 0 ? w * 4 : w * 0.5))
+    const total = burstWeights.reduce((a, b) => a + b, 0)
+    const match0Share = burstWeights[0] / total
+    assert.ok(match0Share > 0.5, `match-001 share ${match0Share} should be > 50% in burst mode`)
+    assert.ok(match0Share < 0.95, `match-001 share ${match0Share} should be < 95%`)
   })
 
   it("padToSize returns empty when payload already meets target", () => {
