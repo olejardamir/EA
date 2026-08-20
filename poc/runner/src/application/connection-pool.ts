@@ -76,8 +76,9 @@ export class ConnectionPool {
       const count = this.subscribersByChannel.get(entry.matchId) ?? 0
       this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
       this.metrics.setActiveConnections(this.connections.length)
+      // §3.14: Only count deliberate disconnect when entry was actually in the pool
+      this.metrics.incrementDeliberateDisconnects()
     }
-    this.metrics.incrementDeliberateDisconnects()
     void reason // reason is logged by caller, attribution counted here
   }
 

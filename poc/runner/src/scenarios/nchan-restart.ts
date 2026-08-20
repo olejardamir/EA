@@ -237,9 +237,9 @@ export class NchanRestartScenario implements Scenario {
       ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
 
       // §3.11: Record canonical range BEFORE restart — independent frozen expected range
-      // Must not be derived from received replay count
+      // Expected = at minimum 1 event after restart (seq > lastSeq) — NOT derived from received count
       const frozenExpectedFirstSeq = lastSeq !== null ? lastSeq + 1 : null
-      const frozenExpectedCount = lastSeq !== null ? 1 : 0 // At minimum 1 event expected after restart
+      const frozenExpectedMinCount = 1 // At minimum 1 post-restart event expected
 
       // Step 2: Trigger literal Nchan process restart via control server
       ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
@@ -326,7 +326,9 @@ export class NchanRestartScenario implements Scenario {
               seenSeqs.add(seq)
               prevSeq = seq
 
-              if (lastSeq !== null && seq >= lastSeq) {
+              // §3.11: Completion boundary — must receive event AFTER pre-restart last seq
+              // (seq >= lastSeq merely replays the pre-restart event itself)
+              if (lastSeq !== null && seq > lastSeq) {
                 replayComplete = true
                 clearTimeout(timeout)
                 sub2.close()
@@ -365,15 +367,10 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq} restartMs=${restartMs}`)
 
-      // §3.11: Wire delivery accounting — expected range independently frozen before restart
-      // Expected = events with seq > lastSeq (frozen pre-restart) — NOT derived from received count
-      const replayCountInRange = replayEvents.filter((raw) => {
-        try {
-          const d = JSON.parse(raw)
-          return typeof d.canonical_seq === "number" && lastSeq !== null && d.canonical_seq > lastSeq
-        } catch { return false }
-      }).length
-      ctx.metrics.incrementRestartReplayExpected(replayCountInRange > 0 ? replayCountInRange : replayEvents.length)
+      // §3.11: Wire delivery accounting — frozen expected range from pre-restart observation
+      // Expected = frozenExpectedMinCount (1 post-restart event, frozen before replay)
+      // NOT derived from received replay count
+      ctx.metrics.incrementRestartReplayExpected(frozenExpectedMinCount)
       ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
 
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder

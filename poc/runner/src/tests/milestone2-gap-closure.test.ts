@@ -240,6 +240,11 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     active_population_peak: 0,
     build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
     phase_histograms: {},
+    match_events_published: 0,
+    lobby_events_published: 0,
+    match_events_per_sec: 0,
+    lobby_events_per_sec: 0,
+    total_events_per_sec: 0,
     ...overrides,
   }
 }
