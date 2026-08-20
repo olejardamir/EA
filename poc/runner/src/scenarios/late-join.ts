@@ -127,6 +127,10 @@ export class LateJoinScenario implements Scenario {
       const historyExpected = frozenTargetHead - firstSeq + 1
       const historyReceived = historyEvents.length
 
+      // §4.16: Wire delivery accounting
+      ctx.metrics.incrementLateJoinHistoryExpected(historyExpected)
+      ctx.metrics.incrementLateJoinHistoryReceived(historyReceived)
+
       const detail = [
         `history_expected=${historyExpected}`,
         `history_received=${historyReceived}`,

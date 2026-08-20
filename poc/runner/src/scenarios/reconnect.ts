@@ -31,6 +31,9 @@ export class ReconnectScenario implements Scenario {
     ctx.log(`Reconnect cohort: ${cohortSize}/${all.length} connections`)
     ctx.log(`Pre-disconnect heads: ${saved.map((s) => `${s.entry.matchId}=${s.headBefore}`).join(", ")}`)
 
+    // Record events_received before disconnect for §4.16 replay accounting
+    const eventsReceivedBeforeDisconnect = ctx.metrics.snapshot().events_received
+
     for (const s of saved) {
       s.entry.subscription.close()
     }
@@ -70,6 +73,11 @@ export class ReconnectScenario implements Scenario {
 
     ctx.log(`Reconnected ${newSubscriptions.length}/${cohortSize} connections, waiting for catch-up...`)
     await ctx.sleep(5000)
+
+    // §4.16: Wire delivery accounting
+    const replayReceived = ctx.metrics.snapshot().events_received - eventsReceivedBeforeDisconnect
+    ctx.metrics.incrementReconnectReplayExpected(eventsDuringDisconnect)
+    ctx.metrics.incrementReconnectReplayReceived(replayReceived)
 
     const snap = ctx.metrics.snapshot()
     const passed = snap.reconnect_gaps === 0 &&

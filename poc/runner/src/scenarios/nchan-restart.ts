@@ -222,6 +222,9 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
 
+      // §4.16: Record events_received before restart for replay accounting
+      const eventsReceivedBeforeRestart = ctx.metrics.snapshot().events_received
+
       // Step 2: Trigger literal Nchan process restart via control server
       ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
       const restartStart = Date.now()
@@ -344,6 +347,11 @@ export class NchanRestartScenario implements Scenario {
       })()
 
       ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq} restartMs=${restartMs}`)
+
+      // §4.16: Wire delivery accounting — expected = events during restart window, received = replay events
+      const replayReceived = ctx.metrics.snapshot().events_received - eventsReceivedBeforeRestart
+      ctx.metrics.incrementRestartReplayExpected(replayEvents.length)
+      ctx.metrics.incrementRestartReplayReceived(replayReceived)
 
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
 
