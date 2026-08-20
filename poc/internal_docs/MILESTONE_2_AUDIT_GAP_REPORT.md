@@ -27,7 +27,7 @@ This report supersedes the stale pre-closure audit previously stored at this pat
 | 12 | Automatic mandatory SHA | PASS | All launch scripts resolve `git rev-parse HEAD`; coordinator rejects invalid/mismatched SHAs |
 | 13 | No shard-local 100k claim | PASS | Shard scope/direct flag is fixed false; only global ACCEPT can set direct eligibility |
 | 14 | Peak-scenario active population | PASS | Complete aligned buckets produce global start/min/peak/end for all five required scenarios |
-| 15 | Coordinated entrypoint and aggregation layer | PASS | `run-evidence-100k.sh` runs coordinator + four shards; reduced HTTP test uses the same server/client path; cross-run code remains separate |
+| 15 | Coordinated entrypoint and aggregation layer | PASS | `run-evidence-100k.sh` runs 3–8 coordinator + four-shard global runs and a separate campaign aggregator; reduced HTTP test uses the same server/client path |
 | 16 | Successor contract and traceability | PASS | v2.0.4 records OLD/NEW/WHY and the end-to-end traceability matrix below has no unmapped row |
 
 ## End-to-end traceability
@@ -48,7 +48,7 @@ This report supersedes the stale pre-closure audit previously stored at this pat
 | 12 | three launch scripts, Dockerfile, coordinator registration | infrastructure contract test, invalid-SHA coordinator test | Git and registration metadata | every shard and global `source_commit` | invalid/mismatch -> INCONCLUSIVE |
 | 13 | shard schema, result printer, coordinator submission guard | global coordinator direct-claim tests | shard identity/result producer | explicit scope and eligibility fields | only global ACCEPT eligible |
 | 14 | phase sampler + `alignSamples()` | coordinator alignment/adversarial/HTTP tests | per-shard `active_current` every 250ms | global scenario start/min/peak/end | scenario minimum threshold |
-| 15 | 100k Compose and launch script | coordinator HTTP integration, evidence-suite run-mode test | same coordinator protocol | shard -> simultaneous global result | one coordinator exit/global verdict |
+| 15 | 100k Compose, launch script and `global-campaign.ts` | coordinator HTTP integration, global-campaign tests, evidence-suite run-mode test | same coordinator protocol plus persisted global results | shard -> simultaneous global run -> campaign | global verdict then cross-run campaign verdict |
 | 16 | v2.0.4 contract, this audit, coverage matrix, ledger | contract/static infrastructure tests and full suite | all above | all above | no false PASS or unmapped rule |
 
 ## Adversarial audit

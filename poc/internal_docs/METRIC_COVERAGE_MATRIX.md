@@ -37,6 +37,7 @@ Every result-affecting v2.0.4 metric has a producer, validity rule, machine-read
 | Nchan/Redis shared resources | publisher-owner shard | observe once, never sum duplicate observers | global `resources` | coordinator shared-resource tests |
 | shard eligibility | shard result builder | scope/aggregate scope shard; direct eligibility false | shard JSON | direct-claim tests |
 | global verdict/eligibility | coordinator | invalid evidence INCONCLUSIVE; valid DUT failure REJECT; all valid/pass ACCEPT | one global result | global classifier/adversarial/integration |
+| campaign dispersion/verdict | global campaign aggregator | 3–8 global runs; common provenance; CV ≤15%; no inconclusive input | campaign result with retained global runs | global-campaign tests |
 
 ## Verdict precedence
 

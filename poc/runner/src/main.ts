@@ -708,7 +708,7 @@ async function main(): Promise<void> {
         scope: "shard",
         global_direct_accept_eligible: false,
         experiment_run_id: coordinator.experimentRunId!,
-        run_index: 0,
+        run_index: parseInt(process.env.GLOBAL_RUN_INDEX ?? "0", 10),
         shard_id: shardId,
         shard_count: shardCount,
         local_target: config.targetConnections,

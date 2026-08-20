@@ -60,7 +60,7 @@ Normal launch paths are:
 ./run-evidence-100k.sh
 ```
 
-Each path automatically resolves and validates the checkout SHA. The 100k path starts the same coordinator and shard clients used by the reduced HTTP integration test.
+Each path automatically resolves and validates the checkout SHA. The 100k path starts the same coordinator and shard clients used by the reduced HTTP integration test. It freezes 3–8 repeated simultaneous-global runs (`GLOBAL_RUNS`, default 3), derives seed `base + run_index`, recreates DUT/generator containers for isolation, persists each global result, and then emits a distinct campaign aggregate.
 
 ## Coordinated lifecycle
 
@@ -151,6 +151,8 @@ shard result
 ```
 
 Cross-shard code must not call the repeated-run `aggregateRuns()` path.
+
+The v2.0.4 campaign aggregator accepts only `aggregate_scope=simultaneous_global_run` inputs with unique contiguous run indices and run IDs, common target/source/shard count, and 3–8 runs. It pools the already-global histogram distributions, sums correctness counters, retains per-run resources/workload, and applies the frozen 15% cross-run coefficient-of-variation bound using sample variance (`n-1`), matching the existing evidence machinery. Invalid/inconclusive inputs or unstable dispersion produce campaign INCONCLUSIVE; stable runs with any conclusive REJECT produce campaign REJECT; all stable global ACCEPT runs produce campaign ACCEPT.
 
 Shard output contains `experiment_run_id`, `run_index`, `shard_id`, `shard_count`, `scope=shard`, `aggregate_scope=shard`, and `global_direct_accept_eligible=false`.
 

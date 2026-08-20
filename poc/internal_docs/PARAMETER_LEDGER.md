@@ -132,6 +132,8 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Late-join live margin | 120 | events | DERIVED_VALUE | 60 events/s × 2-second catch-up bound | late-join.ts |
 | Late-join safety margin | 256 | events | PLANNING_ASSUMPTION | Guards live-arrival and scheduling variation | late-join.ts |
 | Scenario active minimum | 100% target; reconnect 90% | percentage | PROTOCOL_REQUIREMENT | Peak claims remain at target; reconnect permits its deliberate 10% cohort outage | global-coordinator.ts |
+| Coordinated campaign runs | 3 minimum, 8 maximum | global runs | PLANNING_ASSUMPTION | Repeats complete simultaneous-global experiments without mixing shard/run dimensions | run-evidence-100k.sh, global-campaign.ts |
+| Coordinated campaign dispersion | 15% | sample coefficient of variation (`n-1`) | PLANNING_ASSUMPTION | Frozen stability bound across global active peak and latency p95 metrics | global-campaign.ts |
 
 ## Publisher Parameters
 
