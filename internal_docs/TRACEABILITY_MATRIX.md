@@ -300,6 +300,7 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | aggregate_target_connections | topology-preflight.ts | generator_topology.aggregate_target_connections | PASS |
 | aggregate_destination_tuple_capacity | topology-preflight.ts | generator_topology.aggregate_destination_tuple_capacity | PASS |
 | capacity_sufficient (aggregate) | topology-preflight.ts | generator_topology.capacity_sufficient | PASS |
+| shard_identity (shard_id, shard_count, source_ip_index) | main.ts, evidence-suite.ts | shard_identity | PASS |
 
 ## §3.7 Workload-rate metrics
 

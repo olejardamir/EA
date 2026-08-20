@@ -67,6 +67,9 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     match_events_per_sec: 0,
     lobby_events_per_sec: 0,
     total_events_per_sec: 0,
+    // §3.7: Attempted counts
+    match_events_attempted: 0,
+    lobby_events_attempted: 0,
     cpu_throttled_count: 0,
     cpu_throttled_usec: 0,
     cpu_usage_usec: 0,

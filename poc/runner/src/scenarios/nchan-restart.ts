@@ -144,7 +144,8 @@ export class NchanRestartScenario implements Scenario {
               // §3.11: Cross-node completion — must receive all events in the frozen expected range
               // The expected range is [frozenExpectedFirstSeq1, headAtReplacement].
               // Completion requires reaching the head at replacement time, not just the last pre-restart seq.
-              if (lastSeq1 !== null && headAtReplacement !== null && seq >= headAtReplacement) {
+              // headAtReplacement MUST be known — falling back to lastSeq1 would merely replay a pre-restart event.
+              if (headAtReplacement !== null && seq >= headAtReplacement) {
                 replayComplete = true
                 clearTimeout(timeout)
                 sub2.close()
