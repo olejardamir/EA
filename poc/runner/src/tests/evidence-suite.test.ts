@@ -140,6 +140,7 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     match_events_per_sec: 0,
     lobby_events_per_sec: 0,
     total_events_per_sec: 0,
+    clock_validity: { clock_model: "unknown", nodes_covered: [], measurement_method: "unknown", offset_or_guarantee: -1, uncertainty_ms: -1, threshold_ms: -1, validity_result: "INCONCLUSIVE" as const, nchan1_reachable: false, nchan2_reachable: false },
     ...overrides,
   }
 }

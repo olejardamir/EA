@@ -135,6 +135,8 @@ async function main(): Promise<void> {
     getSubscriberCount: (channel) => pool.getSubscriberCount(channel),
     onPublish: (channel, expected) => {
       metrics.incrementExpectedFanDeliveries(expected)
+      // §3.13: Live expected from publisher at accepted-publish time using eligible subscriber count
+      metrics.incrementLiveExpectedDeliveries(expected)
     },
   })
 

@@ -181,6 +181,8 @@ export async function runSingleExperiment(
     getSubscriberCount: (channel) => pool.getSubscriberCount(channel),
     onPublish: (channel, expected) => {
       metrics.incrementExpectedFanDeliveries(expected)
+      // §3.13: Live expected from publisher at accepted-publish time using eligible subscriber count
+      metrics.incrementLiveExpectedDeliveries(expected)
     },
   })
 
@@ -721,6 +723,15 @@ export async function runEvidenceSuite(
   } else if (perRunVerdicts.some((v) => v.verdict === "REJECT")) {
     finalVerdict = "REJECT"
   } else {
+    finalVerdict = "INCONCLUSIVE"
+  }
+
+  // §3.10: Campaign-level restart gate — the once-per-campaign restart result must PASS independently.
+  // This is separate from per-run gating; even if all per-run verdicts are ACCEPT,
+  // a failed campaign-level restart overrides to INCONCLUSIVE.
+  const run0Result = runs[0]
+  if (run0Result && !run0Result.aggregated.nchan_restart_history_replay_correct) {
+    log(`§3.10 Campaign restart gate: INCONCLUSIVE — run 0 nchan_restart_history_replay_correct=false`)
     finalVerdict = "INCONCLUSIVE"
   }
 

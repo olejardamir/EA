@@ -160,6 +160,11 @@ export interface AggregatedMetrics {
   // §3.8: Nchan/Redis CPU percent peaks
   nchan_cpu_percent_peak: number | null
   redis_cpu_percent_peak: number | null
+  // §3.9: Normalized CPU percent peaks (0..100 of capacity, not per-core)
+  resource_cpu_percent_peak: number | null
+  resource_cpu_baseline: number | null
+  nchan_resource_cpu_percent_peak: number | null
+  redis_resource_cpu_percent_peak: number | null
   // §4.2: Topology capacity sufficient
   topology_capacity_sufficient: boolean
   // §4.25: Histogram sample population metadata
