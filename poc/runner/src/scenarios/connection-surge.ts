@@ -35,7 +35,8 @@ export class ConnectionSurgeScenario implements Scenario {
     const eventsReceivedBefore = snapBefore.events_received
     const fanOutBefore = snapBefore.fan_out_latencies_ms.length
 
-    const surgeStartTime = ctx.clock.now()
+    // §4.5: Use monotonic clock for absolute deadline enforcement
+    const surgeStartTime = performance.now()
     const deadline = surgeStartTime + surgeDurationMs
     const batchSize = Math.ceil(surgeCount / 24)
     const batchIntervalMs = surgeDurationMs / 24
@@ -50,7 +51,7 @@ export class ConnectionSurgeScenario implements Scenario {
     let batch = 0
     let totalAttempted = 0
     let totalEstablished = 0
-    let batchStartTime = ctx.clock.now()
+    let batchStartTime = performance.now()
 
     while (batch < 24) {
       const remaining = surgeCount - (batch * batchSize)
@@ -59,12 +60,12 @@ export class ConnectionSurgeScenario implements Scenario {
       if (count <= 0) break
 
       const targetTime = surgeStartTime + (batch + 1) * batchIntervalMs
-      const actualStartTime = ctx.clock.now()
+      const actualStartTime = performance.now()
 
       ctx.log(`Surge batch ${batch + 1}/24: adding ${count} connections (pool size: ${this.pool.size})`)
       await this.pool.connectAll(ctx.eventStream, count, this.pool.size, undefined, ctx.config.lobbyFraction)
 
-      const actualEndTime = ctx.clock.now()
+      const actualEndTime = performance.now()
       const batchElapsed = actualEndTime - actualStartTime
       const schedulerLag = actualEndTime - targetTime
       schedulerLags.push(schedulerLag)
@@ -82,29 +83,26 @@ export class ConnectionSurgeScenario implements Scenario {
       totalAttempted += count
       totalEstablished += count
 
-      // Check if we've exceeded the deadline
-      if (ctx.clock.now() >= deadline) {
-        ctx.log(`Surge deadline reached at batch ${batch}, elapsed: ${ctx.clock.now() - surgeStartTime}ms`)
+      // §4.5: Absolute deadline enforcement — break immediately if over
+      const now = performance.now()
+      if (now >= deadline) {
+        ctx.log(`Surge deadline reached at batch ${batch}, elapsed: ${(now - surgeStartTime).toFixed(1)}ms`)
         break
       }
 
-      // Wait until next batch interval
+      // Wait until next batch interval using monotonic target
       const nextBatchTargetTime = surgeStartTime + batch * batchIntervalMs
-      const waitUntil = Math.max(0, nextBatchTargetTime - ctx.clock.now())
+      const waitUntil = Math.max(0, nextBatchTargetTime - performance.now())
       if (waitUntil > 0 && batch < 24) {
         await ctx.sleep(waitUntil)
       }
     }
 
-    const surgeEndTime = ctx.clock.now()
+    const surgeEndTime = performance.now()
     const surgeElapsed = surgeEndTime - surgeStartTime
     const timingErrorMs = surgeElapsed - surgeDurationMs
 
-    ctx.log(`Surge complete in ${surgeElapsed}ms, pool size: ${this.pool.size}`)
-
-    const stabilizationMs = 30_000
-    ctx.log(`Stabilization hold for ${stabilizationMs / 1000}s...`)
-    await ctx.sleep(stabilizationMs)
+    ctx.log(`Surge complete in ${surgeElapsed.toFixed(1)}ms, pool size: ${this.pool.size}`)
 
     const snap = ctx.metrics.snapshot()
     const surgeAttempted = snap.connections_attempted - attemptsBefore

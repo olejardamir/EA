@@ -58,6 +58,61 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | memory_oom_kill_events | cgroup-resource-monitor.ts | memory_oom_kill_events | == 0 for ACCEPT | PASS |
 | generator_backlog_peak | match-event-publisher.ts | generator_backlog_peak | > 1000 → INCONCLUSIVE (§4.11) | PASS |
 
+## §4.16 Live/replay separation
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| live_expected_deliveries | metrics-recorder.ts | live_expected_deliveries | PASS |
+| live_received_deliveries | metrics-recorder.ts | live_received_deliveries | PASS |
+| late_join_history_expected | metrics-recorder.ts | late_join_history_expected | PASS |
+| late_join_history_received | metrics-recorder.ts | late_join_history_received | PASS |
+| reconnect_replay_expected | metrics-recorder.ts | reconnect_replay_expected | PASS |
+| reconnect_replay_received | metrics-recorder.ts | reconnect_replay_received | PASS |
+| restart_replay_expected | metrics-recorder.ts | restart_replay_expected | PASS |
+| restart_replay_received | metrics-recorder.ts | restart_replay_received | PASS |
+
+## §4.17 Disconnect attribution
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| deliberate_disconnects | connection-pool.ts | deliberate_disconnects | PASS |
+| unexpected_client_disconnects | connection-pool.ts | unexpected_client_disconnects | PASS |
+| server_initiated_disconnects | connection-pool.ts | server_initiated_disconnects | PASS |
+| network_failures | connection-pool.ts | network_failures | PASS |
+| shutdown_cleanup_disconnects | connection-pool.ts | shutdown_cleanup_disconnects | PASS |
+
+## §4.5 Surge absolute deadlines
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| surge_target_additions | connection-surge.ts | surge_target_additions | PASS |
+| surge_attempted | connection-surge.ts | surge_attempted | PASS |
+| surge_established | connection-surge.ts | surge_established | PASS |
+| surge_failures | connection-surge.ts | surge_failures | PASS |
+| surge_start_time | connection-surge.ts | surge_start_time | PASS |
+| surge_end_time | connection-surge.ts | surge_end_time | PASS |
+| surge_elapsed_ms | connection-surge.ts | surge_elapsed_ms | PASS |
+| surge_timing_error_ms | connection-surge.ts | surge_timing_error_ms | PASS |
+| attempt_rate_peak | connection-surge.ts | attempt_rate_peak | PASS |
+| establishment_rate_peak | connection-surge.ts | establishment_rate_peak | PASS |
+| scheduler_lag_p95 | connection-surge.ts | scheduler_lag_p95 | PASS |
+| scheduler_lag_max | connection-surge.ts | scheduler_lag_max | PASS |
+| active_population_start | connection-surge.ts | active_population_start | PASS |
+| active_population_end | connection-surge.ts | active_population_end | PASS |
+| active_population_peak | connection-surge.ts | active_population_peak | PASS |
+
+## §4.9 Nchan container resource metrics
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| nchan_cpu_usage_usec | cgroup-resource-monitor.ts | nchan_cpu_usage_usec | PASS |
+| nchan_cpu_throttled_count | cgroup-resource-monitor.ts | nchan_cpu_throttled_count | PASS |
+| nchan_cpu_throttled_usec | cgroup-resource-monitor.ts | nchan_cpu_throttled_usec | PASS |
+| nchan_memory_current_bytes | cgroup-resource-monitor.ts | nchan_memory_current_bytes | PASS |
+| nchan_memory_peak_bytes | cgroup-resource-monitor.ts | nchan_memory_peak_bytes | PASS |
+| nchan_memory_oom_events | cgroup-resource-monitor.ts | nchan_memory_oom_events | PASS |
+| nchan_memory_oom_kill_events | cgroup-resource-monitor.ts | nchan_memory_oom_kill_events | PASS |
+
 ## §V coverage
 
 | Metric | Source | Field | Status |
