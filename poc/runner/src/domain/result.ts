@@ -221,11 +221,18 @@ export interface SlowConsumerMetrics {
   nchan_memory_end_bytes: number | null
   nchan_memory_recovery_bytes: number | null
   nchan_memory_samples_during: number[]
-  // §3.6: Throttle proof
-  slow_event_timestamps_ms: number[]
+  // §3.8: Per-client event timestamps (not merged) — proves per-client 2-second pacing
+  per_client_event_timestamps_ms: number[][]
   slow_achieved_read_rate_events_per_sec: number
+  // §3.8: Per-client median intervals — each should achieve ~2s independently
+  per_client_median_event_interval_ms: number[]
+  // §3.8: Aggregated interval stats (all clients merged)
   slow_median_event_interval_ms: number
   slow_p95_event_interval_ms: number
+  // §3.8: Memory boundedness trend
+  nchan_memory_bounded: boolean | null
+  nchan_memory_growth_bytes: number | null
+  nchan_memory_growth_pct: number | null
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

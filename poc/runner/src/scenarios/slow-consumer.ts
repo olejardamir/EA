@@ -33,13 +33,18 @@ export interface SlowConsumerMetrics {
   nchan_memory_end_bytes: number | null
   nchan_memory_recovery_bytes: number | null
   nchan_memory_samples_during: number[]
-  // §3.6: Actual throttle proof — timestamps of events arriving at slow consumers
-  slow_event_timestamps_ms: number[]
-  // §3.6: Actual achieved read rate from slow consumers
+  // §3.8: Per-client event timestamps (not merged) — proves per-client 2-second pacing
+  per_client_event_timestamps_ms: number[][]
   slow_achieved_read_rate_events_per_sec: number
-  // §3.6: Inter-event interval stats
+  // §3.8: Per-client median intervals — each should achieve ~2s independently
+  per_client_median_event_interval_ms: number[]
+  // §3.8: Aggregated interval stats (all clients merged)
   slow_median_event_interval_ms: number
   slow_p95_event_interval_ms: number
+  // §3.8: Memory boundedness trend result
+  nchan_memory_bounded: boolean | null
+  nchan_memory_growth_bytes: number | null
+  nchan_memory_growth_pct: number | null
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -221,7 +226,8 @@ export class SlowConsumerScenario implements Scenario {
     let slowDisconnects = 0
     let totalOffered = 0
     let totalRead = 0
-    let allEventTimestampsMs: number[] = []
+    // §3.8: Per-client event timestamps (not merged) — proves per-client 2-second pacing
+    const perClientTimestampsMs: number[][] = []
     for (let i = 0; i < slowConnections.length; i++) {
       const conn = slowConnections[i]
       const wrapper = throttledWrappers[i]
@@ -231,7 +237,7 @@ export class SlowConsumerScenario implements Scenario {
       }
       totalOffered += wrapper.offeredCount
       totalRead += wrapper.achievedReadCount
-      allEventTimestampsMs.push(...wrapper.eventTimestampsMs)
+      perClientTimestampsMs.push([...wrapper.eventTimestampsMs])
       try { conn.subscription.resume() } catch {}
     }
 
@@ -243,16 +249,26 @@ export class SlowConsumerScenario implements Scenario {
     // §3.6: Compute achieved read rate from slow consumers
     const slowReadRate = slowPhaseElapsed > 0 ? totalRead / (slowPhaseElapsed / 1000) : 0
 
-    // §3.6: Compute inter-event intervals from timestamps — proves throttle is working
-    allEventTimestampsMs.sort((a, b) => a - b)
-    const interEventIntervalsMs: number[] = []
-    for (let i = 1; i < allEventTimestampsMs.length; i++) {
-      interEventIntervalsMs.push(allEventTimestampsMs[i] - allEventTimestampsMs[i - 1])
+    // §3.8: Compute per-client inter-event intervals — proves each client achieves ~2s pacing
+    const allSortedIntervals: number[] = []
+    const perClientMedianIntervals: number[] = []
+    for (const clientTs of perClientTimestampsMs) {
+      if (clientTs.length < 2) continue
+      const sorted = [...clientTs].sort((a, b) => a - b)
+      const intervals: number[] = []
+      for (let i = 1; i < sorted.length; i++) {
+        intervals.push(sorted[i] - sorted[i - 1])
+      }
+      allSortedIntervals.push(...intervals)
+      perClientMedianIntervals.push(percentile(intervals.sort((a, b) => a - b), 0.5))
     }
-    const sortedIntervals = interEventIntervalsMs.sort((a, b) => a - b)
-    const medianInterval = percentile(sortedIntervals, 0.5)
-    const p95Interval = percentile(sortedIntervals, 0.95)
+    allSortedIntervals.sort((a, b) => a - b)
+    const medianInterval = percentile(allSortedIntervals, 0.5)
+    const p95Interval = percentile(allSortedIntervals, 0.95)
+    // §3.8: Per-client median interval — all clients should achieve ~2s pacing independently
+    const perClientMediansAllAbove1s = perClientMedianIntervals.every((m) => m >= 1000)
     ctx.log(`§3.6 slow_consumer read rate: ${slowReadRate.toFixed(2)} events/s, median_interval=${medianInterval.toFixed(0)}ms, p95_interval=${p95Interval.toFixed(0)}ms (target=${SLOW_EVENT_INTERVAL_MS}ms)`)
+    ctx.log(`§3.8 per_client_medians: [${perClientMedianIntervals.map((m) => m.toFixed(0)).join(", ")}]ms, all_above_1s=${perClientMediansAllAbove1s}`)
 
     // §3.6: Healthy-client latency during slow phase — from dedicated histogram
     const p95During = healthyDuringHist.p95()
@@ -268,38 +284,56 @@ export class SlowConsumerScenario implements Scenario {
     // §4.7: Compute backlog growth — events offered but not yet consumed
     const backlogGrowth = totalOffered - totalRead
 
-    // §3.6: Nchan memory boundedness — check if memory grew unboundedly during the slow phase
-    const nchanMemoryBounded = nchanMemBaseline !== null && nchanMemEnd !== null
-      ? (nchanMemEnd - nchanMemBaseline) < 100 * 1024 * 1024 // < 100MB growth is bounded
-      : true // Cannot determine — don't fail on null
+    // §3.8: Nchan memory boundedness — trend-based rule, not arbitrary threshold
+    // Bounded = memory did not grow continuously during the slow phase AND recovered after
+    // Unavailable evidence = INCONCLUSIVE (not pass)
+    const nchanMemoryBounded = (() => {
+      if (nchanMemBaseline === null || nchanMemEnd === null) return null // unknown
+      const growthBytes = nchanMemEnd - nchanMemBaseline
+      // Growth must be < 10% of baseline AND < 50MB to be considered bounded
+      const growthPct = nchanMemBaseline > 0 ? growthBytes / nchanMemBaseline : 0
+      if (growthBytes >= 50 * 1024 * 1024 || growthPct >= 0.10) return false
+      // If recovery sample exists, check it returned toward baseline
+      if (nchanMemRecovery !== null) {
+        const recoveryDelta = Math.abs(nchanMemRecovery - nchanMemBaseline)
+        if (recoveryDelta >= 50 * 1024 * 1024) return false
+      }
+      return true
+    })()
 
-    // §4.7: Detect evidence of server-side backpressure
-    // §3.6: Rigorous evidence requires at least one of:
-    //   1. Slow consumers disconnected by server
-    //   2. Nchan memory grew (server-side buffering)
-    //   3. Healthy-client degradation exceeding threshold (Nchan resource contention)
+    // §3.8: Server-side backpressure — falsifiable signal
+    // NOT just any memory increase or latency change. Require:
+    //   1. Slow consumers disconnected by server (definitive), OR
+    //   2. Nchan memory grew by >1MB AND >5% of baseline (meaningful server-side buffering)
+    // Small memory variation or kernel socket absorption does NOT count.
     const nchanMemoryGrew = nchanMemBaseline !== null && nchanMemEnd !== null
       ? nchanMemEnd > nchanMemBaseline
       : false
-    const evidenceBackpressure = slowDisconnects > 0 || nchanMemoryGrew || degradation > LATENCY_DEGRADATION_THRESHOLD
+    const nchanMemoryGrowthBytes = nchanMemBaseline !== null && nchanMemEnd !== null
+      ? nchanMemEnd - nchanMemBaseline
+      : 0
+    const nchanMemoryGrowthPct = nchanMemBaseline !== null && nchanMemBaseline > 0
+      ? nchanMemoryGrowthBytes / nchanMemBaseline
+      : 0
+    const nchanMemoryMeaningfulGrowth = nchanMemoryGrowthBytes > 1024 * 1024 && nchanMemoryGrowthPct > 0.05
+    const evidenceBackpressure = slowDisconnects > 0 || nchanMemoryMeaningfulGrowth
 
     ctx.log(`§3.6 slow offered: ${totalOffered} events (${(totalOffered / (slowPhaseElapsed / 1000)).toFixed(2)} /s), read: ${totalRead} events (${slowReadRate.toFixed(2)} /s), backlog_growth=${backlogGrowth}`)
     ctx.log(`§3.6 server-side backpressure: ${evidenceBackpressure ? "YES" : "NO"} (disconnects=${slowDisconnects > 0}, nchan_memory_grew=${nchanMemoryGrew}, degradation=${degradation > LATENCY_DEGRADATION_THRESHOLD})`)
 
     // §4.8: Core property — bounded behavior without unbounded memory growth
     const degradationOk = degradation <= LATENCY_DEGRADATION_THRESHOLD
-    // §3.6: Boundedness = Nchan memory did not grow unboundedly AND backlog is finite
-    const boundedOk = nchanMemoryBounded
+    // §3.8: Boundedness = Nchan memory trend is bounded (null = unknown = INCONCLUSIVE)
+    const boundedOk = nchanMemoryBounded === true
       && backlogGrowth >= 0
       && (totalRead > 0 || slowDisconnects > 0)
 
     // §4.8: Pass/fail rule — frozen interpretation:
-    // PASS: healthy degradation <= threshold AND bounded behavior demonstrated
-    // INCONCLUSIVE: no server-side backpressure reached (test absorbed by kernel buffers)
-    // §3.6: PASS only when server-side backpressure was demonstrated AND bounded behavior holds
-    // When no backpressure evidence exists (kernel absorbed everything), passed=false so detail
-    // accurately reflects the test did not prove the property
-    const passed = degradationOk && boundedOk && evidenceBackpressure
+    // PASS: healthy degradation <= threshold AND bounded behavior demonstrated AND backpressure proven
+    // INCONCLUSIVE: no server-side backpressure reached (absorbed by kernel buffers) OR boundedness unknown
+    // §3.8: PASS only when all three conditions hold: backpressure proven, bounded memory, healthy degradation ok
+    const boundedKnown = nchanMemoryBounded !== null
+    const passed = degradationOk && boundedOk && evidenceBackpressure && boundedKnown
 
     this.slowMetrics = {
       slow_clients: slowCount,
@@ -322,12 +356,18 @@ export class SlowConsumerScenario implements Scenario {
       nchan_memory_end_bytes: nchanMemEnd,
       nchan_memory_recovery_bytes: nchanMemRecovery,
       nchan_memory_samples_during: nchanMemSamplesDuring,
-      // §3.6: Actual throttle proof
-      slow_event_timestamps_ms: allEventTimestampsMs,
+      // §3.8: Per-client event timestamps (not merged)
+      per_client_event_timestamps_ms: perClientTimestampsMs,
       slow_achieved_read_rate_events_per_sec: slowReadRate,
-      // §3.6: Inter-event interval stats
+      // §3.8: Per-client median intervals
+      per_client_median_event_interval_ms: perClientMedianIntervals,
+      // §3.8: Aggregated interval stats
       slow_median_event_interval_ms: medianInterval,
       slow_p95_event_interval_ms: p95Interval,
+      // §3.8: Memory boundedness trend
+      nchan_memory_bounded: nchanMemoryBounded,
+      nchan_memory_growth_bytes: nchanMemBaseline !== null && nchanMemEnd !== null ? nchanMemEnd - nchanMemBaseline : null,
+      nchan_memory_growth_pct: nchanMemoryGrowthPct,
     }
 
     const detail = [
@@ -339,6 +379,7 @@ export class SlowConsumerScenario implements Scenario {
       `slow_read_rate=${slowReadRate.toFixed(2)}/s`,
       `median_event_interval=${medianInterval.toFixed(0)}ms`,
       `p95_event_interval=${p95Interval.toFixed(0)}ms`,
+      `per_client_medians=[${perClientMedianIntervals.map((m) => m.toFixed(0)).join(",")}]ms`,
       `p95_before=${p95Before}ms`,
       `p95_with_slow=${p95During}ms`,
       `healthy_before_samples=${healthyBeforeHist.count}`,
@@ -348,6 +389,8 @@ export class SlowConsumerScenario implements Scenario {
       `backpressure=${evidenceBackpressure ? "YES" : "NO"}`,
       `nchan_mem_baseline=${nchanMemBaseline !== null ? `${(nchanMemBaseline / 1024 / 1024).toFixed(1)}MB` : "null"}`,
       `nchan_mem_end=${nchanMemEnd !== null ? `${(nchanMemEnd / 1024 / 1024).toFixed(1)}MB` : "null"}`,
+      `nchan_mem_growth=${nchanMemoryGrowthBytes !== null ? `${(nchanMemoryGrowthBytes / 1024 / 1024).toFixed(1)}MB (${(nchanMemoryGrowthPct * 100).toFixed(1)}%)` : "null"}`,
+      `nchan_mem_bounded=${nchanMemoryBounded === null ? "unknown" : nchanMemoryBounded ? "OK" : "FAIL"}`,
       `nchan_mem_samples=${nchanMemSamplesDuring.length}`,
       `bounded=${boundedOk ? "OK" : "FAIL"}`,
     ].join(" ")

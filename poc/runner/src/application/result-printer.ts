@@ -298,6 +298,12 @@ export function emitMachineReadableResult(
         healthy_p95_before_ms: metrics.slow_consumer_metrics.healthy_p95_before_ms,
         healthy_p95_during_slow_ms: metrics.slow_consumer_metrics.healthy_p95_during_slow_ms,
         healthy_degradation_pct: metrics.slow_consumer_metrics.healthy_degradation_pct,
+        // §3.8: Per-client median intervals — each client should achieve ~2s pacing independently
+        per_client_median_event_interval_ms: metrics.slow_consumer_metrics.per_client_median_event_interval_ms,
+        // §3.8: Memory boundedness trend
+        nchan_memory_bounded: metrics.slow_consumer_metrics.nchan_memory_bounded,
+        nchan_memory_growth_bytes: metrics.slow_consumer_metrics.nchan_memory_growth_bytes,
+        nchan_memory_growth_pct: metrics.slow_consumer_metrics.nchan_memory_growth_pct,
       } : {}),
     },
     restart_metrics: {

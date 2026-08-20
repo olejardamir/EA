@@ -321,10 +321,14 @@ describe("classifyResult", () => {
         nchan_memory_end_bytes: null,
         nchan_memory_recovery_bytes: null,
         nchan_memory_samples_during: [],
-        slow_event_timestamps_ms: [],
+        per_client_event_timestamps_ms: [],
         slow_achieved_read_rate_events_per_sec: 0,
+        per_client_median_event_interval_ms: [],
         slow_median_event_interval_ms: 0,
         slow_p95_event_interval_ms: 0,
+        nchan_memory_bounded: true,
+        nchan_memory_growth_bytes: null,
+        nchan_memory_growth_pct: null,
       },
     }), true, true)
     assert.equal(result.verdict, "INCONCLUSIVE")
