@@ -38,6 +38,19 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementSseParseErrors() {},
     incrementJsonParseErrors() {},
     incrementInvalidTimestampCount() {},
+    incrementLiveExpectedDeliveries() {},
+    incrementLiveReceivedDeliveries() {},
+    incrementLateJoinHistoryExpected() {},
+    incrementLateJoinHistoryReceived() {},
+    incrementReconnectReplayExpected() {},
+    incrementReconnectReplayReceived() {},
+    incrementRestartReplayExpected() {},
+    incrementRestartReplayReceived() {},
+    incrementDeliberateDisconnects() {},
+    incrementUnexpectedClientDisconnects() {},
+    incrementServerInitiatedDisconnects() {},
+    incrementNetworkFailures() {},
+    incrementShutdownCleanup() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -51,6 +64,12 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
         generator_backlog_peak: 0,
         sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+        live_expected_deliveries: 0, live_received_deliveries: 0,
+        late_join_history_expected: 0, late_join_history_received: 0,
+        reconnect_replay_expected: 0, reconnect_replay_received: 0,
+        restart_replay_expected: 0, restart_replay_received: 0,
+        deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+        server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
       }
     },
   }

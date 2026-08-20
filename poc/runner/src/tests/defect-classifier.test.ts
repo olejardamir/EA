@@ -35,8 +35,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     nchan_restart_history_replay_correct: true,
     nchan_restart_missing_sequences: 0,
     non_slow_p95_degradation_pct: 1,
-    nchan_memory_mb_peak: null,
-    redis_memory_mb_peak: null,
+    nchan_memory_mb_peak: 100,
+    redis_memory_mb_peak: 50,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -67,6 +67,20 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     surge_out_of_order: 0,
     surge_events_received: 0,
     active_connections_peak: 0,
+    live_expected_deliveries: 0,
+    live_received_deliveries: 0,
+    late_join_history_expected: 0,
+    late_join_history_received: 0,
+    reconnect_replay_expected: 0,
+    reconnect_replay_received: 0,
+    restart_replay_expected: 0,
+    restart_replay_received: 0,
+    slow_consumer_metrics: null,
+    deliberate_disconnects: 0,
+    unexpected_client_disconnects: 0,
+    server_initiated_disconnects: 0,
+    network_failures: 0,
+    shutdown_cleanup_disconnects: 0,
     ...overrides,
   }
 }
@@ -106,22 +120,22 @@ describe("Classifier defect fixes", () => {
     assert.equal(result.verdict, "INCONCLUSIVE")
   })
 
-  it("accepts without hidden 10k default for connections_target", () => {
+  it("accepts when active connections meet target", () => {
     const result = classifyResult(baseMetrics({
-      connections_established: 100,
+      active_connections_peak: 100,
       connections_target: 100,
     }), true, true)
-    const connCheck = result.checks.find((c) => c.name === "connections_target")
+    const connCheck = result.checks.find((c) => c.name === "active_concurrency_target")
     assert.ok(connCheck!.passed)
   })
 
-  it("rejects when connections below custom target", () => {
+  it("rejects when active connections below target", () => {
     const result = classifyResult(baseMetrics({
-      connections_established: 50,
+      active_connections_peak: 50,
       connections_target: 100,
     }), true, true)
     assert.equal(result.verdict, "REJECT")
-    assert.ok(result.checks.find((c) => c.name === "connections_target")!.passed === false)
+    assert.ok(result.checks.find((c) => c.name === "active_concurrency_target")!.passed === false)
   })
 
   it("nchan_history_replay always checked for evidence profile", () => {

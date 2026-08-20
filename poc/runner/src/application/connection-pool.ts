@@ -188,8 +188,13 @@ export class ConnectionPool {
         if (evt.type === "message") {
           this.handleMessage(entry, evt.event.data)
         } else if (evt.type === "error") {
-          // §Z: Server-initiated or unexpected disconnect — count as unexpected drop
-          this.metrics.incrementConnectionsDropped()
+          // §4.17: Disconnect attribution — classify error by cause
+          const msg = evt.error?.message ?? ""
+          if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
+            this.metrics.incrementNetworkFailures()
+          } else {
+            this.metrics.incrementServerInitiatedDisconnects()
+          }
         }
       })
 
@@ -209,7 +214,8 @@ export class ConnectionPool {
       try {
         conn.subscription.close()
       } catch {}
-      // §Z: Deliberate teardown — do NOT count as unexpected drop
+      // §4.17: Deliberate teardown — track as deliberate disconnect
+      this.metrics.incrementDeliberateDisconnects()
       const count = this.subscribersByChannel.get(conn.matchId) ?? 0
       this.subscribersByChannel.set(conn.matchId, Math.max(0, count - 1))
     }

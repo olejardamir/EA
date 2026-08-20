@@ -4,7 +4,7 @@ import { weightedRandom, MATCH_WEIGHTS } from "../domain/event.js"
 import { createPRNG } from "../domain/prng.js"
 
 describe("Hot-match burst weights", () => {
-  it("burst weights produce ~80% match-001 distribution over 1000 iterations", () => {
+  it("burst weights produce ~80% match-001 distribution of match events over 1000 iterations", () => {
     const burstWeights = MATCH_WEIGHTS.map((w, i) => (i === 0 ? w * 4 : w * 0.5))
     const total = burstWeights.reduce((a, b) => a + b, 0)
     const expectedShare = burstWeights[0] / total

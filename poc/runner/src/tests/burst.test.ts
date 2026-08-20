@@ -28,6 +28,19 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
         setActiveConnections() {}, incrementLatencyInvalid() {}, incrementLatencyOverflow() {},
         setBacklog() {}, incrementSseParseErrors() {}, incrementJsonParseErrors() {},
         incrementInvalidTimestampCount() {},
+        incrementLiveExpectedDeliveries() {},
+        incrementLiveReceivedDeliveries() {},
+        incrementLateJoinHistoryExpected() {},
+        incrementLateJoinHistoryReceived() {},
+        incrementReconnectReplayExpected() {},
+        incrementReconnectReplayReceived() {},
+        incrementRestartReplayExpected() {},
+        incrementRestartReplayReceived() {},
+        incrementDeliberateDisconnects() {},
+        incrementUnexpectedClientDisconnects() {},
+        incrementServerInitiatedDisconnects() {},
+        incrementNetworkFailures() {},
+        incrementShutdownCleanup() {},
         snapshot(): MetricsSnapshot {
           snapshotCount++
           // First snapshot (pre-burst) returns 5 latencies, second (post-burst) returns 15
@@ -43,7 +56,13 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
             slow_consumer_disconnects: 0, connections_attempted: 0, connections_established: 0,
             connection_failures: 0, connections_dropped: 0, active_connections_peak: 0,
             latency_sample_count: fanOutLatencies.length, latency_invalid_count: 0, latency_overflow_count: 0,
-            generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+            generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0,             invalid_timestamp_count: 0,
+            live_expected_deliveries: 0, live_received_deliveries: 0,
+            late_join_history_expected: 0, late_join_history_received: 0,
+            reconnect_replay_expected: 0, reconnect_replay_received: 0,
+            restart_replay_expected: 0, restart_replay_received: 0,
+            deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+            server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           }
         },
       }
@@ -122,8 +141,21 @@ describe("BurstScenario", () => {
       incrementConnectionFailures() {}, incrementConnectionsDropped() {},
       setActiveConnections() {}, incrementLatencyInvalid() {}, incrementLatencyOverflow() {},
       setBacklog() {}, incrementSseParseErrors() {}, incrementJsonParseErrors() {},
-      incrementInvalidTimestampCount() {},
-      snapshot(): MetricsSnapshot {
+        incrementInvalidTimestampCount() {},
+        incrementLiveExpectedDeliveries() {},
+        incrementLiveReceivedDeliveries() {},
+        incrementLateJoinHistoryExpected() {},
+        incrementLateJoinHistoryReceived() {},
+        incrementReconnectReplayExpected() {},
+        incrementReconnectReplayReceived() {},
+        incrementRestartReplayExpected() {},
+        incrementRestartReplayReceived() {},
+        incrementDeliberateDisconnects() {},
+        incrementUnexpectedClientDisconnects() {},
+        incrementServerInitiatedDisconnects() {},
+        incrementNetworkFailures() {},
+        incrementShutdownCleanup() {},
+        snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
           events_received: 0, expected_fan_deliveries: 0, received_fan_deliveries: 0,
@@ -132,7 +164,13 @@ describe("BurstScenario", () => {
           slow_consumer_disconnects: 0, connections_attempted: 0, connections_established: 0,
           connection_failures: 0, connections_dropped: 0, active_connections_peak: 0,
           latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
-          generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0,           invalid_timestamp_count: 0,
+          live_expected_deliveries: 0, live_received_deliveries: 0,
+          late_join_history_expected: 0, late_join_history_received: 0,
+          reconnect_replay_expected: 0, reconnect_replay_received: 0,
+          restart_replay_expected: 0, restart_replay_received: 0,
+          deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+          server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         }
       },
     } as any

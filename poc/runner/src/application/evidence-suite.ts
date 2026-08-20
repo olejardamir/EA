@@ -68,6 +68,45 @@ function deriveSeed(baseSeed: number, runIndex: number): number {
   return baseSeed + runIndex
 }
 
+// §4.13: Run isolation — flush Redis between runs to prevent cross-run contamination
+async function flushRedis(redisUrl: string, logger: (msg: string) => void): Promise<void> {
+  try {
+    const url = new URL(redisUrl)
+    const host = url.hostname || "127.0.0.1"
+    const port = parseInt(url.port || "6379", 10)
+
+    // Use Redis FLUSHALL command via TCP
+    const net = await import("node:net")
+    const client = net.createConnection({ host, port }, () => {
+      client.write("*1\r\n$8\r\nFLUSHALL\r\n")
+    })
+
+    const result = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        client.destroy()
+        reject(new Error("Redis flush timeout"))
+      }, 5000)
+
+      let data = ""
+      client.on("data", (chunk) => {
+        data += chunk.toString()
+        clearTimeout(timeout)
+        client.destroy()
+        resolve(data)
+      })
+
+      client.on("error", (err) => {
+        clearTimeout(timeout)
+        reject(err)
+      })
+    })
+
+    logger(`§4.13 Redis FLUSHALL result: ${result.trim()}`)
+  } catch (err) {
+    logger(`§4.13 Redis FLUSHALL failed: ${err} (continuing with stale data risk)`)
+  }
+}
+
 // ─── Per-run experiment execution ─────────────────────────────────────
 
 function log(msg: string): void {
@@ -405,6 +444,12 @@ export async function runEvidenceSuite(
   log(`§6.37 Evidence-suite orchestrator starting (min=${MIN_RUNS}, max=${maxRuns})`)
 
   for (let i = 0; i < maxRuns; i++) {
+    // §4.13: Run isolation — flush Redis before each run (except the first)
+    if (i > 0) {
+      log(`§4.13 Flushing Redis for run isolation...`)
+      await flushRedis(config.redisUrl, log)
+    }
+
     const seed = deriveSeed(config.seed, i)
     log(`─── Run ${i + 1}/${maxRuns} (seed=${seed}) ───`)
 

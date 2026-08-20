@@ -7,17 +7,39 @@ import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import { SlowConsumerScenario } from "../scenarios/slow-consumer.js"
 
 function makeEntry(id: number) {
+  // §4.7: Mock subscription that simulates event delivery — calls handler with events
+  let handler: ((event: SubscriptionEvent) => void) | null = null
+  let eventTimer: ReturnType<typeof setTimeout> | null = null
+  let seq = 0
+  const mockSub: any = {
+    connected: true,
+    lastEventId: `evt-${id}`,
+    onEvent(h: (event: SubscriptionEvent) => void) {
+      handler = h
+      // Expose handler so the scenario can capture it for ThrottledSubscription
+      mockSub._lastHandler = h
+      // Simulate event delivery: emit 10 events at 10ms intervals
+      let count = 0
+      const emit = () => {
+        if (count >= 10 || !handler) return
+        seq++
+        handler({ type: "message" as const, event: { id: `evt-${id}-${seq}`, event: "message", data: JSON.stringify({ seq, ts: Date.now() }) } })
+        count++
+        eventTimer = setTimeout(emit, 10)
+      }
+      emit()
+    },
+    pause() { /* pretend to pause */ },
+    resume() {},
+    close() {
+      if (eventTimer) clearTimeout(eventTimer)
+      handler = null
+    },
+  }
   return {
     id,
     matchId: "match-001",
-    subscription: {
-      connected: true,
-      lastEventId: `evt-${id}`,
-      onEvent(_h: (event: SubscriptionEvent) => void) {},
-      pause() {},
-      resume() {},
-      close() {},
-    },
+    subscription: mockSub,
     tracker: { lastSeq: id * 100, classify() { return { kind: "NEXT" } }, reset() {} },
     mode: "steady",
   }
@@ -43,6 +65,19 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
       setActiveConnections() {}, incrementLatencyInvalid() {}, incrementLatencyOverflow() {},
       setBacklog() {}, incrementSseParseErrors() {}, incrementJsonParseErrors() {},
       incrementInvalidTimestampCount() {},
+      incrementLiveExpectedDeliveries() {},
+      incrementLiveReceivedDeliveries() {},
+      incrementLateJoinHistoryExpected() {},
+      incrementLateJoinHistoryReceived() {},
+      incrementReconnectReplayExpected() {},
+      incrementReconnectReplayReceived() {},
+      incrementRestartReplayExpected() {},
+      incrementRestartReplayReceived() {},
+      incrementDeliberateDisconnects() {},
+      incrementUnexpectedClientDisconnects() {},
+      incrementServerInitiatedDisconnects() {},
+      incrementNetworkFailures() {},
+      incrementShutdownCleanup() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -53,6 +88,12 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
           connection_failures: 0, connections_dropped: 0, active_connections_peak: 0,
           latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
           generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          live_expected_deliveries: 0, live_received_deliveries: 0,
+          late_join_history_expected: 0, late_join_history_received: 0,
+          reconnect_replay_expected: 0, reconnect_replay_received: 0,
+          restart_replay_expected: 0, restart_replay_received: 0,
+          deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+          server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         }
       },
     },

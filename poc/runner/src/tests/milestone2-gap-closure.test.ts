@@ -47,6 +47,19 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementSseParseErrors: () => inc("sse_parse_errors"),
     incrementJsonParseErrors: () => inc("json_parse_errors"),
     incrementInvalidTimestampCount: () => inc("invalid_timestamp_count"),
+    incrementLiveExpectedDeliveries() {},
+    incrementLiveReceivedDeliveries() {},
+    incrementLateJoinHistoryExpected() {},
+    incrementLateJoinHistoryReceived() {},
+    incrementReconnectReplayExpected() {},
+    incrementReconnectReplayReceived() {},
+    incrementRestartReplayExpected() {},
+    incrementRestartReplayReceived() {},
+    incrementDeliberateDisconnects() {},
+    incrementUnexpectedClientDisconnects() {},
+    incrementServerInitiatedDisconnects() {},
+    incrementNetworkFailures() {},
+    incrementShutdownCleanup() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -57,9 +70,15 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         reconnect_order_violations: 0, slow_consumer_disconnects: 0,
         connections_attempted: 0, connections_established: 0,
         connection_failures: 0, connections_dropped: 0,
-        active_connections_peak: 0,
+    active_connections_peak: 10000,
         generator_backlog_peak: 0,
         sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+        live_expected_deliveries: 0, live_received_deliveries: 0,
+        late_join_history_expected: 0, late_join_history_received: 0,
+        reconnect_replay_expected: 0, reconnect_replay_received: 0,
+        restart_replay_expected: 0, restart_replay_received: 0,
+        deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+        server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
       }
     },
   }
@@ -126,8 +145,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     nchan_restart_history_replay_correct: true,
     nchan_restart_missing_sequences: 0,
     non_slow_p95_degradation_pct: 1,
-    nchan_memory_mb_peak: null,
-    redis_memory_mb_peak: null,
+    nchan_memory_mb_peak: 200,
+    redis_memory_mb_peak: 100,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -157,7 +176,16 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     surge_duplicates: 0,
     surge_out_of_order: 0,
     surge_events_received: 0,
-    active_connections_peak: 0,
+    active_connections_peak: 10000,
+    live_expected_deliveries: 0,
+    live_received_deliveries: 0,
+    late_join_history_expected: 0,
+    late_join_history_received: 0,
+    reconnect_replay_expected: 0,
+    reconnect_replay_received: 0,
+    restart_replay_expected: 0,
+    restart_replay_received: 0,
+    slow_consumer_metrics: null,
     ...overrides,
   }
 }
@@ -757,7 +785,7 @@ describe("§M: Classifier exhaustive decision table", () => {
 
   it("connections below target is REJECT", () => {
     const result = classifyResult(baseMetrics({
-      connections_established: 9999,
+      active_connections_peak: 9999,
       connections_target: 10000,
     }), true, true)
     assert.equal(result.verdict, "REJECT")

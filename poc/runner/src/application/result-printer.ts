@@ -58,8 +58,21 @@ export function printSummary(
   console.log(`  Order violations:  ${metrics.reconnect_order_violations}`)
   console.log("")
 
-  console.log("SLOW CLIENT")
-  console.log(`  Disconnects:       ${metrics.slow_consumer_disconnects}`)
+  console.log("SLOW CLIENT (§4.7)")
+  const sc = metrics.slow_consumer_metrics
+  if (sc) {
+    console.log(`  Slow clients:      ${sc.slow_clients}/${sc.slow_clients + sc.healthy_clients}`)
+    console.log(`  Slow offered:      ${sc.slow_offered_event_count} events`)
+    console.log(`  Slow consumed:     ${sc.slow_application_read_count} events`)
+    console.log(`  Backlog growth:    ${sc.slow_backlog_growth} events`)
+    console.log(`  Backpressure:      ${sc.evidence_server_side_backpressure_reached ? "YES" : "NO"}`)
+    console.log(`  Healthy p95 before:${sc.healthy_p95_before_ms}ms`)
+    console.log(`  Healthy p95 during:${sc.healthy_p95_during_slow_ms}ms`)
+    console.log(`  Healthy degrade:   ${sc.healthy_degradation_pct.toFixed(1)}%`)
+    console.log(`  Disconnects:       ${sc.slow_disconnects}`)
+  } else {
+    console.log(`  Disconnects:       ${metrics.slow_consumer_disconnects} (legacy)`)
+  }
   console.log("")
 
   console.log("LOBBY")
@@ -187,6 +200,19 @@ export function emitMachineReadableResult(
     slow_client_metrics: {
       disconnects: metrics.slow_consumer_disconnects,
       non_slow_p95_degradation_pct: metrics.non_slow_p95_degradation_pct,
+      // §4.7: Detailed slow-consumer metrics from scenario
+      ...(metrics.slow_consumer_metrics ? {
+        slow_clients: metrics.slow_consumer_metrics.slow_clients,
+        healthy_clients: metrics.slow_consumer_metrics.healthy_clients,
+        slow_offered_event_count: metrics.slow_consumer_metrics.slow_offered_event_count,
+        slow_application_read_count: metrics.slow_consumer_metrics.slow_application_read_count,
+        slow_backlog_growth: metrics.slow_consumer_metrics.slow_backlog_growth,
+        backpressure_duration_ms: metrics.slow_consumer_metrics.backpressure_duration_ms,
+        evidence_server_side_backpressure_reached: metrics.slow_consumer_metrics.evidence_server_side_backpressure_reached,
+        healthy_p95_before_ms: metrics.slow_consumer_metrics.healthy_p95_before_ms,
+        healthy_p95_during_slow_ms: metrics.slow_consumer_metrics.healthy_p95_during_slow_ms,
+        healthy_degradation_pct: metrics.slow_consumer_metrics.healthy_degradation_pct,
+      } : {}),
     },
     restart_metrics: {
       history_replay_correct: metrics.nchan_restart_history_replay_correct,
@@ -236,6 +262,17 @@ export function emitMachineReadableResult(
     validity: {
       timing_valid: metrics.timing_valid,
       generator_healthy: metrics.generator_cpu_percent_peak < 90 && metrics.generator_event_loop_p99_ms < 100,
+      // §4.18: Structured validity reasons from failed inconclusive checks
+      reasons: verdictResult.checks
+        .filter((c) => c.name.startsWith("inconclusive_override") && !c.passed)
+        .map((c) => c.detail),
+    },
+    // §4.18: Frozen viewer model
+    viewer_model: {
+      viewer_count: config.targetConnections,
+      sse_connection_count: config.targetConnections,
+      connections_per_viewer: 1,
+      note: "1 SSE connection per viewer (anonymous read-only)",
     },
     classification: {
       verdict: verdictResult.verdict,

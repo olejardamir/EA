@@ -87,6 +87,38 @@ export interface AggregatedMetrics {
   surge_events_received: number
   // §R: active connections peak — separate from cumulative establishments
   active_connections_peak: number
+  // §4.16: Live vs replay delivery accounting
+  live_expected_deliveries: number
+  live_received_deliveries: number
+  late_join_history_expected: number
+  late_join_history_received: number
+  reconnect_replay_expected: number
+  reconnect_replay_received: number
+  restart_replay_expected: number
+  restart_replay_received: number
+  // §4.7: Slow-consumer metrics — populated by SlowConsumerScenario
+  slow_consumer_metrics: SlowConsumerMetrics | null
+  // §4.17: Disconnect attribution
+  deliberate_disconnects: number
+  unexpected_client_disconnects: number
+  server_initiated_disconnects: number
+  network_failures: number
+  shutdown_cleanup_disconnects: number
+}
+
+// §4.7: Slow-consumer result metrics — computed in the scenario, consumed by classifier
+export interface SlowConsumerMetrics {
+  slow_clients: number
+  healthy_clients: number
+  slow_offered_event_count: number
+  slow_application_read_count: number
+  slow_backlog_growth: number
+  backpressure_duration_ms: number
+  evidence_server_side_backpressure_reached: boolean
+  healthy_p95_before_ms: number
+  healthy_p95_during_slow_ms: number
+  healthy_degradation_pct: number
+  slow_disconnects: number
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

@@ -139,7 +139,7 @@ docker compose
     deploy.resources.limits: cpus=8, memory=8G
 ```
 
-Total container resource envelope: **14 CPUs, 14 GB RAM**. The host must have at least this much available.
+Primary container resource envelope (nchan + redis + runner): **14 CPUs, 14 GB RAM**. The evidence topology also includes nchan-2 (4 CPUs, 4 GB RAM) for cross-node restart testing — see §O for the full auxiliary topology breakdown. The host must have at least 18 CPUs and 18 GB RAM available for the complete evidence topology.
 
 The `runner` container spawns load-generator workers as child processes, each opening a portion of SSE connections. This avoids multi-container inter-communication overhead and simplifies metric collection.
 
@@ -412,9 +412,10 @@ Each match maintains its own monotonic `canonical_seq` starting from 1.
 During the hot-match test phase:
 
 ```text
-80% of ALL events are directed to match-001
-remaining 20% distributed across match-002 through match-008
-total rate: ~50 events/s burst
+80% of match events are directed to match-001
+remaining 20% of match events distributed across match-002 through match-008
+total match event rate: ~50 events/s burst
+lobby events continue at ~1/s independently
 ```
 
 This means match-001 receives ~40 events/s while the system has all 100,000 viewers (or the local maximum) connected.
@@ -945,19 +946,17 @@ Late-join history catch-up:
   p95 <= 2.0 seconds (connection open to caught-up)
 
 Connections:
-  >= 10,000 concurrent SSE connections sustained without Nchan failure
-  OR
-  machine maximum reached with per-resource extrapolation demonstrating
-  that Nchan is not the bottleneck (document the maximum achieved)
+  active_connections_peak >= 100,000 concurrent SSE connections sustained without Nchan failure
+  for a direct measured ACCEPT at the 100k target
 
-  §L clarity: This criterion validates Nchan architecture at whatever scale
-  the hardware supports. A run that reaches the machine maximum and
-  demonstrates Nchan is not the bottleneck passes this ACCEPT criterion.
-  The overall 100k-scale verdict is separate: if the machine cannot
-  physically reach 100,000 connections, the run verdict is INCONCLUSIVE
-  AT 100K SCALE (Section 30), not a gateway failure. Per-resource
-  extrapolation may be reported as a production inference but must not
+  If the host/generator/network ceiling prevents reaching 100,000 before the DUT is
+  falsified, the run verdict is INCONCLUSIVE AT 100K SCALE (Section 30).
+  Per-resource extrapolation may be reported as a production inference but must not
   silently convert an untested 100k target into measured ACCEPT.
+
+  §L clarity: This criterion uses simultaneous active concurrency (active_connections_peak),
+  not cumulative establishment (connections_established). Reconnect attempts must never
+  cause a cumulative counter to satisfy the concurrency criterion.
 
 Event correctness:
   missing_canonical_sequences == 0 (across all clients, all runs)

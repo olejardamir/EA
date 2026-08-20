@@ -259,9 +259,9 @@ async function main(): Promise<void> {
     const totalSubscribers = MATCH_IDS.reduce((sum, id) => sum + pool.getSubscriberCount(id), 0) + pool.getSubscriberCount("lobby")
     log(`§V viewer-concentration: match-001=${aggregated.match_001_subscribers}, lobby=${aggregated.lobby_subscribers}, total=${totalSubscribers}`)
 
-    // Parse slow consumer degradation from result detail
-    const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
-    aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
+    // §4.7: Wire slow-consumer metrics from scenario
+    aggregated.slow_consumer_metrics = slowConsumer.slowMetrics
+    aggregated.non_slow_p95_degradation_pct = slowConsumer.slowMetrics?.healthy_degradation_pct ?? 0
 
     // Parse nchan restart result
     aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")

@@ -6,13 +6,16 @@ import type { MetricsSnapshot } from "../ports/metrics.js"
 import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import { LateJoinScenario } from "../scenarios/late-join.js"
 
-function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream; config: Partial<ScenarioContext["config"]> }> = {}): ScenarioContext {
+function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream; config: Partial<ScenarioContext["config"]>; publisher: any }> = {}): ScenarioContext {
   let time = 1000
   let head = 0
   return {
-    publisher: {
+    publisher: overrides.publisher ?? {
       start() {}, stop() {},
       snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+      publisher: {
+        async publish() { return true },
+      },
     } as unknown as MatchEventPublisher,
     eventStream: overrides.eventStream ?? { async connect() { return {} as Subscription } },
     metrics: {
@@ -26,6 +29,19 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       setActiveConnections() {}, incrementLatencyInvalid() {}, incrementLatencyOverflow() {},
       setBacklog() {}, incrementSseParseErrors() {}, incrementJsonParseErrors() {},
       incrementInvalidTimestampCount() {},
+      incrementLiveExpectedDeliveries() {},
+      incrementLiveReceivedDeliveries() {},
+      incrementLateJoinHistoryExpected() {},
+      incrementLateJoinHistoryReceived() {},
+      incrementReconnectReplayExpected() {},
+      incrementReconnectReplayReceived() {},
+      incrementRestartReplayExpected() {},
+      incrementRestartReplayReceived() {},
+      incrementDeliberateDisconnects() {},
+      incrementUnexpectedClientDisconnects() {},
+      incrementServerInitiatedDisconnects() {},
+      incrementNetworkFailures() {},
+      incrementShutdownCleanup() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -36,6 +52,12 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
           connection_failures: 0, connections_dropped: 0, active_connections_peak: 0,
           latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
           generator_backlog_peak: 0, sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          live_expected_deliveries: 0, live_received_deliveries: 0,
+          late_join_history_expected: 0, late_join_history_received: 0,
+          reconnect_replay_expected: 0, reconnect_replay_received: 0,
+          restart_replay_expected: 0, restart_replay_received: 0,
+          deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+          server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         }
       },
     },
@@ -70,20 +92,91 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
   } as any
 }
 
+function createHistorySubscription(handlerRef: { current: ((evt: SubscriptionEvent) => void) | null }): Subscription {
+  return {
+    connected: true,
+    lastEventId: null,
+    onEvent(h: any) { handlerRef.current = h },
+    pause() {},
+    resume() {},
+    close() {},
+  } as any
+}
+
 describe("LateJoinScenario", () => {
-  it("skips when no prefill events arrive", async () => {
+  it("publishes deterministic prefill events and validates history replay", async () => {
+    let publishCount = 0
+    const handlerRef: { current: ((evt: SubscriptionEvent) => void) | null } = { current: null }
+    let capturedUrl = ""
     const ctx = mockCtx({
-      headTracker: { getHead() { return 0 }, updateHead() {} },
+      headTracker: {
+        getHead() { return publishCount },
+        updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+      },
+      publisher: {
+        start() {}, stop() {},
+        snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+        publisher: {
+          async publish() { publishCount++; return true },
+        },
+      } as any,
+      eventStream: {
+        async connect(url: string) {
+          capturedUrl = url
+          return createHistorySubscription(handlerRef)
+        },
+      },
     })
+
     const lateJoin = new LateJoinScenario({} as any)
-    const result = await lateJoin.execute(ctx)
-    assert.ok(result.passed)
-    assert.ok(result.detail.includes("skipped"))
+    const execPromise = lateJoin.execute(ctx)
+
+    // Wait for prefill to complete and history subscription to be created
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Fire events up to the prefill target head (500)
+    const targetHead = 500
+    if (handlerRef.current) {
+      for (let seq = 1; seq <= targetHead; seq++) {
+        handlerRef.current({
+          type: "message",
+          event: {
+            id: String(seq),
+            event: "message",
+            data: JSON.stringify({
+              match_id: "match-001",
+              canonical_seq: seq,
+              event_type: "goal",
+              score: { home: 1, away: 0 },
+              clock: { period: 1, elapsed: 30 },
+              publish_timestamp: new Date().toISOString(),
+            }),
+          },
+        })
+      }
+    }
+
+    const result = await execPromise
+    assert.ok(result.passed, `Expected passed=true, got detail: ${result.detail}`)
+    assert.ok(result.detail.includes("prefill_events=500"), `Expected prefill_events=500 in: ${result.detail}`)
+    assert.ok(result.detail.includes("history_expected="), `Expected history_expected in: ${result.detail}`)
+    assert.ok(capturedUrl.includes("/history/"), `Expected /history/ in URL: ${capturedUrl}`)
   })
 
-  it("times out when history endpoint is unreachable", async () => {
+  it("returns connection failed when history endpoint throws", async () => {
+    let publishCount = 0
     const ctx = mockCtx({
-      headTracker: { getHead() { return 1100 }, updateHead() {} },
+      headTracker: {
+        getHead() { return publishCount },
+        updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+      },
+      publisher: {
+        start() {}, stop() {},
+        snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+        publisher: {
+          async publish() { publishCount++; return true },
+        },
+      } as any,
       eventStream: {
         async connect() { throw new Error("connection refused") },
       },
@@ -91,6 +184,61 @@ describe("LateJoinScenario", () => {
     const lateJoin = new LateJoinScenario({} as any)
     const result = await lateJoin.execute(ctx)
     assert.ok(!result.passed)
-    assert.ok(result.detail.includes("connection failed"))
+    assert.ok(result.detail.includes("connection failed"), `Expected 'connection failed' in: ${result.detail}`)
+  })
+
+  it("detects missing sequences in history replay", async () => {
+    let publishCount = 0
+    const handlerRef: { current: ((evt: SubscriptionEvent) => void) | null } = { current: null }
+    const ctx = mockCtx({
+      headTracker: {
+        getHead() { return publishCount },
+        updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+      },
+      publisher: {
+        start() {}, stop() {},
+        snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+        publisher: {
+          async publish() { publishCount++; return true },
+        },
+      } as any,
+      eventStream: {
+        async connect() {
+          return createHistorySubscription(handlerRef)
+        },
+      },
+    })
+
+    const lateJoin = new LateJoinScenario({} as any)
+    const execPromise = lateJoin.execute(ctx)
+
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Fire events with a gap (missing seq 5)
+    if (handlerRef.current) {
+      for (let seq = 1; seq <= 500; seq++) {
+        if (seq === 5) continue // skip to create gap
+        handlerRef.current({
+          type: "message",
+          event: {
+            id: String(seq),
+            event: "message",
+            data: JSON.stringify({
+              match_id: "match-001",
+              canonical_seq: seq,
+              event_type: "goal",
+              score: { home: 0, away: 0 },
+              clock: { period: 1, elapsed: 0 },
+              publish_timestamp: new Date().toISOString(),
+            }),
+          },
+        })
+      }
+    }
+
+    const result = await execPromise
+    // Should detect missing sequence 5
+    assert.ok(result.detail.includes("missing_history_sequences=1"),
+      `Expected missing_history_sequences=1 in: ${result.detail}`)
   })
 })

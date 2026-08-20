@@ -35,8 +35,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     nchan_restart_history_replay_correct: true,
     nchan_restart_missing_sequences: 0,
     non_slow_p95_degradation_pct: 1,
-    nchan_memory_mb_peak: null,
-    redis_memory_mb_peak: null,
+    nchan_memory_mb_peak: 200,
+    redis_memory_mb_peak: 100,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -66,7 +66,21 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     surge_duplicates: 0,
     surge_out_of_order: 0,
     surge_events_received: 0,
-    active_connections_peak: 0,
+    active_connections_peak: 10000,
+    live_expected_deliveries: 0,
+    live_received_deliveries: 0,
+    late_join_history_expected: 0,
+    late_join_history_received: 0,
+    reconnect_replay_expected: 0,
+    reconnect_replay_received: 0,
+    restart_replay_expected: 0,
+    restart_replay_received: 0,
+    slow_consumer_metrics: null,
+    deliberate_disconnects: 0,
+    unexpected_client_disconnects: 0,
+    server_initiated_disconnects: 0,
+    network_failures: 0,
+    shutdown_cleanup_disconnects: 0,
     ...overrides,
   }
 }
@@ -110,7 +124,7 @@ describe("classifyResult", () => {
     assert.equal(result.verdict, "INCONCLUSIVE")
   })
 
-  it("returns INCONCLUSIVE when late join exceeds threshold", () => {
+  it("returns REJECT when late join exceeds threshold", () => {
     const result = classifyResult(baseMetrics({ late_join_p95_ms: 3000 }), true, true)
     assert.equal(result.verdict, "REJECT")
     const ljCheck = result.checks.find((c) => c.name === "late_join_p95")
@@ -158,12 +172,12 @@ describe("classifyResult", () => {
     assert.ok(result.checks.find((c) => c.name === "reconnect_gaps")!.passed === false)
   })
 
-  it("returns exactly 15 base checks for evidence profile with unavailable external metrics", () => {
+  it("includes expected checks for evidence profile with all metrics available", () => {
     const result = classifyResult(baseMetrics(), true, true)
     const names = result.checks.map((c) => c.name)
     assert.ok(names.includes("fan_out_p95"))
     assert.ok(names.includes("late_join_p95"))
-    assert.ok(names.includes("connections_target"))
+    assert.ok(names.includes("active_concurrency_target"))
     assert.ok(names.includes("missing_sequences"))
     assert.ok(names.includes("duplicates"))
     assert.ok(names.includes("out_of_order"))
@@ -176,6 +190,8 @@ describe("classifyResult", () => {
     assert.ok(names.includes("non_slow_impact"))
     assert.ok(names.includes("timing_valid"))
     assert.ok(names.includes("generator_not_saturated"))
+    assert.ok(names.includes("nchan_memory"))
+    assert.ok(names.includes("redis_memory"))
   })
 
   it("smoke-profile result cannot be labeled final ACCEPT", () => {
@@ -246,31 +262,34 @@ describe("classifyResult", () => {
     assert.equal(result.verdict, "INCONCLUSIVE")
   })
 
-  it("includes nchan_memory check when available", () => {
+  it("REJECT when nchan_memory exceeds threshold", () => {
     const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: 3500 }), true, true)
     assert.equal(result.verdict, "REJECT")
     assert.ok(result.checks.find((c) => c.name === "nchan_memory")!.passed === false)
   })
 
-  it("includes redis_memory check when available", () => {
+  it("REJECT when redis_memory exceeds threshold", () => {
     const result = classifyResult(baseMetrics({ redis_memory_mb_peak: 1800 }), true, true)
     assert.equal(result.verdict, "REJECT")
     assert.ok(result.checks.find((c) => c.name === "redis_memory")!.passed === false)
   })
 
-  it("skips nchan_memory check when unavailable", () => {
+  it("§4.11 INCONCLUSIVE when nchan_memory unavailable in evidence mode", () => {
     const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: null }), true, true)
-    assert.ok(!result.checks.some((c) => c.name === "nchan_memory"))
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("nchan_memory"))
   })
 
-  it("skips redis_memory check when unavailable", () => {
+  it("§4.11 INCONCLUSIVE when redis_memory unavailable in evidence mode", () => {
     const result = classifyResult(baseMetrics({ redis_memory_mb_peak: null }), true, true)
-    assert.ok(!result.checks.some((c) => c.name === "redis_memory"))
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("redis_memory"))
   })
 
-  it("skips nchan_history_replay check for smoke profile", () => {
+  it("skips nchan_memory/redis_memory checks for smoke profile", () => {
     const result = classifyResult(baseMetrics({ run_profile: "smoke" }), true, true)
-    assert.ok(!result.checks.some((c) => c.name === "nchan_history_replay"))
+    assert.ok(!result.checks.some((c) => c.name === "nchan_memory"))
+    assert.ok(!result.checks.some((c) => c.name === "redis_memory"))
   })
 
   it("REJECT when nchan history replay incorrect on evidence profile", () => {
@@ -282,12 +301,42 @@ describe("classifyResult", () => {
     assert.ok(result.checks.find((c) => c.name === "nchan_history_replay")!.passed === false)
   })
 
-  it("REJECT when connections below target", () => {
+  it("REJECT when active_connections_peak below target", () => {
     const result = classifyResult(baseMetrics({
-      connections_established: 5000,
+      active_connections_peak: 5000,
       connections_target: 10000,
     }), true, true)
     assert.equal(result.verdict, "REJECT")
-    assert.ok(result.checks.find((c) => c.name === "connections_target")!.passed === false)
+    assert.ok(result.checks.find((c) => c.name === "active_concurrency_target")!.passed === false)
+  })
+
+  it("§4.3 uses active_connections_peak not connections_established", () => {
+    const result = classifyResult(baseMetrics({
+      connections_established: 20000,
+      active_connections_peak: 5000,
+      connections_target: 10000,
+    }), true, true)
+    assert.equal(result.verdict, "REJECT")
+    const check = result.checks.find((c) => c.name === "active_concurrency_target")!
+    assert.ok(!check.passed)
+    assert.ok(check.detail.includes("active_peak=5000"))
+  })
+
+  it("§4.11 INCONCLUSIVE when generator event-loop p99 >= 100ms", () => {
+    const result = classifyResult(baseMetrics({ generator_event_loop_p99_ms: 100 }), true, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("event-loop"))
+  })
+
+  it("§4.11 INCONCLUSIVE when generator backlog > 1000", () => {
+    const result = classifyResult(baseMetrics({ generator_backlog_peak: 1500 }), true, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("backlog"))
+  })
+
+  it("§4.11 INCONCLUSIVE when publisher definite failures > 0", () => {
+    const result = classifyResult(baseMetrics({ publisher_definite_failures: 1 }), true, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("publisher"))
   })
 })

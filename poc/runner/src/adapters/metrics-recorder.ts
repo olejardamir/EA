@@ -37,6 +37,21 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private sseParseErrors = 0
   private jsonParseErrors = 0
   private invalidTimestampCount = 0
+  // §4.16: Separate live vs replay delivery accounting
+  private liveExpectedDeliveries = 0
+  private liveReceivedDeliveries = 0
+  private lateJoinHistoryExpected = 0
+  private lateJoinHistoryReceived = 0
+  private reconnectReplayExpected = 0
+  private reconnectReplayReceived = 0
+  private restartReplayExpected = 0
+  private restartReplayReceived = 0
+  // §4.17: Disconnect attribution
+  private deliberateDisconnects = 0
+  private unexpectedClientDisconnects = 0
+  private serverInitiatedDisconnects = 0
+  private networkFailures = 0
+  private shutdownCleanupDisconnects = 0
 
   recordFanOutLatency(ms: number): void {
     this.latencySampleCount++
@@ -84,6 +99,23 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementJsonParseErrors(): void { this.jsonParseErrors++ }
   incrementInvalidTimestampCount(): void { this.invalidTimestampCount++ }
 
+  // §4.16: Live vs replay delivery accounting
+  incrementLiveExpectedDeliveries(count = 1): void { this.liveExpectedDeliveries += count }
+  incrementLiveReceivedDeliveries(count = 1): void { this.liveReceivedDeliveries += count }
+  incrementLateJoinHistoryExpected(count: number): void { this.lateJoinHistoryExpected += count }
+  incrementLateJoinHistoryReceived(count: number): void { this.lateJoinHistoryReceived += count }
+  incrementReconnectReplayExpected(count: number): void { this.reconnectReplayExpected += count }
+  incrementReconnectReplayReceived(count: number): void { this.reconnectReplayReceived += count }
+  incrementRestartReplayExpected(count: number): void { this.restartReplayExpected += count }
+  incrementRestartReplayReceived(count: number): void { this.restartReplayReceived += count }
+
+  // §4.17: Disconnect attribution
+  incrementDeliberateDisconnects(): void { this.deliberateDisconnects++ }
+  incrementUnexpectedClientDisconnects(): void { this.unexpectedClientDisconnects++ }
+  incrementServerInitiatedDisconnects(): void { this.serverInitiatedDisconnects++ }
+  incrementNetworkFailures(): void { this.networkFailures++ }
+  incrementShutdownCleanup(): void { this.shutdownCleanupDisconnects++ }
+
   // §6.32: Expose histograms for final percentile computation
   getFanOutHistogram(): StreamingHistogram { return this.fanOutHistogram }
   getLateJoinHistogram(): StreamingHistogram { return this.lateJoinHistogram }
@@ -116,6 +148,21 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       sse_parse_errors: this.sseParseErrors,
       json_parse_errors: this.jsonParseErrors,
       invalid_timestamp_count: this.invalidTimestampCount,
+      // §4.16: Live vs replay delivery accounting
+      live_expected_deliveries: this.liveExpectedDeliveries,
+      live_received_deliveries: this.liveReceivedDeliveries,
+      late_join_history_expected: this.lateJoinHistoryExpected,
+      late_join_history_received: this.lateJoinHistoryReceived,
+      reconnect_replay_expected: this.reconnectReplayExpected,
+      reconnect_replay_received: this.reconnectReplayReceived,
+      restart_replay_expected: this.restartReplayExpected,
+      restart_replay_received: this.restartReplayReceived,
+      // §4.17: Disconnect attribution
+      deliberate_disconnects: this.deliberateDisconnects,
+      unexpected_client_disconnects: this.unexpectedClientDisconnects,
+      server_initiated_disconnects: this.serverInitiatedDisconnects,
+      network_failures: this.networkFailures,
+      shutdown_cleanup_disconnects: this.shutdownCleanupDisconnects,
     }
   }
 }

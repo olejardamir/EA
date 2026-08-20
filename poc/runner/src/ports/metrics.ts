@@ -23,6 +23,21 @@ export interface MetricsRecorder {
   incrementSseParseErrors(): void
   incrementJsonParseErrors(): void
   incrementInvalidTimestampCount(): void
+  // §4.16: Live vs replay delivery accounting
+  incrementLiveExpectedDeliveries(count?: number): void
+  incrementLiveReceivedDeliveries(count?: number): void
+  incrementLateJoinHistoryExpected(count: number): void
+  incrementLateJoinHistoryReceived(count: number): void
+  incrementReconnectReplayExpected(count: number): void
+  incrementReconnectReplayReceived(count: number): void
+  incrementRestartReplayExpected(count: number): void
+  incrementRestartReplayReceived(count: number): void
+  // §4.17: Disconnect attribution
+  incrementDeliberateDisconnects(): void
+  incrementUnexpectedClientDisconnects(): void
+  incrementServerInitiatedDisconnects(): void
+  incrementNetworkFailures(): void
+  incrementShutdownCleanup(): void
   snapshot(): MetricsSnapshot
 }
 
@@ -53,4 +68,19 @@ export interface MetricsSnapshot {
   sse_parse_errors: number
   json_parse_errors: number
   invalid_timestamp_count: number
+  // §4.16: Live vs replay delivery accounting
+  live_expected_deliveries: number
+  live_received_deliveries: number
+  late_join_history_expected: number
+  late_join_history_received: number
+  reconnect_replay_expected: number
+  reconnect_replay_received: number
+  restart_replay_expected: number
+  restart_replay_received: number
+  // §4.17: Disconnect attribution
+  deliberate_disconnects: number
+  unexpected_client_disconnects: number
+  server_initiated_disconnects: number
+  network_failures: number
+  shutdown_cleanup_disconnects: number
 }

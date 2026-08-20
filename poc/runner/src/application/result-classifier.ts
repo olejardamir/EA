@@ -1,4 +1,4 @@
-import type { AggregatedMetrics, Verdict, VerdictResult } from "../domain/result.js"
+import type { AggregatedMetrics, Verdict, VerdictResult, SlowConsumerMetrics } from "../domain/result.js"
 
 export function classifyResult(
   metrics: AggregatedMetrics,
@@ -42,6 +42,58 @@ export function classifyResult(
     return { verdict: "INCONCLUSIVE", checks }
   }
 
+  // §4.11: Additional INCONCLUSIVE conditions — experiment-invalid before architecture pass/fail
+
+  // Generator event-loop saturation
+  if (metrics.generator_event_loop_p99_ms >= 100) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `generator event-loop p99=${metrics.generator_event_loop_p99_ms}ms >= 100ms — generator saturated`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // Generator backlog saturation
+  if (metrics.generator_backlog_peak > 1000) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `generator backlog peak=${metrics.generator_backlog_peak} > 1000 — publisher scheduler saturated`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // Publisher definite failures indicate scheduler/transport breakdown
+  if (metrics.publisher_definite_failures > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `publisher definite failures=${metrics.publisher_definite_failures} > 0 — publisher saturated`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // Required resource metrics must not be null in evidence mode
+  if (metrics.run_profile === "evidence") {
+    if (metrics.nchan_memory_mb_peak === null) {
+      checks.push({
+        name: "inconclusive_override",
+        passed: false,
+        detail: "nchan_memory_mb_peak unavailable — mandatory resource metric missing",
+      })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
+    if (metrics.redis_memory_mb_peak === null) {
+      checks.push({
+        name: "inconclusive_override",
+        passed: false,
+        detail: "redis_memory_mb_peak unavailable — mandatory resource metric missing",
+      })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
+  }
+
   checks.push({
     name: "fan_out_p95",
     passed: metrics.fan_out_latency_p95_ms <= 500,
@@ -54,10 +106,11 @@ export function classifyResult(
     detail: `${metrics.late_join_p95_ms}ms <= 2000ms`,
   })
 
+  // §4.3: Use simultaneous active concurrency, not cumulative establishment
   checks.push({
-    name: "connections_target",
-    passed: metrics.connections_established >= metrics.connections_target,
-    detail: `${metrics.connections_established} >= ${metrics.connections_target}`,
+    name: "active_concurrency_target",
+    passed: metrics.active_connections_peak >= metrics.connections_target,
+    detail: `active_peak=${metrics.active_connections_peak} >= target=${metrics.connections_target}`,
   })
 
   checks.push({
@@ -108,11 +161,45 @@ export function classifyResult(
     detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
   })
 
-  checks.push({
-    name: "slow_consumer_disconnects",
-    passed: metrics.slow_consumer_disconnects > 0,
-    detail: `${metrics.slow_consumer_disconnects} > 0`,
-  })
+  // §4.8: Slow consumer check — resolved contradiction:
+  // The scenario must demonstrate bounded behavior (healthy clients not degraded).
+  // Server-side backpressure evidence is informational, not a pass/fail gate.
+  // Zero disconnects with bounded healthy-client behavior is ACCEPT.
+  // If no server-side backpressure reached, it is INCONCLUSIVE (not REJECT).
+  const slowMetrics = metrics.slow_consumer_metrics
+  if (slowMetrics) {
+    const boundedHealthyOk = slowMetrics.healthy_degradation_pct <= 5
+    const evidenceBackpressure = slowMetrics.evidence_server_side_backpressure_reached
+    checks.push({
+      name: "slow_consumer_disconnects",
+      passed: evidenceBackpressure,
+      detail: `backpressure=${evidenceBackpressure ? "YES" : "NO"} (informational)`,
+    })
+    checks.push({
+      name: "non_slow_impact",
+      passed: boundedHealthyOk,
+      detail: `healthy_degradation=${slowMetrics.healthy_degradation_pct.toFixed(1)}% <= 5%`,
+    })
+    // §4.8: If no server-side backpressure reached, override to INCONCLUSIVE
+    if (!evidenceBackpressure) {
+      checks.push({
+        name: "inconclusive_override",
+        passed: false,
+        detail: `§4.8: no server-side backpressure reached — test absorbed by kernel buffers`,
+      })
+    }
+  } else {
+    checks.push({
+      name: "slow_consumer_disconnects",
+      passed: metrics.slow_consumer_disconnects > 0,
+      detail: `${metrics.slow_consumer_disconnects} > 0 (legacy fallback)`,
+    })
+    checks.push({
+      name: "non_slow_impact",
+      passed: metrics.non_slow_p95_degradation_pct <= 5,
+      detail: `${metrics.non_slow_p95_degradation_pct}% <= 5%`,
+    })
+  }
 
   checks.push({
     name: "non_slow_impact",
@@ -120,6 +207,7 @@ export function classifyResult(
     detail: `${metrics.non_slow_p95_degradation_pct}% <= 5%`,
   })
 
+  // §4.11: Nchan memory — mandatory in evidence mode, skip in smoke
   if (metrics.nchan_memory_mb_peak !== null) {
     checks.push({
       name: "nchan_memory",
@@ -128,6 +216,7 @@ export function classifyResult(
     })
   }
 
+  // §4.11: Redis memory — mandatory in evidence mode, skip in smoke
   if (metrics.redis_memory_mb_peak !== null) {
     checks.push({
       name: "redis_memory",
@@ -266,6 +355,15 @@ export function aggregateWorkerMetrics(
   let sse_parse_errors = 0
   let json_parse_errors = 0
   let invalid_timestamp_count = 0
+  // §4.16: Live vs replay delivery accounting
+  let live_expected_deliveries = 0
+  let live_received_deliveries = 0
+  let late_join_history_expected = 0
+  let late_join_history_received = 0
+  let reconnect_replay_expected = 0
+  let reconnect_replay_received = 0
+  let restart_replay_expected = 0
+  let restart_replay_received = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -288,6 +386,15 @@ export function aggregateWorkerMetrics(
     invalid_timestamp_count += s.invalid_timestamp_count
     allFanOut.push(...s.fan_out_latencies_ms)
     allLateJoin.push(...s.late_join_latencies_ms)
+    // §4.16: Live vs replay delivery accounting
+    live_expected_deliveries += s.live_expected_deliveries
+    live_received_deliveries += s.live_received_deliveries
+    late_join_history_expected += s.late_join_history_expected
+    late_join_history_received += s.late_join_history_received
+    reconnect_replay_expected += s.reconnect_replay_expected
+    reconnect_replay_received += s.reconnect_replay_received
+    restart_replay_expected += s.restart_replay_expected
+    restart_replay_received += s.restart_replay_received
   }
 
   allFanOut.sort((a, b) => a - b)
@@ -381,5 +488,16 @@ export function aggregateWorkerMetrics(
     surge_events_received: 0,
     // §R: active connections peak — wired from metrics recorder in main.ts
     active_connections_peak: 0,
+    // §4.16: Live vs replay delivery accounting
+    live_expected_deliveries,
+    live_received_deliveries,
+    late_join_history_expected,
+    late_join_history_received,
+    reconnect_replay_expected,
+    reconnect_replay_received,
+    restart_replay_expected,
+    restart_replay_received,
+    // §4.7: Slow-consumer metrics — wired from SlowConsumerScenario in main.ts
+    slow_consumer_metrics: null,
   }
 }
