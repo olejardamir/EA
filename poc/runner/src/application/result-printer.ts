@@ -206,6 +206,10 @@ export function emitMachineReadableResult(
       nchan_node_count: preflight.nchan_node_count,
       cpu_quota: preflight.cpu_quota,
       cpu_count: preflight.cpu_count,
+      // §3.2: Multi-shard topology recommendation
+      recommended_shard_count: preflight.recommended_shard_count,
+      shard_capacity_each: preflight.shard_capacity_each,
+      topology_note: preflight.topology_note,
     },
     scenario_active_concurrency: {
       lobby_subscribers: metrics.lobby_subscribers,

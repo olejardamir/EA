@@ -22,6 +22,10 @@ export interface TopologyPreflight {
   nchan_node_count: number
   cpu_quota: number | null
   cpu_count: number
+  // §3.2: Multi-shard topology recommendation
+  recommended_shard_count: number
+  shard_capacity_each: number
+  topology_note: string | null
 }
 
 function readSysctl(key: string): string | null {
@@ -155,6 +159,15 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     return true
   })()
 
+  // §3.2: Multi-shard recommendation — each shard needs its own source IP/namespace
+  // Single source IP = ~28k ephemeral ports max. Need ceil(target / ports_per_shard) shards.
+  const portsPerShard = ephemeralCount ?? 28000
+  const recommendedShardCount = Math.max(1, Math.ceil(targetConnections / portsPerShard))
+  const shardCapacityEach = recommendedShardCount > 0 ? Math.ceil(targetConnections / recommendedShardCount) : targetConnections
+  const topologyNote = sourceIps === 1 && targetConnections > portsPerShard
+    ? `Single source IP (${sourceIps}) cannot establish ${targetConnections} connections (ephemeral port limit ${portsPerShard}). Recommend ${recommendedShardCount} generator shards with distinct network namespaces/source IPs.`
+    : null
+
   return {
     fd_soft_limit: fdSoft,
     fd_hard_limit: fdHard,
@@ -174,5 +187,8 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     nchan_node_count: nchanNodes,
     cpu_quota: cpuQuota,
     cpu_count: cpuCount,
+    recommended_shard_count: recommendedShardCount,
+    shard_capacity_each: shardCapacityEach,
+    topology_note: topologyNote,
   }
 }
