@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7.2-bookworm
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nchan:
+    image: poc-nchan:latest
+    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/pub/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  runner:
+    image: poc-runner:latest
+    network_mode: host
+    depends_on:
+      nchan:
+        condition: service_healthy
+    environment:
+      NCHAN_PUB_URL: "http://localhost:8080"
+      NCHAN_SUB_URL: "http://localhost:8081"
+      REDIS_URL: "redis://localhost:6379"
+      WORKER_COUNT: "4"
+      TARGET_CONNECTIONS: "2000"
+      WARMUP_SECONDS: "10"
+      MEASURE_SECONDS: "30"
+      BURST_SECONDS: "15"
+      COOLDOWN_SECONDS: "5"
+      SLOW_SECONDS: "15"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
