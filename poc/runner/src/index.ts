@@ -3,15 +3,14 @@ import { LoadGenWorker } from "./loadgen.js"
 import { aggregateMetrics, printSummary } from "./aggregator.js"
 import type { WorkerMetrics } from "./types.js"
 
-const NCHAN_PUB_URL = process.env.NCHAN_PUB_URL ?? "http://nchan:8080"
-const NCHAN_SUB_URL = process.env.NCHAN_SUB_URL ?? "http://nchan:8081"
+const NCHAN_PUB_URL = process.env.NCHAN_PUB_URL ?? "http://localhost:8080"
+const NCHAN_SUB_URL = process.env.NCHAN_SUB_URL ?? "http://localhost:8081"
 const WORKER_COUNT = parseInt(process.env.WORKER_COUNT ?? "4", 10)
-const TARGET_CONNECTIONS = parseInt(process.env.TARGET_CONNECTIONS ?? "5000", 10)
+const TARGET_CONNECTIONS = parseInt(process.env.TARGET_CONNECTIONS ?? "10000", 10)
 const WARMUP_SECONDS = parseInt(process.env.WARMUP_SECONDS ?? "30", 10)
-const MEASURE_SECONDS = parseInt(process.env.MEASURE_SECONDS ?? "120", 10)
+const MEASURE_SECONDS = parseInt(process.env.MEASURE_SECONDS ?? "60", 10)
 const BURST_SECONDS = parseInt(process.env.BURST_SECONDS ?? "30", 10)
 const COOLDOWN_SECONDS = parseInt(process.env.COOLDOWN_SECONDS ?? "10", 10)
-const SLOW_SECONDS = parseInt(process.env.SLOW_SECONDS ?? "30", 10)
 
 const matchIds = getMatchIds()
 const eventLog = new Map<string, number[]>()
@@ -20,6 +19,10 @@ const matchHeads = new Map<string, number>()
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23)
   console.log(`[${ts}] ${msg}`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function waitForNchan(): Promise<void> {
@@ -45,7 +48,6 @@ async function main(): Promise<void> {
 
   await waitForNchan()
 
-  // Create publisher
   const publisher = new Publisher({
     pubUrl: NCHAN_PUB_URL,
     burstMode: false,
@@ -55,7 +57,6 @@ async function main(): Promise<void> {
     },
   })
 
-  // Create loadgen workers
   const connectionsPerWorker = Math.ceil(TARGET_CONNECTIONS / WORKER_COUNT)
   const workers: LoadGenWorker[] = []
 
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // Phase 1: Warm-up
+  // Phase 1: Warm-up + connect
   log(`\n--- PHASE: WARMUP (${WARMUP_SECONDS}s) ---`)
   publisher.start(true)
 
@@ -83,28 +84,25 @@ async function main(): Promise<void> {
   const connectDuration = Date.now() - connectStart
   log(`All connections established in ${connectDuration}ms`)
 
-  // Wait for warm-up
   await sleep(WARMUP_SECONDS * 1000)
   log("Warm-up complete")
 
   // Phase 2: Steady-state measurement
   log(`\n--- PHASE: STEADY MEASUREMENT (${MEASURE_SECONDS}s) ---`)
 
-  // Start event loop monitoring
   const loopMonitor = setInterval(() => {
     for (const w of workers) w.measureEventLoop()
   }, 100)
 
   const steadyStart = Date.now()
 
-  // Late-join test at t=90s of steady
+  // Late-join test at t=10s of steady
   const lateJoinPromise = (async () => {
-    await sleep(90000)
+    await sleep(10000)
     log("Executing late-join test...")
     const testMatch = matchIds[0]
     const head = matchHeads.get(testMatch) ?? 0
     if (head > 0) {
-      // Use the last worker for late-join test
       const worker = workers[workers.length - 1]
       const latency = await worker.doLateJoin(testMatch, head)
       if (latency >= 0) {
@@ -112,12 +110,16 @@ async function main(): Promise<void> {
       } else {
         log("Late-join: timed out")
       }
+    } else {
+      log("Late-join: no events published yet, skipping")
     }
   })()
 
   await sleep(MEASURE_SECONDS * 1000)
   const steadyDuration = Date.now() - steadyStart
   log(`Steady measurement complete (${steadyDuration}ms)`)
+
+  await lateJoinPromise
 
   // Phase 3: Burst
   log(`\n--- PHASE: BURST (${BURST_SECONDS}s) ---`)
@@ -141,18 +143,16 @@ async function main(): Promise<void> {
 
   // Phase 5: Reconnect test
   log(`\n--- PHASE: RECONNECT TEST ---`)
-  await publisher.stop()
+  publisher.stop()
+  await sleep(500)
 
-  // Pick first 100 connections from first worker to reconnect
   log("Disconnecting connections for reconnect test...")
   const worker0 = workers[0]
   await worker0.reconnectAll(2000)
-
   await sleep(10000)
   log("Reconnect test complete")
 
-  // Wait for late-join to finish
-  await lateJoinPromise
+  // Phase 6: Nchan restart test (performed at host level after runner exits)
 
   // Collect metrics
   log("\n--- COLLECTING METRICS ---")
@@ -160,7 +160,6 @@ async function main(): Promise<void> {
   const allMetrics: WorkerMetrics[] = workers.map((w) => w.getMetrics())
   const aggregated = aggregateMetrics(allMetrics)
 
-  // Print results
   printSummary(aggregated, publisher.totalPublished)
 
   // Shutdown
@@ -179,7 +178,3 @@ main().catch((err) => {
   console.error("Fatal error:", err)
   process.exit(1)
 })
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}

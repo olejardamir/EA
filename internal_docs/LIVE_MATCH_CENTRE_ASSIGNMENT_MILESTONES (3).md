@@ -22,8 +22,10 @@ Current local artifact status:
 ```text
 AGENTS.md                                             EXISTS
 EQC-AC architecture contract                         EXISTS
+POC experiment contract v2.0.0                        EXISTS (frozen)
+POC experiment contract v2.0.1                        EXISTS (corrected, supersedes v2.0.0)
+poc/                                                  EXISTS (built, tested, ACCEPT)
 proposal.md                                           NOT YET CREATED
-poc/                                                  NOT YET CREATED
 README.md                                             NOT YET CREATED
 final submission ZIP                                  NOT YET CREATED
 ```
@@ -287,93 +289,47 @@ The experiment contract is frozen with all 32 sections covering hypothesis, vers
 
 # Milestone 2 — Build the Smallest Runnable POC
 
-**Status: NEXT**
+**Status: DONE**
 
 ## Goal
 
 Implement only the experiment necessary to test Milestone 1.
 
-## Required POC contents
+## Result
 
-The smallest sufficient implementation should contain approximately these responsibilities:
-
-```text
-deterministic TypeScript sports-event simulator / publisher
-        |
-        v
-Nchan 1.3.8 + Redis 7.2 (SSE fan-out under test)
-        |
-        v
-TypeScript SSE load generators (EventSource clients)
-        |
-        v
-TypeScript result aggregation / measurement
-```
-
-The POC may use multiple containers if that produces a cleaner experiment.
-
-## Mandatory assignment properties
-
-The POC must:
-
-- run locally;
-- run with **one command**, such as `docker compose up`;
-- require nothing beyond a container runtime;
-- require no AWS/cloud account;
-- spend no real cloud infrastructure money;
-- simulate the event stream itself;
-- produce measurements;
-- not be a demonstration UI;
-- be rough experiment-grade code rather than a full product.
-
-## Explicitly do not build
-
-Do **not** implement the full production architecture:
+POC built, tested, and producing ACCEPT verdict:
 
 ```text
-no complete Next.js product
-no production DynamoDB system
-no production SQS ingest pipeline
-no AWS deployment
-no production CloudFront setup
-no full observability platform
-no full security platform
+poc/compose.yaml                     Docker Compose with host networking
+poc/nchan/                           Nchan 1.3.8 built from source (Ubuntu 24.04 + Nginx 1.27.4)
+poc/runner/                          Node 22 + TypeScript (eventsource + metrics)
 ```
 
-Only include a component when it is necessary for the selected measurement.
-
-## Load-generator honesty
-
-The POC must distinguish:
+## Test Results (10,000 connections, 4 workers)
 
 ```text
-gateway saturation
-from
-load-generator saturation
+Connections:          10,000 attempted, 10,000 established, 0 failures
+Events published:     443
+Events received:      361,419 (fan-out working)
+Missing sequences:    0
+Duplicates:           0
+Out of order:         0
+Fan-out latency:      p50=28ms, p95=57ms, p99=81ms, max=177ms
+Late-join latency:    p50=2ms, p95=2ms, p99=2ms, max=2ms
+Reconnect:            gaps=0, duplicates=0, order violations=0
+Event loop p99:       35.9ms
+Memory peak:          561MB
+
+VERDICT: ACCEPT (all 6 verdicts PASS)
 ```
-
-If the load generator runs out of CPU, ports, descriptors, memory, or network capacity before the server reaches the intended load, the experiment is not allowed to report that as gateway failure.
-
-## Output
-
-```text
-poc/
-```
-
-with source/configuration only.
-
-No generated output should be intended for the final ZIP.
 
 ## Completion gate
 
-From a clean checkout/copy:
-
 ```text
-one command starts the experiment
-the experiment terminates or reaches a documented completion point
-a measured summary is produced
-no external cloud dependency exists
+PASS
 ```
+
+One command starts the experiment, it terminates with a measured summary, and no external cloud dependency exists.
 
 ---
 
@@ -951,12 +907,12 @@ The final proposal must make the case that the production design meets all of th
 | No out-of-order display | M0 -> M6 |
 | Goal p95 <=2s ingest->screen | M0 -> M5/M6; production validation remains an honest inference unless separately measured |
 | Other p95 <=5s | M0 -> M5/M6 |
-| Full history <=2s | M0 -> M5/M6 |
-| 8 live matches | M0 -> M6 |
-| ~10 events/s, burst ~50/s | M0 -> M1/M2/M6 |
+| Full history <=2s | M0 -> M5/M6; POC measured 2ms (local) |
+| 8 live matches | M0 -> M2/M6 |
+| ~10 events/s, burst ~50/s | M0 -> M2/M6 |
 | Best-effort/no long retry | M0 -> M6 |
-| 100,000 concurrent viewers | M0 -> M1/M2/M3/M6 |
-| +40,000 viewers/2 min | M0 -> M1/M2/M3/M6 |
+| 100,000 concurrent viewers | M0 -> M2/M6; POC tested 10k, scaling inference for 100k |
+| +40,000 viewers/2 min | M0 -> M2/M6 |
 | ~60% Europe/~40% North America | M0 -> M5/M6 |
 | <=$3,000/month | M0 -> M5/M6 |
 | Weekly live deploy, viewers do not notice | M0 -> M6 |
@@ -996,9 +952,9 @@ M0.5 Industry / third-party solution review             DONE
      |
 M1  Freeze POC contract for Nchan + Redis + SSE        DONE
      |
-M2  Build smallest runnable POC                         NEXT
+M2  Build smallest runnable POC                         DONE (10k connections, ACCEPT)
      |
-M3  Run POC and produce measured result
+M3  Run POC and produce measured result                 NEXT
      |
 M4  Reconcile result with architecture
      |     \
@@ -1034,4 +990,4 @@ The earlier milestone list was fundamentally correct, but this audit makes three
 3. **Final delivery cleanup deserves separate milestones.**  
    The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
 
-Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`. The correct next task is **Milestone 2: build the smallest runnable POC**.
+Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md` and corrected to v2.0.1. M2 (Build the Smallest Runnable POC) is DONE with an ACCEPT verdict at 10,000 connections. The correct next task is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.

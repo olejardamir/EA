@@ -298,8 +298,8 @@ export class LoadGenWorker {
 
     return new Promise<number>((resolve) => {
       try {
-        // Use dedicated late-join endpoint with nchan_subscriber_first_message oldest
-        const url = `${this.config.subUrl}/latejoin/${matchId}`
+        // Use dedicated history endpoint with nchan_subscriber_first_message oldest
+        const url = `${this.config.subUrl}/history/${matchId}`
         const es = new EventSource(url)
 
         let caughtUp = false
@@ -321,6 +321,7 @@ export class LoadGenWorker {
               es.removeEventListener("message", handler)
               es.removeEventListener("update", handler)
               const latency = Date.now() - startTime
+              this.metrics.late_join_latencies_ms.push(latency)
               es.close()
               resolve(latency)
             }

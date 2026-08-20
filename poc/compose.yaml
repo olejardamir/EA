@@ -23,7 +23,11 @@ services:
       resources:
         limits:
           cpus: "4"
-          memory: 4G
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/pub/healthcheck"]
       interval: 5s
@@ -41,11 +45,11 @@ services:
       NCHAN_SUB_URL: "http://localhost:8081"
       REDIS_URL: "redis://localhost:6379"
       WORKER_COUNT: "4"
-      TARGET_CONNECTIONS: "2000"
-      WARMUP_SECONDS: "10"
-      MEASURE_SECONDS: "30"
-      BURST_SECONDS: "15"
-      COOLDOWN_SECONDS: "5"
+      TARGET_CONNECTIONS: "10000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "60"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
       SLOW_SECONDS: "15"
     deploy:
       resources:
