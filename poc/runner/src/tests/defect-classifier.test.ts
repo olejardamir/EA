@@ -130,6 +130,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     latency_overflow_count: 0,
     topology_capacity_sufficient: true,
     phase_histograms: {},
+    clock_validity: { clock_model: "unknown", nodes_covered: [], measurement_method: "unknown", offset_or_guarantee: -1, uncertainty_ms: -1, threshold_ms: -1, validity_result: "INCONCLUSIVE" as const, nchan1_reachable: false, nchan2_reachable: false },
     ...overrides,
   }
 }

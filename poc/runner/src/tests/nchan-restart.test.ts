@@ -112,12 +112,17 @@ describe("NchanRestartScenario", () => {
       JSON.stringify({ canonical_seq: 2, ts: Date.now() }),
       JSON.stringify({ canonical_seq: 3, ts: Date.now() }),
     ]
+    // §3.11: Replay must include events AFTER pre-restart lastSeq (3) to satisfy seq > lastSeq1
+    const replayEvents = [
+      JSON.stringify({ canonical_seq: 4, ts: Date.now() }),
+      JSON.stringify({ canonical_seq: 5, ts: Date.now() }),
+    ]
     let connectCount = 0
     const stream: EventStream = {
       async connect(_url: string, _lastEventId?: string): Promise<Subscription> {
         connectCount++
+        const evts = connectCount === 1 ? events : replayEvents
         let delivered = 0
-        const evts = connectCount === 1 ? events : events.slice(1)
         let handler: ((event: SubscriptionEvent) => void) | null = null
         const timer = setInterval(() => {
           if (delivered < evts.length && handler) {

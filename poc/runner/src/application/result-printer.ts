@@ -466,11 +466,24 @@ export function emitMachineReadableResult(
       nchan1_reachable: null,
       nchan2_reachable: null,
     },
-    // §4.18: Claim provenance — distinguish POC measurement from production inference
+    // §4.18/§3.15: Claim provenance — distinguish POC measurement from production inference
     claim_provenance: {
       measured_at_scale: config.targetConnections,
-      direct_accept_eligible: config.targetConnections >= 100000,
-      production_inference_only: config.targetConnections < 100000,
+      // §3.15: Direct-accept requires actual active target reached + topology + generator + timing + measurements
+      direct_accept_eligible: config.targetConnections >= 100000
+        && preflight.capacity_sufficient
+        && metrics.generator_cpu_percent_peak < 90
+        && metrics.generator_event_loop_p99_ms < 100
+        && metrics.timing_valid
+        && metrics.events_published > 0
+        && metrics.events_received > 0,
+      production_inference_only: config.targetConnections < 100000
+        || !preflight.capacity_sufficient
+        || metrics.generator_cpu_percent_peak >= 90
+        || metrics.generator_event_loop_p99_ms >= 100
+        || !metrics.timing_valid
+        || metrics.events_published === 0
+        || metrics.events_received === 0,
       note: config.targetConnections >= 100000
         ? "Direct local measurement at 100k target"
         : "Lower-scale result — production inference only, not direct 100k proof",
