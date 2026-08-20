@@ -155,6 +155,8 @@ export function emitMachineReadableResult(
     run_profile: config.runProfile,
     run_mode: config.runMode ?? "single",
     seed: config.seed,
+    // §3.2: Shard identity in machine-readable output
+    shard_identity: metrics.shard_identity,
     resolved_config: {
       target_connections: config.targetConnections,
       warmup_seconds: config.warmupSeconds,
@@ -397,6 +399,11 @@ export function emitMachineReadableResult(
       lobby_events_per_sec: metrics.lobby_events_per_sec,
       match_events_published: metrics.match_events_published,
       lobby_events_published: metrics.lobby_events_published,
+      // §3.7: Attempted vs accepted counts
+      match_events_attempted: metrics.match_events_attempted,
+      lobby_events_attempted: metrics.lobby_events_attempted,
+      total_events_attempted: metrics.match_events_attempted + metrics.lobby_events_attempted,
+      total_events_accepted: metrics.match_events_published + metrics.lobby_events_published,
       phase_rates: metrics.phase_publish_rates,
     },
     // §4.18: Scheduler lag metrics (separate from surge health)
@@ -520,6 +527,9 @@ export function emitMachineReadableResult(
     },
     // §4.22: Build identity — exact upstream versions and commit
     build_identity: metrics.build_identity,
+    // §3.15: Campaign provenance — distinguishes per-run from campaign aggregate
+    aggregate_type: metrics.aggregate_type ?? "single_run",
+    run_count: metrics.run_count ?? 1,
   }
 
   // Emit as a single JSON line on stdout for machine parsing

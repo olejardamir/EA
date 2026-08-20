@@ -14,6 +14,9 @@ export interface PhaseSnapshot {
   // §3.7: Separate match/lobby counts for workload-rate breakdown
   matchPublished: number
   lobbyPublished: number
+  // §3.7: Attempted (scheduled) counts vs accepted (successfully published) counts
+  matchAttempts: number
+  lobbyAttempts: number
 }
 
 export interface ScenarioContext {

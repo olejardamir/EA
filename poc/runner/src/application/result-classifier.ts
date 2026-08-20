@@ -583,6 +583,9 @@ export function aggregateWorkerMetrics(
   // §3.7: Accumulate global scheduler lag across all workers (max of p95/max)
   let scheduler_lag_p95_ms = 0
   let scheduler_lag_max_ms = 0
+  // §3.7: Aggregate match/lobby attempted counts across phases
+  let total_match_attempts = 0
+  let total_lobby_attempts = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -652,6 +655,10 @@ export function aggregateWorkerMetrics(
     // §3.7: Lobby vs match breakdown
     const matchPublished = ps.matchPublished ?? (total)
     const lobbyPublished = ps.lobbyPublished ?? 0
+    const matchAttempts = ps.matchAttempts ?? matchPublished
+    const lobbyAttempts = ps.lobbyAttempts ?? lobbyPublished
+    total_match_attempts += matchAttempts
+    total_lobby_attempts += lobbyAttempts
     const durationSec = ps.durationMs / 1000
     const matchEventsPerSec = durationSec > 0 ? matchPublished / durationSec : 0
     const lobbyEventsPerSec = durationSec > 0 ? lobbyPublished / durationSec : 0
@@ -665,6 +672,11 @@ export function aggregateWorkerMetrics(
       totalEventsPerSec: Math.round(totalEventsPerSec * 10) / 10,
       matchEventsPublished: matchPublished,
       lobbyEventsPublished: lobbyPublished,
+      // §3.7: Attempted vs accepted — attempted = scheduled for publish, accepted = successfully published
+      matchEventsAttempted: matchAttempts,
+      lobbyEventsAttempted: lobbyAttempts,
+      totalEventsAttempted: matchAttempts + lobbyAttempts,
+      totalEventsAccepted: matchPublished + lobbyPublished,
     }
   })
 
@@ -842,6 +854,9 @@ export function aggregateWorkerMetrics(
       const totalDurationSec = (phaseSnapshots ?? []).reduce((s, p) => s + p.durationMs, 0) / 1000
       return totalDurationSec > 0 ? Math.round((events_received / totalDurationSec) * 10) / 10 : 0
     })(),
+    // §3.7: Aggregate attempted totals
+    match_events_attempted: total_match_attempts,
+    lobby_events_attempted: total_lobby_attempts,
     // §3.12/§4.15: Clock validity — default (unknown) when not wired from main.ts
     clock_validity: {
       clock_model: "unknown",
@@ -854,5 +869,10 @@ export function aggregateWorkerMetrics(
       nchan1_reachable: false,
       nchan2_reachable: false,
     },
+    // §3.15: Default aggregate provenance
+    aggregate_type: "single_run",
+    run_count: 1,
+    // §3.2: Shard identity — null for single-shard runs, wired from env in main.ts
+    shard_identity: null,
   }
 }

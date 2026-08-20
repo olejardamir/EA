@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     })).digest("hex")
 
     const machineReadable = {
-      contract_version: "v2.0.2",
+      contract_version: "v2.0.3",
       run_profile: config.runProfile,
       run_mode: "evidence",
       total_runs: suiteResult.totalRuns,
@@ -380,6 +380,17 @@ async function main(): Promise<void> {
       validity_result: clockEvidence.passed ? "PASS" : "INCONCLUSIVE",
       nchan1_reachable: clockEvidence.nchan1_reachable,
       nchan2_reachable: clockEvidence.nchan2_reachable,
+    }
+    // §3.15: Campaign provenance — marks this as a single-run result
+    aggregated.aggregate_type = "single_run"
+    aggregated.run_count = 1
+    // §3.2: Shard identity — detected from environment variables
+    const shardId = parseInt(process.env.SHARD_ID ?? "0", 10) || 0
+    const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
+    aggregated.shard_identity = {
+      shard_id: shardId,
+      shard_count: shardCount,
+      source_ip_index: shardId,
     }
     aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.memory_mb_peak = resourceSnap.memoryMbPeak

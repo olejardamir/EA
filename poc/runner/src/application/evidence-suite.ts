@@ -240,7 +240,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
     const warmupSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000, lobbyPublished: warmupSnap.lobbyPublished, matchPublished: warmupSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000, lobbyPublished: warmupSnap.lobbyPublished, matchPublished: warmupSnap.matchPublished, matchAttempts: warmupSnap.matchAttempts, lobbyAttempts: warmupSnap.lobbyAttempts })
 
     checkTimeout()
 
@@ -251,7 +251,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
     const steadySnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000, lobbyPublished: steadySnap.lobbyPublished, matchPublished: steadySnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000, lobbyPublished: steadySnap.lobbyPublished, matchPublished: steadySnap.matchPublished, matchAttempts: steadySnap.matchAttempts, lobbyAttempts: steadySnap.lobbyAttempts })
 
     checkTimeout()
 
@@ -262,7 +262,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
     const surgeSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0, lobbyPublished: surgeSnap.lobbyPublished, matchPublished: surgeSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0, lobbyPublished: surgeSnap.lobbyPublished, matchPublished: surgeSnap.matchPublished, matchAttempts: surgeSnap.matchAttempts, lobbyAttempts: surgeSnap.lobbyAttempts })
 
     checkTimeout()
 
@@ -280,7 +280,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
     const lateJoinSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration, lobbyPublished: lateJoinSnap.lobbyPublished, matchPublished: lateJoinSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration, lobbyPublished: lateJoinSnap.lobbyPublished, matchPublished: lateJoinSnap.matchPublished, matchAttempts: lateJoinSnap.matchAttempts, lobbyAttempts: lateJoinSnap.lobbyAttempts })
 
     checkTimeout()
 
@@ -291,7 +291,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
     const burstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000, lobbyPublished: burstSnap.lobbyPublished, matchPublished: burstSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000, lobbyPublished: burstSnap.lobbyPublished, matchPublished: burstSnap.matchPublished, matchAttempts: burstSnap.matchAttempts, lobbyAttempts: burstSnap.lobbyAttempts })
 
     checkTimeout()
 
@@ -303,7 +303,7 @@ export async function runSingleExperiment(
     await sleep(config.cooldownSeconds * 1000)
     metrics.endPhase()
     const postBurstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000, lobbyPublished: postBurstSnap.lobbyPublished, matchPublished: postBurstSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000, lobbyPublished: postBurstSnap.lobbyPublished, matchPublished: postBurstSnap.matchPublished, matchAttempts: postBurstSnap.matchAttempts, lobbyAttempts: postBurstSnap.lobbyAttempts })
 
     // Phase 8: Reconnect while publishing
     metrics.beginPhase("reconnect")
@@ -314,7 +314,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
     const reconnectSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, lobbyPublished: reconnectSnap.lobbyPublished, matchPublished: reconnectSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, lobbyPublished: reconnectSnap.lobbyPublished, matchPublished: reconnectSnap.matchPublished, matchAttempts: reconnectSnap.matchAttempts, lobbyAttempts: reconnectSnap.lobbyAttempts })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
     metrics.beginPhase("slow-consumer")
@@ -325,7 +325,7 @@ export async function runSingleExperiment(
     metrics.endPhase()
     logger(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
     const slowSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, lobbyPublished: slowSnap.lobbyPublished, matchPublished: slowSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, lobbyPublished: slowSnap.lobbyPublished, matchPublished: slowSnap.matchPublished, matchAttempts: slowSnap.matchAttempts, lobbyAttempts: slowSnap.lobbyAttempts })
 
     // Phase 10: Nchan restart — §6.37 step 9: once-per-campaign scenario
     // Only execute on the first run; subsequent runs reuse the first run's result.
@@ -341,7 +341,7 @@ export async function runSingleExperiment(
     const restartDuration = ctx.clock.now() - restartStart
     logger(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
     const restartSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, lobbyPublished: restartSnap.lobbyPublished, matchPublished: restartSnap.matchPublished })
+    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, lobbyPublished: restartSnap.lobbyPublished, matchPublished: restartSnap.matchPublished, matchAttempts: restartSnap.matchAttempts, lobbyAttempts: restartSnap.lobbyAttempts })
 
     // Collect metrics
     resourceMonitor.stopEventLoopMonitor()
@@ -507,6 +507,15 @@ export async function runSingleExperiment(
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
     const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight)
+
+    // §3.2: Wire shard identity from environment
+    const shardId = parseInt(process.env.SHARD_ID ?? "0", 10) || 0
+    const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
+    aggregated.shard_identity = {
+      shard_id: shardId,
+      shard_count: shardCount,
+      source_ip_index: shardId,
+    }
 
     logger(`=== Run ${runIndex} complete: ${verdictResult.verdict} ===`)
 
@@ -697,6 +706,11 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   // §3.23: Latency invalid/overflow counts sum across runs
   aggregate.latency_invalid_count = runs.reduce((s, r) => s + r.aggregated.latency_invalid_count, 0)
   aggregate.latency_overflow_count = runs.reduce((s, r) => s + r.aggregated.latency_overflow_count, 0)
+  // §3.15: Campaign provenance — distinguishes per-run from campaign aggregate in machine output
+  aggregate.aggregate_type = "campaign"
+  aggregate.run_count = runs.length
+  // §3.2: Shard identity — propagate from first run (all runs in a campaign share the same shard)
+  aggregate.shard_identity = runs[0]?.aggregated.shard_identity ?? null
 
   return aggregate
 }

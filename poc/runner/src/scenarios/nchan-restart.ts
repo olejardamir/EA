@@ -141,9 +141,10 @@ export class NchanRestartScenario implements Scenario {
               seenSeqs.add(seq)
               prevSeq = seq
 
-              // §3.11: Cross-node completion — replay includes all events up to lastSeq1
-              // (proves Redis history available on replacement node + resume cursor honored)
-              if (lastSeq1 !== null && seq >= lastSeq1) {
+              // §3.11: Cross-node completion — must receive all events in the frozen expected range
+              // The expected range is [frozenExpectedFirstSeq1, headAtReplacement].
+              // Completion requires reaching the head at replacement time, not just the last pre-restart seq.
+              if (lastSeq1 !== null && headAtReplacement !== null && seq >= headAtReplacement) {
                 replayComplete = true
                 clearTimeout(timeout)
                 sub2.close()

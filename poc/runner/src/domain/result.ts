@@ -18,7 +18,16 @@ export interface WorkerMetrics {
   connections_dropped: number
 }
 
+// §3.2: Shard identity — identifies which generator shard produced these metrics
+export interface ShardIdentity {
+  shard_id: number
+  shard_count: number
+  source_ip_index: number
+}
+
 export interface AggregatedMetrics {
+  // §3.2: Shard identity
+  shard_identity: ShardIdentity | null
   connections_attempted: number
   connections_established: number
   connection_failures: number
@@ -83,6 +92,11 @@ export interface AggregatedMetrics {
     totalEventsPerSec: number
     matchEventsPublished: number
     lobbyEventsPublished: number
+    // §3.7: Attempted vs accepted per phase
+    matchEventsAttempted: number
+    lobbyEventsAttempted: number
+    totalEventsAttempted: number
+    totalEventsAccepted: number
   }>
   // §3.7: Aggregate workload-rate totals
   match_events_published: number
@@ -90,6 +104,9 @@ export interface AggregatedMetrics {
   match_events_per_sec: number
   lobby_events_per_sec: number
   total_events_per_sec: number
+  // §3.7: Aggregate attempted totals
+  match_events_attempted: number
+  lobby_events_attempted: number
   // §AC: cgroup v2 runtime signals — null when unsupported/unavailable
   cpu_usage_usec: number | null             // cpu.stat usage_usec — total CPU time in microseconds
   cpu_throttled_count: number | null      // §BK: nr_throttled — must be 0 for ACCEPT
@@ -205,6 +222,9 @@ export interface AggregatedMetrics {
     nchan1_reachable: boolean
     nchan2_reachable: boolean
   }
+  // §3.15: Campaign provenance — distinguishes per-run from campaign aggregate
+  aggregate_type?: "single_run" | "campaign"
+  run_count?: number
 }
 
 // §4.7: Slow-consumer result metrics — computed in the scenario, consumed by classifier
