@@ -4,17 +4,13 @@ import type { ConnectionPool } from "../application/connection-pool.js"
 export class WarmupScenario implements Scenario {
   name = "warmup"
   private pool: ConnectionPool
-  private steadyRate: boolean
 
-  constructor(pool: ConnectionPool, steadyRate = true) {
+  constructor(pool: ConnectionPool) {
     this.pool = pool
-    this.steadyRate = steadyRate
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
     ctx.log(`--- PHASE: WARMUP (${ctx.config.warmupSeconds}s) ---`)
-
-    ctx.publisher.start(this.steadyRate)
 
     const connectionsPerWorker = Math.ceil(ctx.config.targetConnections / ctx.config.workerCount)
     ctx.log(`Connecting ${ctx.config.targetConnections} SSE clients...`)

@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
 
   // Phase 1: Warmup
-  const warmup = new WarmupScenario(pool, true)
+  const warmup = new WarmupScenario(pool)
   const warmupResult = await warmup.execute(ctx)
   log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
 

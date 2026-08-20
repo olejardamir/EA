@@ -112,6 +112,7 @@ export class ConnectionPool {
     connectionOffset: number,
     onSlowConsumer?: (entry: ConnectionEntry) => void,
   ): Promise<void> {
+    this._running = true
     const batchSize = 50
     const batches = Math.ceil(connectionsPerWorker / batchSize)
 
@@ -152,6 +153,7 @@ export class ConnectionPool {
       const url = `${this.config.subUrl}/sub/${matchId}`
       const subscription = await stream.connect(url)
       const tracker = this.createTracker()
+      this.metrics.incrementConnectionsEstablished()
 
       const entry: ConnectionEntry = {
         id: connId,

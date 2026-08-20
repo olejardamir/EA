@@ -12,6 +12,8 @@ export class SteadyScenario implements Scenario {
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
     ctx.log(`--- PHASE: STEADY MEASUREMENT (${ctx.config.measureSeconds}s) ---`)
 
+    ctx.publisher.start(true)
+
     const loopMonitor = setInterval(() => {
       ctx.resourceMonitor.measureEventLoop()
     }, 100)

@@ -274,7 +274,7 @@ without making new architecture decisions.
 ## Artifact
 
 ```text
-LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_1.md
 ```
 
 ## Completion gate

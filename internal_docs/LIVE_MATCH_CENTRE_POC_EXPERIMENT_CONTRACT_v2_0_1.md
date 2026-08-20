@@ -3,7 +3,7 @@
 **Contract ID:** POC-EXP-LMC-001
 **Contract Version:** v2.0.1
 **Date:** 2026-08-19
-**Status:** CORRECTED (post-audit of v2.0.0 against Nchan 1.3.8 docs)
+**Status:** FROZEN (corrected from v2.0.0, verified against Nchan 1.3.8 docs)
 **Supersedes:** `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md` and the earlier raw-WebSocket experiment contract (never implemented)
 **Governing architecture:** `LIVE_MATCH_CENTRE_MINIMUM_DEFENSIBLE_ARCHITECTURE.md`
 **Governing milestones:** `LIVE_MATCH_CENTRE_ASSIGNMENT_MILESTONES (3).md` — Milestone 1
@@ -51,19 +51,23 @@ The POC MUST build Nchan from source inside a Dockerfile using a pinned official
 Dockerfile approach:
 
 ```dockerfile
-FROM nginx:1.27.4-bookworm AS nginx-base
+FROM ubuntu:24.04 AS build
 
-# Build Nchan from pinned release
+ARG NGINX_VERSION=1.27.4
 ARG NCHAN_VERSION=1.3.8
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcurl4-openssl-dev libyajl-dev libpcre2-dev build-essential && \
-    curl -fsSL https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz \
-    | tar xz -C /tmp && \
-    cd /tmp/nchan-${NCHAN_VERSION} && \
-    ./configure --add-module=/tmp/nchan-${NCHAN_VERSION} && \
+    build-essential libpcre2-dev zlib1g-dev libssl-dev \
+    libcurl4-openssl-dev libyajl-dev wget ca-certificates && \
+    wget -q http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    tar xzf nginx-${NGINX_VERSION}.tar.gz && \
+    wget -q https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz && \
+    tar xzf v${NCHAN_VERSION}.tar.gz && \
+    cd nginx-${NGINX_VERSION} && \
+    ./configure --add-module=/nchan-${NCHAN_VERSION} --with-http_ssl_module --with-http_realip_module && \
     make && make install && \
-    apt-get purge -y build-essential && apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* /tmp/nchan-${NCHAN_VERSION}
+    apt-get purge -y build-essential wget && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/* /nginx-* /nchan-*
 ```
 
 Pin both `NCHAN_VERSION` and the Nginx base tag.
@@ -163,10 +167,10 @@ server {
     listen 8081;
 
     # Per-match SSE subscriber
-    location ~ ^/sub/match_(.+)$ {
+    location ~ ^/sub/(.+)$ {
         nchan_subscriber eventsource;
-        nchan_channel_id match_$1;
-        nchan_subscriber_first_message oldest;
+        nchan_channel_id $1;
+        nchan_subscriber_first_message newest;
         nchan_eventsource_ping_interval 15;
         nchan_eventsource_ping_comment "keepalive";
         nchan_eventsource_ping_data "";
