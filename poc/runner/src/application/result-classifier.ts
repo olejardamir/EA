@@ -750,6 +750,11 @@ export function aggregateWorkerMetrics(
     // §3.8: Nchan/Redis CPU percent peaks
     nchan_cpu_percent_peak: null,
     redis_cpu_percent_peak: null,
+    // §3.9: Normalized CPU percent peaks — wired from resource monitor in main.ts
+    resource_cpu_percent_peak: null,
+    resource_cpu_baseline: null,
+    nchan_resource_cpu_percent_peak: null,
+    redis_resource_cpu_percent_peak: null,
     // §4.2: Topology capacity — wired from preflight in main.ts
     topology_capacity_sufficient: true,
     // §4.25: Histogram sample population metadata — defaults
@@ -787,5 +792,17 @@ export function aggregateWorkerMetrics(
       const totalDurationSec = (phaseSnapshots ?? []).reduce((s, p) => s + p.durationMs, 0) / 1000
       return totalDurationSec > 0 ? Math.round((events_received / totalDurationSec) * 10) / 10 : 0
     })(),
+    // §3.12/§4.15: Clock validity — default (unknown) when not wired from main.ts
+    clock_validity: {
+      clock_model: "unknown",
+      nodes_covered: [],
+      measurement_method: "unknown",
+      offset_or_guarantee: -1,
+      uncertainty_ms: -1,
+      threshold_ms: -1,
+      validity_result: "INCONCLUSIVE" as const,
+      nchan1_reachable: false,
+      nchan2_reachable: false,
+    },
   }
 }

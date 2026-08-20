@@ -87,6 +87,11 @@ export class NchanRestartScenario implements Scenario {
         } catch {}
       }
 
+      // §3.11: Freeze expected range BEFORE connecting to nchan-2
+      // Expected = at minimum 1 event after nchan-1's last seq (seq > lastSeq1)
+      const frozenExpectedFirstSeq1 = lastSeq1 !== null ? lastSeq1 + 1 : null
+      const frozenExpectedMinCount1 = 1
+
       ctx.log("Waiting 500ms before connecting to nchan-2...")
       await ctx.sleep(500)
 
@@ -133,6 +138,8 @@ export class NchanRestartScenario implements Scenario {
               seenSeqs.add(seq)
               prevSeq = seq
 
+              // §3.11: Cross-node completion — replay includes all events up to lastSeq1
+              // (proves Redis history available on replacement node + resume cursor honored)
               if (lastSeq1 !== null && seq >= lastSeq1) {
                 replayComplete = true
                 clearTimeout(timeout)
@@ -172,12 +179,16 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq}`)
 
+      // §3.11: Wire delivery accounting — frozen expected range from pre-restart observation
+      ctx.metrics.incrementRestartReplayExpected(frozenExpectedMinCount1)
+      ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
+
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
 
       return {
         name: this.name,
         passed,
-        detail: `cross-node events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}]`,
+        detail: `cross-node events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}] expectedFirstSeq=${frozenExpectedFirstSeq1} expectedMinCount=${frozenExpectedMinCount1}`,
       }
     } catch (err) {
       ctx.log(`Nchan restart test failed: ${err}`)

@@ -185,6 +185,18 @@ export interface AggregatedMetrics {
   }
   // §4.25: Per-phase latency histograms — each phase has isolated fan-out and late-join percentiles
   phase_histograms: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>
+  // §3.12/§4.15: Clock validity evidence — shared-kernel-clock model
+  clock_validity: {
+    clock_model: string
+    nodes_covered: string[]
+    measurement_method: string
+    offset_or_guarantee: number
+    uncertainty_ms: number
+    threshold_ms: number
+    validity_result: "PASS" | "INCONCLUSIVE"
+    nchan1_reachable: boolean
+    nchan2_reachable: boolean
+  }
 }
 
 // §4.7: Slow-consumer result metrics — computed in the scenario, consumed by classifier
