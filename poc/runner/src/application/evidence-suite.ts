@@ -2,7 +2,7 @@ import { NchanHttpPublisher } from "../adapters/nchan-http-publisher.js"
 import { SSEHttpClient } from "../adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "../adapters/metrics-recorder.js"
 import { SystemClock } from "../adapters/system-clock.js"
-import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode } from "../adapters/cgroup-resource-monitor.js"
+import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode, effectiveCpuCapacity } from "../adapters/cgroup-resource-monitor.js"
 import { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import { ConnectionPool } from "./connection-pool.js"
 import { createMatchHeadTracker } from "../domain/match-state.js"
@@ -155,7 +155,7 @@ export async function runSingleExperiment(
   config: ExperimentConfig,
   seed: number,
   runIndex: number,
-  opts: { quiet?: boolean } = {},
+  opts: { quiet?: boolean; nginxFdLimits?: { soft: number | null; hard: number | null } } = {},
 ): Promise<SingleRunResult> {
   const logger = opts.quiet ? () => {} : log
 
@@ -385,6 +385,7 @@ export async function runSingleExperiment(
       : resourceSnap.nchan_cpu_throttled_usec
     aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
     aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
+    aggregated.nchan_memory_container_lifetime_peak_bytes = resourceSnap.nchan_memory_container_lifetime_peak_bytes
     aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events !== null && cgroupBaseline.nchan_memory_oom_events !== null
       ? resourceSnap.nchan_memory_oom_events - cgroupBaseline.nchan_memory_oom_events
       : resourceSnap.nchan_memory_oom_events
@@ -395,13 +396,15 @@ export async function runSingleExperiment(
     // §3.8/§3.16: Nchan/Redis CPU percent peaks — evidence suite parity
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
-    // §3.8: Normalized CPU percent peaks — each service uses its own CPU quota denominator
-    // Uses actual cpu.max period, not assumed 100000µs.
-    const cpuPeriod = resourceSnap.cpu_max_period ?? 100_000
-    const runnerCpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / cpuPeriod : null
-    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / cpuPeriod : null
+    // §3.8: Normalized CPU percent peaks — each service uses its own CPU quota AND period
+    // §3.9: Use each service's own cpu.max period, not the runner's.
+    const runnerCpuPeriod = resourceSnap.cpu_max_period ?? 100_000
+    const runnerCpuLimitCores = effectiveCpuCapacity(resourceSnap.cpu_max_quota, runnerCpuPeriod, resourceSnap.runner_cpuset_effective_cpus)
+    const nchanCpuPeriod = resourceSnap.nchan_cpu_max_period ?? runnerCpuPeriod
+    const nchanCpuLimitCores = effectiveCpuCapacity(resourceSnap.nchan_cpu_max_quota, nchanCpuPeriod, resourceSnap.nchan_cpuset_effective_cpus)
+    const redisCpuPeriod = resourceSnap.redis_cpu_max_period ?? runnerCpuPeriod
     const redisCpuLimitCores = resourceSnap.redis_cpu_percent_peak !== null
-      ? (resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / cpuPeriod : 2)
+      ? (effectiveCpuCapacity(resourceSnap.redis_cpu_max_quota, redisCpuPeriod, resourceSnap.redis_cpuset_effective_cpus) ?? 2)
       : null // §3.8: Redis frozen limit = 2 CPUs from compose (fallback when cgroup unavailable)
     const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
     aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, runnerCpuLimitCores)
@@ -414,7 +417,8 @@ export async function runSingleExperiment(
     const phaseHists = metrics.snapshotPhaseHistograms()
     aggregated.phase_histograms = phaseHists
     // §4.2: Topology capacity
-    const topologyPreflight = runTopologyPreflight(config.targetConnections)
+    // §3.3: Pass Nginx container's actual FD limits (fetched once at suite start)
+    const topologyPreflight = runTopologyPreflight(config.targetConnections, undefined, undefined, undefined, opts.nginxFdLimits)
     aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
     aggregated.generator_backlog_peak = metrics.snapshot().generator_backlog_peak
     aggregated.publisher_attempts = nchanPublisher.stats.attempts
@@ -480,6 +484,27 @@ export async function runSingleExperiment(
       aggregated.reconnect_active_start = ctx._reconnectHealth.active_start
       aggregated.reconnect_active_peak = ctx._reconnectHealth.active_peak
       aggregated.reconnect_active_end = ctx._reconnectHealth.active_end
+    }
+    // §3.11.C: Wire per-scenario active population from contexts
+    if (ctx._lateJoinActivePopulation) {
+      aggregated.late_join_active_start = ctx._lateJoinActivePopulation.start
+      aggregated.late_join_active_peak = ctx._lateJoinActivePopulation.peak
+      aggregated.late_join_active_end = ctx._lateJoinActivePopulation.end
+    }
+    if (ctx._burstActivePopulation) {
+      aggregated.burst_active_start = ctx._burstActivePopulation.start
+      aggregated.burst_active_peak = ctx._burstActivePopulation.peak
+      aggregated.burst_active_end = ctx._burstActivePopulation.end
+    }
+    if (ctx._slowConsumerActivePopulation) {
+      aggregated.slow_consumer_active_start = ctx._slowConsumerActivePopulation.start
+      aggregated.slow_consumer_active_peak = ctx._slowConsumerActivePopulation.peak
+      aggregated.slow_consumer_active_end = ctx._slowConsumerActivePopulation.end
+    }
+    if (ctx._restartActivePopulation) {
+      aggregated.restart_active_start = ctx._restartActivePopulation.start
+      aggregated.restart_active_peak = ctx._restartActivePopulation.peak
+      aggregated.restart_active_end = ctx._restartActivePopulation.end
     }
 
     // §R: Wire active connections peak from metrics recorder
@@ -700,6 +725,22 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.surge_scheduler_lag_max = Math.max(...runs.map((r) => r.aggregated.surge_scheduler_lag_max))
   aggregate.active_population_peak = Math.max(...runs.map((r) => r.aggregated.active_population_peak))
   aggregate.surge_timing_error_ms = Math.max(...runs.map((r) => r.aggregated.surge_timing_error_ms))
+  // §3.11.C: Per-scenario active population — max across runs
+  aggregate.reconnect_active_start = Math.max(...runs.map((r) => r.aggregated.reconnect_active_start))
+  aggregate.reconnect_active_peak = Math.max(...runs.map((r) => r.aggregated.reconnect_active_peak))
+  aggregate.reconnect_active_end = Math.max(...runs.map((r) => r.aggregated.reconnect_active_end))
+  aggregate.late_join_active_start = Math.max(...runs.map((r) => r.aggregated.late_join_active_start))
+  aggregate.late_join_active_peak = Math.max(...runs.map((r) => r.aggregated.late_join_active_peak))
+  aggregate.late_join_active_end = Math.max(...runs.map((r) => r.aggregated.late_join_active_end))
+  aggregate.burst_active_start = Math.max(...runs.map((r) => r.aggregated.burst_active_start))
+  aggregate.burst_active_peak = Math.max(...runs.map((r) => r.aggregated.burst_active_peak))
+  aggregate.burst_active_end = Math.max(...runs.map((r) => r.aggregated.burst_active_end))
+  aggregate.slow_consumer_active_start = Math.max(...runs.map((r) => r.aggregated.slow_consumer_active_start))
+  aggregate.slow_consumer_active_peak = Math.max(...runs.map((r) => r.aggregated.slow_consumer_active_peak))
+  aggregate.slow_consumer_active_end = Math.max(...runs.map((r) => r.aggregated.slow_consumer_active_end))
+  aggregate.restart_active_start = Math.max(...runs.map((r) => r.aggregated.restart_active_start))
+  aggregate.restart_active_peak = Math.max(...runs.map((r) => r.aggregated.restart_active_peak))
+  aggregate.restart_active_end = Math.max(...runs.map((r) => r.aggregated.restart_active_end))
   // §3.9/§3.16: Nchan/Redis CPU percent peaks — null in ANY run means unavailable → campaign INCONCLUSIVE
   // Do NOT convert null to 0; preserve null so classifier can detect mandatory metric absence.
   const anyNchanCpuNull = runs.some((r) => r.aggregated.nchan_cpu_percent_peak === null)
@@ -772,6 +813,21 @@ export async function runEvidenceSuite(
   const maxRuns = opts.maxRuns ?? MAX_RUNS
   const runs: SingleRunResult[] = []
 
+  // §3.3: Fetch Nginx container's actual FD limits once at suite start.
+  // In the 100k topology, Nginx is in a separate container; its RLIMIT_NOFILE
+  // differs from the runner's. The control server reads the Nginx container's limits.
+  let nginxFdLimits: { soft: number | null; hard: number | null } | undefined
+  if (config.nchanControlUrl) {
+    const rm = new CgroupResourceMonitor(undefined, config.nchanControlUrl)
+    const nginxPreflight = await rm.preflight(config.nchanControlUrl)
+    if (nginxPreflight) {
+      const soft = nginxPreflight.nginx_worker_fd_soft ?? nginxPreflight.nginx_master_fd_soft
+      const hard = nginxPreflight.nginx_worker_fd_hard ?? nginxPreflight.nginx_master_fd_hard
+      if (soft !== null) nginxFdLimits = { soft, hard }
+    }
+    rm.dispose()
+  }
+
   log(`§6.37 Evidence-suite orchestrator starting (min=${MIN_RUNS}, max=${maxRuns})`)
 
   for (let i = 0; i < maxRuns; i++) {
@@ -797,7 +853,7 @@ export async function runEvidenceSuite(
     const seed = deriveSeed(config.seed, i)
     log(`─── Run ${i + 1}/${maxRuns} (seed=${seed}) ───`)
 
-    const result = await runSingleExperiment(config, seed, i, opts)
+    const result = await runSingleExperiment(config, seed, i, { ...opts, nginxFdLimits })
     runs.push(result)
 
     log(`Run ${i + 1}: ${result.verdict.verdict} (${result.verdict.checks.filter((c) => c.passed).length}/${result.verdict.checks.length} checks passed)`)

@@ -148,6 +148,7 @@ export function emitMachineReadableResult(
   verdictResult: VerdictResult,
   config: { targetConnections: number; seed: number; runProfile: string; runMode?: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number; nchanPubUrl?: string; nchanSubUrl?: string; redisUrl?: string; nchanControlUrl?: string },
   topologyPreflight?: TopologyPreflight,
+  structuredScenarioEvidence?: Record<string, unknown>,
 ): void {
   metrics.events_published = eventsPublished
 
@@ -155,7 +156,10 @@ export function emitMachineReadableResult(
   const preflight = topologyPreflight ?? runTopologyPreflight(config.targetConnections)
 
   const result = {
-    contract_version: "v2.0.3",
+    contract_version: config.runMode === "coordinated-shard" ? "v2.0.4" : "v2.0.3",
+    aggregate_scope: config.runMode === "coordinated-shard" ? "shard" : "single_run",
+    scope: config.runMode === "coordinated-shard" ? "shard" : "single_run",
+    global_direct_accept_eligible: false,
     run_profile: config.runProfile,
     run_mode: config.runMode ?? "single",
     seed: config.seed,
@@ -245,6 +249,7 @@ export function emitMachineReadableResult(
       passed: c.passed,
       detail: c.detail,
     })),
+    structured_scenario_evidence: structuredScenarioEvidence ?? {},
     connection_metrics: {
       connections_attempted: metrics.connections_attempted,
       connections_established: metrics.connections_established,
@@ -338,7 +343,12 @@ export function emitMachineReadableResult(
       memory_mb_peak: metrics.memory_mb_peak,
       nchan_memory_mb_peak: metrics.nchan_memory_mb_peak,
       redis_memory_mb_peak: metrics.redis_memory_mb_peak,
+      // §3.8.F: CPU percent fields — two units:
+      //   *_cpu_percent_peak = raw percent of one CPU core (100% = 1 core fully utilized)
+      //   *_resource_cpu_percent_peak = percent of assigned service capacity (normalized by cgroup limit)
       generator_cpu_percent_peak: metrics.generator_cpu_percent_peak,
+      nchan_cpu_percent_peak: metrics.nchan_cpu_percent_peak,
+      redis_cpu_percent_peak: metrics.redis_cpu_percent_peak,
       generator_event_loop_p99_ms: metrics.generator_event_loop_p99_ms,
       generator_backlog_peak: metrics.generator_backlog_peak,
       cpu_usage_usec: metrics.cpu_usage_usec,
@@ -358,6 +368,7 @@ export function emitMachineReadableResult(
       nchan_memory_current_bytes: metrics.nchan_memory_current_bytes,
       // §3.8.D: Note: memory.peak is container-lifetime, not per-run. Cannot be reset via control server.
       nchan_memory_peak_bytes: metrics.nchan_memory_peak_bytes,
+      nchan_memory_container_lifetime_peak_bytes: metrics.nchan_memory_container_lifetime_peak_bytes ?? null,
       nchan_memory_oom_events: metrics.nchan_memory_oom_events,
       nchan_memory_oom_kill_events: metrics.nchan_memory_oom_kill_events,
       // §4.9: Redis connected-client peak
@@ -410,6 +421,27 @@ export function emitMachineReadableResult(
       active_start: metrics.reconnect_active_start,
       active_peak: metrics.reconnect_active_peak,
       active_end: metrics.reconnect_active_end,
+    },
+    // §3.11.C: Per-scenario active concurrency for other peak-load scenarios
+    late_join_active_population: {
+      start: metrics.late_join_active_start,
+      peak: metrics.late_join_active_peak,
+      end: metrics.late_join_active_end,
+    },
+    burst_active_population: {
+      start: metrics.burst_active_start,
+      peak: metrics.burst_active_peak,
+      end: metrics.burst_active_end,
+    },
+    slow_consumer_active_population: {
+      start: metrics.slow_consumer_active_start,
+      peak: metrics.slow_consumer_active_peak,
+      end: metrics.slow_consumer_active_end,
+    },
+    restart_active_population: {
+      start: metrics.restart_active_start,
+      peak: metrics.restart_active_peak,
+      end: metrics.restart_active_end,
     },
     phase_publish_rates: metrics.phase_publish_rates,
     // §4.18: Workload rate metrics with separate match/lobby/total rates
@@ -528,8 +560,8 @@ export function emitMachineReadableResult(
       // - timing valid
       // - events actually published and received
       // §3.8.E: Campaign-level target for multi-shard 100k campaigns
-      direct_accept_eligible: ((config.targetConnections * (parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1)) >= 100000)
-        && (metrics.active_connections_peak ?? 0) >= config.targetConnections
+      direct_accept_eligible: config.runMode !== "coordinated-shard" && ((config.targetConnections * (parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1)) >= 100000)
+        && (metrics.active_connections_peak ?? 0) >= (config.targetConnections * (parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1))
         && preflight.capacity_sufficient
         && metrics.generator_cpu_percent_peak < 90
         && metrics.generator_event_loop_p99_ms < 100
@@ -537,7 +569,7 @@ export function emitMachineReadableResult(
         && metrics.events_published > 0
         && metrics.events_received > 0,
       production_inference_only: config.targetConnections < 100000
-        || (metrics.active_connections_peak ?? 0) < config.targetConnections
+        || (metrics.active_connections_peak ?? 0) < (config.targetConnections * (parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1))
         || !preflight.capacity_sufficient
         || metrics.generator_cpu_percent_peak >= 90
         || metrics.generator_event_loop_p99_ms >= 100

@@ -159,6 +159,18 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     reconnect_active_start: 0,
     reconnect_active_peak: 0,
     reconnect_active_end: 0,
+    late_join_active_start: 0,
+    late_join_active_peak: 0,
+    late_join_active_end: 0,
+    burst_active_start: 0,
+    burst_active_peak: 0,
+    burst_active_end: 0,
+    slow_consumer_active_start: 0,
+    slow_consumer_active_peak: 0,
+    slow_consumer_active_end: 0,
+    restart_active_start: 0,
+    restart_active_peak: 0,
+    restart_active_end: 0,
     ...overrides,
   }
 }
@@ -564,14 +576,20 @@ describe("Evidence Suite §6.37", () => {
       assert.ok(yaml.includes('RUN_MODE: "evidence"'), "compose.evidence.yaml must set RUN_MODE=evidence")
     })
 
-    it("100k shards use RUN_MODE=single (no independent campaigns)", () => {
-      // §3.3: 100k shards must NOT run independent evidence campaigns
-      // until a global coordinator is implemented
+    it("100k shards use RUN_MODE=coordinated-shard (one global campaign, no independent campaigns)", () => {
+      // §3.2/§3.3: 100k shards must be workers of ONE globally coordinated
+      // experiment. They must not run independent evidence campaigns (RUN_MODE
+      // =evidence) and must not run uncoordinated single experiments either.
       const yaml = fs.readFileSync(path.join(import.meta.dirname, "../../../compose.evidence-100k.yaml"), "utf-8")
       assert.ok(
-        yaml.includes('RUN_MODE: "single"'),
-        "compose.evidence-100k.yaml shards must use RUN_MODE=single (not evidence) until global coordinator exists"
+        yaml.includes('RUN_MODE: "coordinated-shard"'),
+        "compose.evidence-100k.yaml shards must use RUN_MODE=coordinated-shard"
       )
+      assert.ok(
+        !yaml.includes('RUN_MODE: "evidence"'),
+        "100k shards must not run independent 3–8-run evidence campaigns"
+      )
+      assert.ok(yaml.includes("COORDINATOR_URL"), "100k shards must point at the global coordinator")
     })
   })
 })

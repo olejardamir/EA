@@ -7,6 +7,16 @@ import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 const BACKPRESSURE_DURATION_MS = 15000
 const LATENCY_DEGRADATION_THRESHOLD = 0.05
 const SLOW_EVENT_INTERVAL_MS = 2000 // §U: 1 event per 2 seconds
+const PACING_TOLERANCE_FRACTION = 0.20
+const PACING_MIN_MS = SLOW_EVENT_INTERVAL_MS * (1 - PACING_TOLERANCE_FRACTION)
+const PACING_MAX_MS = SLOW_EVENT_INTERVAL_MS * (1 + PACING_TOLERANCE_FRACTION)
+const HEALTHY_BASELINE_MS = 3000
+const RECOVERY_TIMEOUT_MS = 10_000
+const MEMORY_MAX_GROWTH_BYTES = 50 * 1024 * 1024
+const MEMORY_MAX_GROWTH_FRACTION = 0.10
+const MEMORY_MAX_RECOVERY_DELTA_BYTES = 50 * 1024 * 1024
+const MEMORY_MEANINGFUL_GROWTH_BYTES = 1024 * 1024
+const MEMORY_MEANINGFUL_GROWTH_FRACTION = 0.05
 
 // §3.6: Nchan memory sampling interval during slow phase
 const MEMORY_SAMPLE_INTERVAL_MS = 1000
@@ -45,6 +55,9 @@ export interface SlowConsumerMetrics {
   nchan_memory_bounded: boolean | null
   nchan_memory_growth_bytes: number | null
   nchan_memory_growth_pct: number | null
+  independent_offered_measurement: boolean
+  pacing_valid: boolean
+  replay_recovery_pct: number
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -57,16 +70,6 @@ function percentile(sorted: number[], p: number): number {
 // Controls read-side pacing by pausing/resuming the underlying transport.
 // §3.6: Tracks timestamps of events arriving at the subscription for throttle proof.
 //
-// §3.8 ARCHITECTURAL NOTE: offered == consumed by construction with TCP backpressure.
-// When the transport is paused, Nchan buffers events in its memory. When resumed,
-// the socket delivers events and the onEvent callback fires immediately. There is no
-// intermediate buffer between transport delivery and application processing. Therefore:
-//   - slow_offered_event_count = events delivered by transport = events processed by app
-//   - slow_application_read_count = same count
-// The proof of throttling is NOT in a count differential (which is 0 by construction)
-// but in the TIMING: per-client inter-event intervals prove each client achieves ~2s pacing.
-// If the throttle is absorbed by kernel socket buffers (no meaningful server-side memory
-// growth), the test correctly returns INCONCLUSIVE via evidence_server_side_backpressure_reached.
 class ThrottledSubscription implements Subscription {
   private inner: Subscription
   private eventsReceived = 0
@@ -75,6 +78,7 @@ class ThrottledSubscription implements Subscription {
   private downstreamHandler: ((event: SubscriptionEvent) => void) | null = null
   private resumeTimers: ReturnType<typeof setTimeout>[] = []
   private _offeredCount = 0
+  private throttleEnabled = true
   // §3.6: Timestamps (ms since page load) of events arriving at this subscription
   private _eventTimestampsMs: number[] = []
 
@@ -88,7 +92,7 @@ class ThrottledSubscription implements Subscription {
         this.eventsReceived++
         // §3.6: Record the timestamp when this event arrived
         this._eventTimestampsMs.push(performance.now())
-        if (!this.paused) {
+        if (this.throttleEnabled && !this.paused) {
           this.paused = true
           this.inner.pause()
           const timer = setTimeout(() => {
@@ -129,6 +133,22 @@ class ThrottledSubscription implements Subscription {
   get offeredCount(): number { return this._offeredCount }
   // §3.6: Timestamps of events arriving at this subscription
   get eventTimestampsMs(): number[] { return this._eventTimestampsMs }
+
+  disableThrottle(): void {
+    this.throttleEnabled = false
+    this.paused = false
+    for (const timer of this.resumeTimers) clearTimeout(timer)
+    this.resumeTimers = []
+    if (this.inner.connected) this.inner.resume()
+  }
+}
+
+export function independentOfferedCount(headsBefore: number[], headsAfter: number[]): number {
+  return headsAfter.reduce((sum, head, index) => sum + Math.max(0, head - (headsBefore[index] ?? head)), 0)
+}
+
+export function pacingWithinTolerance(medians: number[], intendedClients: number): boolean {
+  return medians.length === intendedClients && medians.every((median) => median >= PACING_MIN_MS && median <= PACING_MAX_MS)
 }
 
 export class SlowConsumerScenario implements Scenario {
@@ -155,13 +175,31 @@ export class SlowConsumerScenario implements Scenario {
 
     ctx.log(`Designating ${slowCount}/${all.length} connections as slow (${slowFraction * 100}%)`)
 
-    // §3.6: Snapshot healthy-client latency before slow phase — dedicated histogram
-    // At this point ALL connections are healthy, so the global snapshot IS the healthy cohort
+    // Dedicated immediately-before-slow healthy baseline. This listener is
+    // installed now and excludes every earlier phase by construction.
     const healthyBeforeHist = new StreamingHistogram()
-    const snapBefore = ctx.metrics.snapshot()
-    for (const ms of snapBefore.fan_out_latencies_ms) {
-      healthyBeforeHist.record(ms)
+    const healthyDuringHist = new StreamingHistogram()
+    let collectHealthyBaseline = true
+    let collectHealthyDuring = false
+    for (const conn of healthyConnections) {
+      const originalHandler = conn.subscription.getEventHandler()
+      conn.subscription.onEvent((evt) => {
+        if (evt.type === "message") {
+          try {
+            const payload = JSON.parse(evt.event.data)
+            const publishedAt = new Date(payload.publish_timestamp).getTime()
+            const latencyMs = Date.now() - publishedAt
+            if (Number.isFinite(publishedAt) && latencyMs >= 0 && latencyMs < 30_000) {
+              if (collectHealthyBaseline) healthyBeforeHist.record(latencyMs)
+              if (collectHealthyDuring) healthyDuringHist.record(latencyMs)
+            }
+          } catch {}
+        }
+        originalHandler?.(evt)
+      })
     }
+    await ctx.sleep(HEALTHY_BASELINE_MS)
+    collectHealthyBaseline = false
     const p95Before = healthyBeforeHist.p95()
 
     // §3.6: Nchan memory baseline — before wrapping slow connections
@@ -179,32 +217,10 @@ export class SlowConsumerScenario implements Scenario {
     }
 
     ctx.log(`${slowCount} slow connections throttled to 1 event/2s, ${healthyConnections.length} healthy connections active`)
+    collectHealthyDuring = true
 
     // §3.7: Track heads before slow phase for missed-live computation
     const headsBeforeSlow = slowConnections.map(conn => ctx.headTracker.getHead(conn.matchId))
-
-    // §3.6: Create a dedicated histogram for healthy connections during the slow phase.
-    // Register a listener on each healthy connection that records latency into this histogram.
-    const healthyDuringHist = new StreamingHistogram()
-    for (const conn of healthyConnections) {
-      const origHandler = conn.subscription.getEventHandler()
-      conn.subscription.onEvent((evt) => {
-        if (evt.type === "message" && evt.event.id) {
-          // §3.6: Parse the event to extract publish_timestamp for latency measurement
-          try {
-            const body = JSON.parse(evt.event.data)
-            if (body.publish_timestamp) {
-              const latencyMs = Date.now() - new Date(body.publish_timestamp).getTime()
-              if (latencyMs >= 0 && latencyMs < 30000) {
-                healthyDuringHist.record(latencyMs)
-              }
-            }
-          } catch { /* non-JSON events are expected */ }
-        }
-        // §3.17: Chain to the original pool handler
-        origHandler?.(evt)
-      })
-    }
 
     // §3.6: Nchan memory sampling during slow phase
     const nchanMemSamplesDuring: number[] = []
@@ -219,6 +235,7 @@ export class SlowConsumerScenario implements Scenario {
     const slowPhaseStart = ctx.clock.now()
     await ctx.sleep(BACKPRESSURE_DURATION_MS)
     const slowPhaseElapsed = ctx.clock.now() - slowPhaseStart
+    collectHealthyDuring = false
 
     // §3.6: Stop memory sampling
     clearInterval(sampleTimer)
@@ -244,20 +261,27 @@ export class SlowConsumerScenario implements Scenario {
         slowDisconnects++
         ctx.metrics.incrementSlowConsumerDisconnects()
       }
-      totalOffered += wrapper.offeredCount
       totalRead += wrapper.achievedReadCount
       perClientTimestampsMs.push([...wrapper.eventTimestampsMs])
     }
 
     // §3.7: Compute per-client missed live using head deltas
     const headsAfterSlow = slowConnections.map(conn => ctx.headTracker.getHead(conn.matchId))
+    // Independent offered/expected source: canonical accepted publisher head
+    // deltas for each slow client's channel, not the slow callback itself.
+    totalOffered = independentOfferedCount(headsBeforeSlow, headsAfterSlow)
 
     // §3.7: Capture read counts before resume for replay tracking
     const readBeforeResume = throttledWrappers.map(w => w.achievedReadCount)
 
-    // Resume all slow connections
-    for (const conn of slowConnections) {
-      try { conn.subscription.resume() } catch {}
+    // Remove throttling and drain replay/backlog until recovered or timed out.
+    for (const wrapper of throttledWrappers) wrapper.disableThrottle()
+    const expectedRecovery = totalOffered - totalRead
+    const recoveryDeadline = Date.now() + RECOVERY_TIMEOUT_MS
+    while (Date.now() < recoveryDeadline) {
+      const recovered = throttledWrappers.reduce((sum, wrapper, index) => sum + Math.max(0, wrapper.achievedReadCount - readBeforeResume[index]), 0)
+      if (recovered >= expectedRecovery) break
+      await ctx.sleep(100)
     }
 
     // §3.6: Nchan memory after recovery — after resuming all connections
@@ -280,7 +304,8 @@ export class SlowConsumerScenario implements Scenario {
     const perClientDetails: PerClientDetail[] = []
     for (let i = 0; i < slowConnections.length; i++) {
       const publishedDuringSlow = headsAfterSlow[i] - headsBeforeSlow[i]
-      const missedLive = Math.max(0, publishedDuringSlow - throttledWrappers[i].achievedReadCount)
+      const consumedDuringSlow = readBeforeResume[i]
+      const missedLive = Math.max(0, publishedDuringSlow - consumedDuringSlow)
       const replayReceived = Math.max(0, readAfterReplay[i] - readBeforeResume[i])
       const missedReplay = Math.max(0, missedLive - replayReceived)
       const replayGap = missedReplay
@@ -300,8 +325,8 @@ export class SlowConsumerScenario implements Scenario {
     const missedReplay = perClientDetails.reduce((s, pc) => s + pc.missedReplay, 0)
     const missedRequired = missedLive
     const expectedTotalReplay = missedLive
-    const replayReceivedAfterReconnect = perClientDetails.reduce((s, pc) => s + Math.max(0, readAfterReplay[pc.index] - readBeforeResume[pc.index]), 0)
-    const replayCoverage = expectedTotalReplay > 0 ? replayReceivedAfterReconnect / expectedTotalReplay : 0
+    const replayReceivedAfterReconnect = perClientDetails.reduce((s, pc) => s + Math.min(pc.missedLive, Math.max(0, readAfterReplay[pc.index] - readBeforeResume[pc.index])), 0)
+    const replayCoverage = expectedTotalReplay > 0 ? replayReceivedAfterReconnect / expectedTotalReplay : 1
 
     ctx.log(`§3.7 missed_live=${missedLive} missed_replay=${missedReplay} replay_coverage=${(replayCoverage * 100).toFixed(1)}%`)
     ctx.log(`§3.7 per_client: [${perClientDetails.map(d => d.detail).join("; ")}]`)
@@ -315,7 +340,7 @@ export class SlowConsumerScenario implements Scenario {
     }
 
     // §3.6: Compute achieved read rate from slow consumers
-    const slowReadRate = slowPhaseElapsed > 0 ? totalRead / (slowPhaseElapsed / 1000) : 0
+    const slowReadRate = slowPhaseElapsed > 0 ? totalRead / slowCount / (slowPhaseElapsed / 1000) : 0
 
     // §3.8: Compute per-client inter-event intervals — proves each client achieves ~2s pacing
     const allSortedIntervals: number[] = []
@@ -334,9 +359,9 @@ export class SlowConsumerScenario implements Scenario {
     const medianInterval = percentile(allSortedIntervals, 0.5)
     const p95Interval = percentile(allSortedIntervals, 0.95)
     // §3.8: Per-client median interval — all clients should achieve ~2s pacing independently
-    const perClientMediansAllAbove1s = perClientMedianIntervals.every((m) => m >= 1000)
+    const pacingValid = pacingWithinTolerance(perClientMedianIntervals, slowCount)
     ctx.log(`§3.6 slow_consumer read rate: ${slowReadRate.toFixed(2)} events/s, median_interval=${medianInterval.toFixed(0)}ms, p95_interval=${p95Interval.toFixed(0)}ms (target=${SLOW_EVENT_INTERVAL_MS}ms)`)
-    ctx.log(`§3.8 per_client_medians: [${perClientMedianIntervals.map((m) => m.toFixed(0)).join(", ")}]ms, all_above_1s=${perClientMediansAllAbove1s}`)
+    ctx.log(`§3.8 per_client_medians: [${perClientMedianIntervals.map((m) => m.toFixed(0)).join(", ")}]ms, tolerance=${PACING_MIN_MS}-${PACING_MAX_MS}ms pacing_valid=${pacingValid}`)
 
     // §3.6: Healthy-client latency during slow phase — from dedicated histogram
     const p95During = healthyDuringHist.p95()
@@ -360,11 +385,11 @@ export class SlowConsumerScenario implements Scenario {
       const growthBytes = nchanMemEnd - nchanMemBaseline
       // Growth must be < 10% of baseline AND < 50MB to be considered bounded
       const growthPct = nchanMemBaseline > 0 ? growthBytes / nchanMemBaseline : 0
-      if (growthBytes >= 50 * 1024 * 1024 || growthPct >= 0.10) return false
+      if (growthBytes >= MEMORY_MAX_GROWTH_BYTES || growthPct >= MEMORY_MAX_GROWTH_FRACTION) return false
       // If recovery sample exists, check it returned toward baseline
       if (nchanMemRecovery !== null) {
         const recoveryDelta = Math.abs(nchanMemRecovery - nchanMemBaseline)
-        if (recoveryDelta >= 50 * 1024 * 1024) return false
+        if (recoveryDelta >= MEMORY_MAX_RECOVERY_DELTA_BYTES) return false
       }
       return true
     })()
@@ -383,8 +408,8 @@ export class SlowConsumerScenario implements Scenario {
     const nchanMemoryGrowthPct = nchanMemBaseline !== null && nchanMemBaseline > 0
       ? nchanMemoryGrowthBytes / nchanMemBaseline
       : 0
-    const nchanMemoryMeaningfulGrowth = nchanMemoryGrowthBytes > 1024 * 1024 && nchanMemoryGrowthPct > 0.05
-    const evidenceBackpressure = slowDisconnects > 0 || nchanMemoryMeaningfulGrowth
+    const nchanMemoryMeaningfulGrowth = nchanMemoryGrowthBytes > MEMORY_MEANINGFUL_GROWTH_BYTES && nchanMemoryGrowthPct > MEMORY_MEANINGFUL_GROWTH_FRACTION
+    const evidenceBackpressure = slowDisconnects > 0 || (backlogGrowth > 0 && nchanMemoryMeaningfulGrowth)
 
     ctx.log(`§3.6 slow offered: ${totalOffered} events (${(totalOffered / (slowPhaseElapsed / 1000)).toFixed(2)} /s), read: ${totalRead} events (${slowReadRate.toFixed(2)} /s), backlog_growth=${backlogGrowth}`)
     ctx.log(`§3.6 server-side backpressure: ${evidenceBackpressure ? "YES" : "NO"} (disconnects=${slowDisconnects > 0}, nchan_memory_grew=${nchanMemoryGrew}, degradation=${degradation > LATENCY_DEGRADATION_THRESHOLD})`)
@@ -404,7 +429,7 @@ export class SlowConsumerScenario implements Scenario {
     const anyClientMissed = perClientDetails.some(pc => pc.totalMissed > 0)
     const replayCoverageOk = replayCoverage >= 0.95
     const passed = degradationOk && boundedOk && evidenceBackpressure && boundedKnown
-      && anyClientMissed && replayCoverageOk && perClientMediansAllAbove1s
+      && anyClientMissed && replayCoverageOk && pacingValid
 
     this.slowMetrics = {
       slow_clients: slowCount,
@@ -439,6 +464,9 @@ export class SlowConsumerScenario implements Scenario {
       nchan_memory_bounded: nchanMemoryBounded,
       nchan_memory_growth_bytes: nchanMemBaseline !== null && nchanMemEnd !== null ? nchanMemEnd - nchanMemBaseline : null,
       nchan_memory_growth_pct: nchanMemoryGrowthPct,
+      independent_offered_measurement: true,
+      pacing_valid: pacingValid,
+      replay_recovery_pct: replayCoverage * 100,
     }
 
     const detail = [
@@ -456,7 +484,9 @@ export class SlowConsumerScenario implements Scenario {
       `median_event_interval=${medianInterval.toFixed(0)}ms`,
       `p95_event_interval=${p95Interval.toFixed(0)}ms`,
       `per_client_medians=[${perClientMedianIntervals.map((m) => m.toFixed(0)).join(",")}]ms`,
-      `per_client_all_above_1s=${perClientMediansAllAbove1s}`,
+      `pacing_tolerance=${PACING_MIN_MS}-${PACING_MAX_MS}ms`,
+      `pacing_valid=${pacingValid}`,
+      `offered_source=accepted_publisher_head_delta`,
       `p95_before=${p95Before}ms`,
       `p95_with_slow=${p95During}ms`,
       `healthy_before_samples=${healthyBeforeHist.count}`,
@@ -474,6 +504,14 @@ export class SlowConsumerScenario implements Scenario {
     ].join(" ")
 
     ctx.log(`Slow consumer result: ${passed ? "PASS" : "FAIL"} (${detail})`)
+
+    // §3.11.C: Record active population for this scenario
+    ctx._slowConsumerActivePopulation = {
+      start: all.length,
+      peak: all.length,
+      end: this.pool.size,
+    }
+
     return { name: this.name, passed, detail }
   }
 }

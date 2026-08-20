@@ -67,6 +67,7 @@ export interface AggregatedMetrics {
   nchan_cpu_throttled_usec: number | null
   nchan_memory_current_bytes: number | null
   nchan_memory_peak_bytes: number | null
+  nchan_memory_container_lifetime_peak_bytes?: number | null
   nchan_memory_oom_events: number | null
   nchan_memory_oom_kill_events: number | null
   timing_valid: boolean
@@ -160,6 +161,19 @@ export interface AggregatedMetrics {
   reconnect_active_start: number
   reconnect_active_peak: number
   reconnect_active_end: number
+  // §3.11.C: Per-scenario active concurrency for other peak-load scenarios
+  late_join_active_start: number
+  late_join_active_peak: number
+  late_join_active_end: number
+  burst_active_start: number
+  burst_active_peak: number
+  burst_active_end: number
+  slow_consumer_active_start: number
+  slow_consumer_active_peak: number
+  slow_consumer_active_end: number
+  restart_active_start: number
+  restart_active_peak: number
+  restart_active_end: number
   // §R: active connections peak — separate from cumulative establishments
   active_connections_peak: number
   // §4.16: Live vs replay delivery accounting
@@ -267,6 +281,9 @@ export interface SlowConsumerMetrics {
   nchan_memory_bounded: boolean | null
   nchan_memory_growth_bytes: number | null
   nchan_memory_growth_pct: number | null
+  independent_offered_measurement?: boolean
+  pacing_valid?: boolean
+  replay_recovery_pct?: number
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

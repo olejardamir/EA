@@ -4,7 +4,7 @@ import type { ScenarioContext } from "../scenarios/scenario.js"
 import type { EventStream, Subscription, SubscriptionEvent } from "../ports/event-stream.js"
 import type { MetricsSnapshot } from "../ports/metrics.js"
 import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
-import { SlowConsumerScenario } from "../scenarios/slow-consumer.js"
+import { SlowConsumerScenario, independentOfferedCount, pacingWithinTolerance } from "../scenarios/slow-consumer.js"
 
 function makeEntry(id: number) {
   // §4.7: Mock subscription that simulates event delivery — calls handler with events
@@ -132,6 +132,15 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
 }
 
 describe("SlowConsumerScenario", () => {
+  it("derives offered events independently from accepted publisher head deltas", () => {
+    assert.equal(independentOfferedCount([10, 20], [15, 27]), 12)
+  })
+
+  it("requires the frozen ±20% tolerance around two-second pacing", () => {
+    assert.equal(pacingWithinTolerance([1600, 2000, 2400], 3), true)
+    assert.equal(pacingWithinTolerance([1000, 2000], 2), false)
+    assert.equal(pacingWithinTolerance([2000], 2), false)
+  })
   it("skips when no connections exist", async () => {
     const ctx = mockCtx([])
     const scenario = new SlowConsumerScenario({ entries: [] } as any)

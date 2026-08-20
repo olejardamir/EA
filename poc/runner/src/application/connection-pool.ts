@@ -57,8 +57,10 @@ export class ConnectionPool {
   }
 
   // §4.3: Remove a dead connection from active pool and decrement counts
-  // §3.10.A: Exact-once guard — only decrement if entry is still in the pool
-  private removeEntry(entry: ConnectionEntry): void {
+  // §3.10.A: Exact-once guard — only decrement if entry is still in the pool.
+  // §3.10.E: Returns whether this call actually removed the entry, so terminal
+  // attribution (disconnect category) can be gated on first/only removal.
+  private removeEntry(entry: ConnectionEntry): boolean {
     const idx = this.connections.indexOf(entry)
     if (idx >= 0) {
       this.connections.splice(idx, 1)
@@ -67,7 +69,9 @@ export class ConnectionPool {
       this.metrics.setActiveConnections(this.connections.length)
       // §3.10.B: Increment connections_dropped for unexpected terminal errors
       this.metrics.incrementConnectionsDropped()
+      return true
     }
+    return false
   }
 
   // §3.4: Explicitly remove an active entry from pool with a reason label.
@@ -250,21 +254,25 @@ export class ConnectionPool {
           // §4.3: Terminal stream error — remove from active pool immediately
           // §4.17/§3.14: Disconnect attribution — classify error by cause
           // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
-          // Do NOT increment connections_dropped here; removeEntry() does it exactly once.
+          // §3.10.E: Attribution is gated on actual removal. A repeated terminal event for an
+          // already-removed entry must not increment the category a second time:
+          // exactly one terminal connection produces one attribution category, one active
+          // removal, and one dropped increment.
           const msg = evt.error?.message ?? ""
-          if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
-            this.metrics.incrementNetworkFailures()
-          } else if (/stream ended/i.test(msg)) {
-            // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
-            this.metrics.incrementServerInitiatedDisconnects()
-          } else if (/abort/i.test(msg)) {
-            // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
-            this.metrics.incrementUnexpectedClientDisconnects()
-          } else {
-            // §4.17: Unexpected client-side stream termination
-            this.metrics.incrementUnexpectedClientDisconnects()
+          if (this.removeEntry(entry)) {
+            if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
+              this.metrics.incrementNetworkFailures()
+            } else if (/stream ended/i.test(msg)) {
+              // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
+              this.metrics.incrementServerInitiatedDisconnects()
+            } else if (/abort/i.test(msg)) {
+              // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
+              this.metrics.incrementUnexpectedClientDisconnects()
+            } else {
+              // §4.17: Unexpected client-side stream termination
+              this.metrics.incrementUnexpectedClientDisconnects()
+            }
           }
-          this.removeEntry(entry)
         }
       })
 

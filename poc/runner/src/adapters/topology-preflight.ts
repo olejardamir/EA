@@ -30,6 +30,13 @@ export interface TopologyPreflight {
   shard_count: number
   aggregate_target_connections: number
   aggregate_destination_tuple_capacity: number
+  viewer_sockets: number
+  non_viewer_outbound_sockets: number
+  reconnect_time_wait_allowance: number
+  source_port_safety_margin: number
+  source_port_required: number
+  source_port_headroom: number | null
+  source_port_headroom_valid: boolean
 }
 
 function readSysctl(key: string): string | null {
@@ -40,9 +47,8 @@ function readSysctl(key: string): string | null {
   }
 }
 
-function readNoFileLimits(): { soft: number | null; hard: number | null } {
-  // §3.3.B: Reads runner process limits. In Docker, runner and nginx share the same cgroup
-  // and therefore the same RLIMIT. This is the correct FD limit for the container.
+// §3.3: Read runner container's own FD limits — used as fallback when Nginx container limits unavailable
+function readRunnerFdLimits(): { soft: number | null; hard: number | null } {
   try {
     const limits = readFileSync("/proc/self/limits", "utf-8")
     const line = limits.split("\n").find((l) => l.includes("Max open files"))
@@ -55,6 +61,13 @@ function readNoFileLimits(): { soft: number | null; hard: number | null } {
   } catch {
     return { soft: null, hard: null }
   }
+}
+
+// Actual Nginx worker limits are obtained from /proc/<worker-pid>/limits by
+// the Nchan control helper and may be supplied here for capacity arithmetic.
+export interface NginxFdLimits {
+  soft: number | null
+  hard: number | null
 }
 
 // §4.24: Read CPU quota from cgroup v2 — cpu.max is a separate file from cpu.stat
@@ -90,11 +103,40 @@ function readCpuQuota(): number | null {
 // event loop, stdin/stdout/stderr, listening sockets, internal nginx state.
 // Conservative: 60 for internal sockets/state + 20 for Redis/control + 20 headroom.
 const NON_VIEWER_FDS = 100
+export const NON_VIEWER_OUTBOUND_SOCKETS = 64
+export const RECONNECT_TIME_WAIT_FRACTION = 0.10
+export const SOURCE_PORT_SAFETY_MARGIN = 512
+const NGINX_PER_WORKER_FD_RESERVE = 256
 
-export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4, nginxWorkerConns = 32768, nchanNodes = 1): TopologyPreflight {
+export function sourcePortHeadroom(targetConnections: number, ephemeralPortCount: number | null) {
+  const reconnectTimeWaitAllowance = Math.ceil(targetConnections * RECONNECT_TIME_WAIT_FRACTION)
+  const required = targetConnections + NON_VIEWER_OUTBOUND_SOCKETS + reconnectTimeWaitAllowance + SOURCE_PORT_SAFETY_MARGIN
+  const headroom = ephemeralPortCount === null ? null : ephemeralPortCount - required
+  return {
+    viewer_sockets: targetConnections,
+    non_viewer_outbound_sockets: NON_VIEWER_OUTBOUND_SOCKETS,
+    reconnect_time_wait_allowance: reconnectTimeWaitAllowance,
+    source_port_safety_margin: SOURCE_PORT_SAFETY_MARGIN,
+    source_port_required: required,
+    source_port_headroom: headroom,
+    source_port_headroom_valid: headroom !== null && headroom >= 0,
+  }
+}
+
+export function runTopologyPreflight(
+  targetConnections: number,
+  nginxWorkers = 4,
+  nginxWorkerConns = 32768,
+  nchanNodes = 1,
+  nginxFdLimits?: NginxFdLimits,
+): TopologyPreflight {
   const warnings: string[] = []
 
-  const { soft: fdSoft, hard: fdHard } = readNoFileLimits()
+  // These are the runner/generator process limits. Nginx is validated separately
+  // using the worker RLIMIT supplied by its control endpoint.
+  const fdLimits = readRunnerFdLimits()
+  const fdSoft = fdLimits.soft
+  const fdHard = fdLimits.hard
 
   const portRange = readSysctl("net.ipv4.ip_local_port_range")
   const ephemeralCount = portRange
@@ -107,6 +149,7 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
         return parts[1] - parts[0] + 1
       })()
     : null
+  const portHeadroom = sourcePortHeadroom(targetConnections, ephemeralCount)
 
   // §3.2: Source IP count from multi-shard topology
   // Each Docker bridge-networked runner container gets a distinct source IP.
@@ -119,7 +162,10 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
 
   // §4.24: Nginx capacity = workers × connections_per_worker
   // §3.3.C: Subtract non-viewer FDs (Redis, control, event loop, etc.) from usable SSE capacity
-  const nginxMaxSseCapacity = nginxWorkers * nginxWorkerConns - NON_VIEWER_FDS
+  const perWorkerConfiguredCapacity = nginxFdLimits?.soft
+    ? Math.max(0, Math.min(nginxWorkerConns, nginxFdLimits.soft) - NGINX_PER_WORKER_FD_RESERVE)
+    : Math.max(0, nginxWorkerConns - NGINX_PER_WORKER_FD_RESERVE)
+  const nginxMaxSseCapacity = nginxWorkers * perWorkerConfiguredCapacity
 
   // §4.24: Non-viewer FD headroom
   const nonViewerFds = NON_VIEWER_FDS
@@ -130,15 +176,10 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
   // Capacity must be proven against the primary node receiving all subscriber connections.
   const subscribersPerNode = targetConnections
 
-  // §4.24: CPU quota from cgroup
+  // §3.3: CPU quota is per-container. Runner CPU quota validates generator validity;
+  // Nchan CPU quota validates DUT capacity. Do not cross-compare.
   const cpuQuota = readCpuQuota()
   const cpuCount = os.cpus().length
-
-  // §3.4.A: CPU quota check applies to the runner container (which hosts nginx workers via Docker).
-  // The Nchan control server runs in a separate container with its own CPU quota.
-  if (cpuQuota !== null && cpuQuota < nginxWorkers) {
-    warnings.push(`CPU quota ${cpuQuota} cores < nginx worker_processes ${nginxWorkers} — may starve workers`)
-  }
 
   const fdHeadroom = fdSoft !== null ? fdSoft - requiredFds : null
   if (fdHeadroom !== null && fdHeadroom < 0) {
@@ -156,8 +197,8 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
       warnings.push(`FD soft limit ${fdSoft} < required ${requiredFds} (target + non-viewer overhead)`)
       return false
     }
-    if (ephemeralCount !== null && ephemeralCount < targetConnections) {
-      warnings.push(`Ephemeral port range ${ephemeralCount} < per-shard target ${targetConnections}`)
+    if (!portHeadroom.source_port_headroom_valid) {
+      warnings.push(`Source-port headroom invalid: available=${ephemeralCount ?? "unknown"}, required=${portHeadroom.source_port_required} (viewers=${targetConnections} + non-viewer=${NON_VIEWER_OUTBOUND_SOCKETS} + reconnect/TIME_WAIT=${portHeadroom.reconnect_time_wait_allowance} + safety=${SOURCE_PORT_SAFETY_MARGIN})`)
       return false
     }
     if (nginxMaxSseCapacity < targetConnections) {
@@ -214,5 +255,6 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     shard_count: shardCount,
     aggregate_target_connections: targetConnections * shardCount,
     aggregate_destination_tuple_capacity: destTupleCapacity,
+    ...portHeadroom,
   }
 }

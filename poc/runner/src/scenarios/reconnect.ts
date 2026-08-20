@@ -1,4 +1,5 @@
 import type { Scenario, ScenarioContext } from "./scenario.js"
+import type { ReconnectClientResult } from "./scenario.js"
 import type { ConnectionPool, ConnectionEntry } from "../application/connection-pool.js"
 import type { EventStream, Subscription } from "../ports/event-stream.js"
 
@@ -85,10 +86,18 @@ export class ReconnectScenario implements Scenario {
         caughtUpAt: 0 as number,
         replayReceived: 0 as number,
         firstReceivedSeq: null as number | null,
+        // §M2-5: Per-client replay integrity counters
+        duplicates: 0 as number,
+        outOfOrder: 0 as number,
+        reestablished: false,
       }
     })
 
     const newSubscriptions: Array<{ entry: ConnectionEntry; subscription: Subscription; saved: typeof saved[number]; perClient: typeof perClientExpected[number] }> = []
+    // §M2-5: Track which intended clients actually re-established their subscription.
+    // A client only counts as reconnected when connect() succeeded — not merely because
+    // it appears in the expected list (or because expected=0/received=0 trivially matches).
+    const reestablishedIds = new Set<number>()
     for (const s of saved) {
       const matchId = s.entry.matchId
       const url = `${ctx.config.nchanSubUrl}/sub/${matchId}`
@@ -98,9 +107,13 @@ export class ReconnectScenario implements Scenario {
         const subscription = await ctx.eventStream.connect(url, s.lastEventId)
         s.entry.subscription = subscription
         s.entry.mode = "reconnect"
+        reestablishedIds.add(s.entry.id)
 
         // §3.5.B: Track replay received per-client, stop counting at frozen target
         let replayStopped = false
+        // §M2-5: Per-client replay integrity tracking within the frozen range
+        const seenSeqs = new Set<number>()
+        let prevSeq: number | null = null
         subscription.onEvent((evt) => {
           if (!this.pool.running) return
           if (evt.type === "message") {
@@ -113,6 +126,11 @@ export class ReconnectScenario implements Scenario {
                   // §3.5.B: Only count replay frames up to the frozen target
                   if (seq <= pc.targetHead) {
                     pc.replayReceived++
+                    // §M2-5: Per-client duplicate/out-of-order detection within required range
+                    if (seenSeqs.has(seq)) pc.duplicates++
+                    else seenSeqs.add(seq)
+                    if (prevSeq !== null && seq < prevSeq) pc.outOfOrder++
+                    prevSeq = seq
                   } else {
                     replayStopped = true
                   }
@@ -139,6 +157,11 @@ export class ReconnectScenario implements Scenario {
       } catch {
         ctx.log(`Reconnect failed for connection ${s.entry.id}`)
       }
+    }
+
+    // §M2-5: Mark which clients actually re-established
+    for (const pc of perClientExpected) {
+      pc.reestablished = reestablishedIds.has(pc.entryId)
     }
 
     const activeAfterReconnect = this.pool.size
@@ -171,6 +194,8 @@ export class ReconnectScenario implements Scenario {
     const activeAtScenarioEnd = this.pool.size
 
     // §3.5: Replay accounting from frozen expected, not received
+    // §M2-5: allReconnectedCount counts only clients whose subscription was actually
+    // re-established — never the full expected cohort by construction.
     let totalExpectedReplay = 0
     let totalReceivedReplay = 0
     let allReconnectedCount = 0
@@ -179,14 +204,36 @@ export class ReconnectScenario implements Scenario {
 
     for (const pc of perClientExpected) {
       totalExpectedReplay += pc.expectedCount
-      totalReceivedReplay += pc.replayReceived
-      allReconnectedCount++
-      if (pc.replayReceived >= pc.expectedCount) allReachedTarget++
+      totalReceivedReplay += Math.min(pc.replayReceived, pc.expectedCount)
+      if (pc.reestablished) allReconnectedCount++
+      // §M2-5: target_reached requires re-establishment AND full required replay.
+      // expected=0/received=0 alone does NOT count as success.
+      const targetReached = pc.reestablished && pc.replayReceived >= pc.expectedCount
+      if (targetReached) allReachedTarget++
       // §3.5.E: Missing prefix detection
       if (pc.expectedFirst > 0 && pc.firstReceivedSeq !== null && pc.firstReceivedSeq !== pc.expectedFirst) {
         missingPrefixCount++
       }
     }
+
+    // §M2-5: Structured per-client results
+    const perClientResults: ReconnectClientResult[] = perClientExpected.map((pc) => ({
+      connection_id: pc.entryId,
+      match_id: pc.matchId,
+      subscription_reestablished: pc.reestablished,
+      saved_last_seq: pc.savedLastSeq,
+      expected_first_seq: pc.expectedFirst,
+      expected_last_seq: pc.expectedLast,
+      expected_count: pc.expectedCount,
+      first_received_seq: pc.firstReceivedSeq,
+      received_required_count: Math.min(pc.replayReceived, pc.expectedCount),
+      missing: Math.max(0, pc.expectedCount - pc.replayReceived),
+      duplicates: pc.duplicates,
+      out_of_order: pc.outOfOrder,
+      target_reached: pc.reestablished && pc.replayReceived >= pc.expectedCount,
+      catch_up_ms: pc.caughtUpAt,
+    }))
+    ctx._reconnectPerClient = perClientResults
 
     ctx.metrics.incrementReconnectReplayExpected(totalExpectedReplay)
     ctx.metrics.incrementReconnectReplayReceived(totalReceivedReplay)
@@ -199,8 +246,8 @@ export class ReconnectScenario implements Scenario {
     // §3.5.C-F: PASS requires ALL of:
     // - no sequence tracker gaps/duplicates/order violations
     // - events were published during disconnect window
-    // - all intended clients reconnected
-    // - all intended clients reached frozen target
+    // - all intended clients reconnected (subscription_reestablished per client — §M2-5)
+    // - all intended clients reached frozen target (requires re-establishment — §M2-5)
     // - expected replay count == received replay count (per frozen target range)
     // - no missing prefix
     const allClientsReconnected = allReconnectedCount === cohortSize
@@ -229,6 +276,8 @@ export class ReconnectScenario implements Scenario {
       `reconnect_received=${totalReceivedReplay}`,
       `replay_count_match=${replayCountMatch}`,
       `missing_prefix_count=${missingPrefixCount}`,
+      `per_client_reestablished=[${perClientResults.map((r) => r.subscription_reestablished ? 1 : 0).join(",")}]`,
+      `per_client_target_reached=${allReachedTarget}/${cohortSize}`,
       `reconnect_target_head=${maxTargetHead}`,
       `reconnect_caught_up_ms=${Math.round(avgCatchUpMs)}`,
       `active_before_disconnect=${activeBeforeDisconnect}`,

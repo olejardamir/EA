@@ -26,6 +26,7 @@ POC experiment contract v2.0.0                        EXISTS (frozen)
 POC experiment contract v2.0.1                        EXISTS (corrected, supersedes v2.0.0)
 POC experiment contract v2.0.2                        EXISTS (corrected, supersedes v2.0.1 — resolves §B/§AA/§C)
 POC experiment contract v2.0.3                        EXISTS (corrected, supersedes v2.0.2 — resolves resource-envelope/timing-text contradictions)
+POC experiment contract v2.0.4                        EXISTS (corrected, supersedes v2.0.3 — freezes phase schedule, slow-consumer thresholds, multi-shard topology, surge attribution)
 poc/                                                  EXISTS (built, tested, PASS at 10k scale)
 proposal.md                                           NOT YET CREATED
 README.md                                             NOT YET CREATED
@@ -276,7 +277,7 @@ without making new architecture decisions.
 ## Artifact
 
 ```text
-LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_2.md
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md (active)
 ```
 
 ## Completion gate
@@ -285,7 +286,7 @@ LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_2.md
 PASS
 ```
 
-The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria. v2.0.2 resolves §B (lobby first_message), §AA (nchan_eventsource_event on match subscribers), and §C (buffer capacity prose) contradictions.
+The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria. v2.0.2 resolved §B (lobby first_message), §AA (nchan_eventsource_event on match subscribers), and §C (buffer capacity prose) contradictions; v2.0.3 resolved resource-envelope/timing-text contradictions; v2.0.4 freezes the phase schedule, slow-consumer thresholds, multi-shard 100k topology, and surge attribution. Earlier versions are preserved as historical frozen state.
 
 ---
 
@@ -293,7 +294,7 @@ The experiment contract is frozen with all 32 sections covering hypothesis, vers
 
 **Status: IN PROGRESS — gap closure in progress per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v4.md**
 
-**Active contract:** `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_3.md` (frozen, supersedes v2.0.2)
+**Active contract:** `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md` (frozen, supersedes v2.0.3)
 
 ## Goal
 
@@ -994,4 +995,4 @@ The earlier milestone list was fundamentally correct, but this audit makes three
 3. **Final delivery cleanup deserves separate milestones.**  
    The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
 
-Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`, corrected to v2.0.1, further corrected to v2.0.2 (resolving §B/§AA/§C contradictions verified against Nchan 1.3.8 docs), and corrected again to v2.0.3 (resolving resource-envelope and timing-text contradictions). M2 (Build the Smallest Runnable POC) is IN PROGRESS — gap closure per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v4.md. The correct next task after full gap closure is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.
+Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`, corrected to v2.0.1, further corrected to v2.0.2 (resolving §B/§AA/§C contradictions verified against Nchan 1.3.8 docs), corrected again to v2.0.3 (resolving resource-envelope and timing-text contradictions), and corrected to v2.0.4 (freezing phase schedule, slow-consumer thresholds, multi-shard topology, and surge attribution). M2 (Build the Smallest Runnable POC) is IN PROGRESS — gap closure per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v4.md. The correct next task after full gap closure is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.

@@ -123,7 +123,8 @@ function createHistorySubscription(handlerRef: { current: ((evt: SubscriptionEve
 
 describe("LateJoinScenario", () => {
   it("publishes canonical prefill events and validates history replay", async () => {
-    let publishCount = 0
+    // Three valid same-run events predate the deterministic 500-event prefill.
+    let publishCount = 3
     const handlerRef: { current: ((evt: SubscriptionEvent) => void) | null } = { current: null }
     let capturedUrl = ""
     const ctx = mockCtx({
@@ -157,8 +158,8 @@ describe("LateJoinScenario", () => {
     // Wait for prefill to complete and history subscription to be created
     await new Promise((r) => setTimeout(r, 50))
 
-    // Fire events up to the prefill target head (500)
-    const targetHead = 500
+    // Full retained history is seq 1..503, not merely prefill seq 4..503.
+    const targetHead = 503
     if (handlerRef.current) {
       for (let seq = 1; seq <= targetHead; seq++) {
         handlerRef.current({
@@ -182,9 +183,9 @@ describe("LateJoinScenario", () => {
     const result = await execPromise
     assert.ok(result.passed, `Expected passed=true, got detail: ${result.detail}`)
     assert.ok(result.detail.includes("prefill_events=500"), `Expected prefill_events=500 in: ${result.detail}`)
-    assert.ok(result.detail.includes("history_expected=500"), `Expected history_expected=500 in: ${result.detail}`)
+    assert.ok(result.detail.includes("history_expected=503"), `Expected history_expected=503 in: ${result.detail}`)
     assert.ok(result.detail.includes("expected_first_seq=1"), `Expected expected_first_seq=1 in: ${result.detail}`)
-    assert.ok(result.detail.includes("expected_last_seq=500"), `Expected expected_last_seq=500 in: ${result.detail}`)
+    assert.ok(result.detail.includes("expected_last_seq=503"), `Expected expected_last_seq=503 in: ${result.detail}`)
     assert.ok(capturedUrl.includes("/history/"), `Expected /history/ in URL: ${capturedUrl}`)
   })
 
@@ -269,7 +270,7 @@ describe("LateJoinScenario", () => {
 
     const result = await execPromise
     // Should detect missing sequence 5
-    assert.ok(result.detail.includes("missing_history_sequences=1"),
-      `Expected missing_history_sequences=1 in: ${result.detail}`)
+    assert.ok(result.detail.includes("missing_required_sequences=1"),
+      `Expected missing_required_sequences=1 in: ${result.detail}`)
   })
 })

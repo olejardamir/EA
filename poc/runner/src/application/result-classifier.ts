@@ -121,14 +121,16 @@ export function classifyResult(
     }
   }
 
-  // §4.11: Surge failures during ramp indicate capacity exhaustion
+  // §3.6.D/§4.11: Surge failures during ramp — DUT capacity failure (REJECT), not environment bottleneck.
+  // All generator/host/network INCONCLUSIVE checks precede this point; if we reach here with
+  // surge_failures > 0, the generator is healthy and Nchan cannot accept/sustain the target.
   if (metrics.surge_failures > 0) {
     checks.push({
-      name: "inconclusive_override",
+      name: "surge_capacity_reject",
       passed: false,
-      detail: `surge_failures=${metrics.surge_failures} > 0 — surge capacity exhausted`,
+      detail: `surge_failures=${metrics.surge_failures} > 0 — healthy generator but DUT cannot sustain target`,
     })
-    return { verdict: "INCONCLUSIVE", checks }
+    return { verdict: "REJECT", checks }
   }
 
   // §4.11: Topology/FD/port capacity — must be structurally capable of 100k attempt
@@ -343,6 +345,21 @@ export function classifyResult(
       passed: evidenceBackpressure,
       detail: `backpressure=${evidenceBackpressure ? "YES" : "NO"} (informational)`,
     })
+    if (slowMetrics.independent_offered_measurement === false) {
+      checks.push({ name: "inconclusive_override", passed: false, detail: "slow offered count is not independent of application consumption" })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
+    if (slowMetrics.pacing_valid === false) {
+      checks.push({ name: "inconclusive_override", passed: false, detail: "slow-client 2-second pacing model was not achieved within frozen ±20% tolerance" })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
+    if (slowMetrics.replay_recovery_pct !== undefined) {
+      checks.push({
+        name: "slow_replay_recovery",
+        passed: slowMetrics.replay_recovery_pct >= 95,
+        detail: `${slowMetrics.replay_recovery_pct.toFixed(1)}% >= 95%`,
+      })
+    }
     checks.push({
       name: "non_slow_impact",
       passed: boundedHealthyOk,
@@ -803,6 +820,19 @@ export function aggregateWorkerMetrics(
     reconnect_active_start: 0,
     reconnect_active_peak: 0,
     reconnect_active_end: 0,
+    // §3.11.C: Per-scenario active concurrency for other peak-load scenarios
+    late_join_active_start: 0,
+    late_join_active_peak: 0,
+    late_join_active_end: 0,
+    burst_active_start: 0,
+    burst_active_peak: 0,
+    burst_active_end: 0,
+    slow_consumer_active_start: 0,
+    slow_consumer_active_peak: 0,
+    slow_consumer_active_end: 0,
+    restart_active_start: 0,
+    restart_active_peak: 0,
+    restart_active_end: 0,
     // §R: active connections peak — wired from metrics recorder in main.ts
     active_connections_peak: 0,
     // §4.16: Live vs replay delivery accounting

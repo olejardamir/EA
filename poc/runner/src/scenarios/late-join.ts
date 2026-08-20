@@ -7,6 +7,7 @@ import { MATCH_IDS } from "../domain/event.js"
 const PREFILL_DEPTH = 500
 const NCHAN_BUFFER_CAPACITY = 5000
 const ESTIMATED_EVENTS_PER_SEC = 60
+const HISTORY_SAFETY_MARGIN = 256
 
 // §BA FROZEN INTERPRETATION: Single late-join per run.
 // With N=1 sample, p95 = p50 = p99 = max = the single observation.
@@ -51,7 +52,10 @@ export class LateJoinScenario implements Scenario {
     ctx.log(`§3.1 Late-join: canonical prefill complete, first=${prefillResult.firstSeq}, last=${prefillResult.lastSeq}, publish_time=${publishDuration}ms`)
 
     // §3.1: Step 2 — Freeze expected range BEFORE connection (independent of received history)
-    const expectedFirstSeq = prefillResult.firstSeq
+    // Full retained active-match history is the frozen interpretation. Evidence
+    // runs reset Redis before warmup, so the independently known oldest sequence
+    // is 1; valid earlier same-run events are required, not treated as noise.
+    const expectedFirstSeq = 1
     const expectedLastSeq = prefillResult.lastSeq
     const historyExpected = expectedLastSeq - expectedFirstSeq + 1
 
@@ -67,10 +71,10 @@ export class LateJoinScenario implements Scenario {
     // capacity_margin = buffer_capacity - required_capacity
     const estimatedCatchUpMs = 2000
     const liveArrivalMargin = Math.ceil((estimatedCatchUpMs / 1000) * ESTIMATED_EVENTS_PER_SEC)
-    const requiredCapacity = historyExpected + liveArrivalMargin
+    const requiredCapacity = historyExpected + liveArrivalMargin + HISTORY_SAFETY_MARGIN
     const capacityMargin = NCHAN_BUFFER_CAPACITY - requiredCapacity
 
-    ctx.log(`§3.1 Late-join: buffer proof: capacity=${NCHAN_BUFFER_CAPACITY}, expected_depth=${historyExpected}, live_margin=${liveArrivalMargin}, required=${requiredCapacity}, margin=${capacityMargin}`)
+    ctx.log(`§3.1 Late-join: buffer proof: oldest_required_seq=${expectedFirstSeq}, target_head=${expectedLastSeq}, capacity=${NCHAN_BUFFER_CAPACITY}, expected_depth=${historyExpected}, live_margin=${liveArrivalMargin}, safety_margin=${HISTORY_SAFETY_MARGIN}, required=${requiredCapacity}, margin=${capacityMargin}`)
 
     if (capacityMargin < 0) {
       ctx.log(`§3.1 Late-join: FAIL — buffer capacity insufficient: required=${requiredCapacity} > capacity=${NCHAN_BUFFER_CAPACITY}`)
@@ -130,57 +134,72 @@ export class LateJoinScenario implements Scenario {
 
       ctx.metrics.recordLateJoinLatency(result.duration)
 
-      // §3.1: Step 8 — Detect missing, duplicate, and out-of-order canonical sequences
-      const { missing, duplicates, outOfOrder } = this.validateHistory(historyEvents)
+      // Validate full retained active-match history, including same-run events
+      // published before the deterministic prefill.
+      const { missing, duplicates, outOfOrder } = this.validateHistoryRange(historyEvents, expectedFirstSeq, expectedLastSeq)
 
-      // §3.1: Step 9 — Detect missing prefix: received first must match expected first
-      const missingPrefix = receivedFirstSeq !== expectedFirstSeq
-      const missingPrefixCount = missingPrefix ? expectedFirstSeq - Math.min(receivedFirstSeq, expectedFirstSeq) : 0
+      // §3.1.C/E: Missing prefix detection — check that the required first seq exists in received stream
+      const receivedRequiredSeqs = new Set<number>()
+      for (const raw of historyEvents) {
+        try {
+          const data = JSON.parse(raw)
+          if (typeof data.canonical_seq === "number" && data.canonical_seq >= expectedFirstSeq && data.canonical_seq <= expectedLastSeq) {
+            receivedRequiredSeqs.add(data.canonical_seq)
+          }
+        } catch {}
+      }
+      const prefixMatches = receivedRequiredSeqs.has(expectedFirstSeq)
+      const missingPrefix = !prefixMatches
 
       // §3.1: Step 10 — Compare reconstructed state with the frozen committed state snapshot
-      // No fallback: if the frozen state is null (publisher never committed), comparison fails.
       const scoreMatches = this.compareScore(reconstructedState, frozenState)
       const clockMatches = this.compareClock(reconstructedState, frozenState)
       const headMatches = receivedLastSeq >= expectedLastSeq
 
-      // §3.1.C: Missing replay prefix detection — received first seq must match expected first seq
-      const prefixMatches = receivedFirstSeq === expectedFirstSeq
+      // §3.1.E: Count events within the required range only (pre-prefill events are noise)
+      const requiredRangeCount = receivedRequiredSeqs.size
 
       // §3.1: Step 11 — Wire delivery accounting (expected is independent of received)
       ctx.metrics.incrementLateJoinHistoryExpected(historyExpected)
-      ctx.metrics.incrementLateJoinHistoryReceived(historyEvents.length)
+      ctx.metrics.incrementLateJoinHistoryReceived(requiredRangeCount)
 
       const detail = [
         `expected_first_seq=${expectedFirstSeq}`,
+        `oldest_required_seq=${expectedFirstSeq}`,
         `received_first_seq=${receivedFirstSeq}`,
         `expected_last_seq=${expectedLastSeq}`,
         `received_last_seq=${receivedLastSeq}`,
         `history_expected=${historyExpected}`,
-        `history_received=${historyEvents.length}`,
-        `missing_history_sequences=${missing}`,
-        `duplicate_history_sequences=${duplicates}`,
-        `out_of_order_history_sequences=${outOfOrder}`,
+        `history_received_total=${historyEvents.length}`,
+        `history_received_required=${requiredRangeCount}`,
+        `missing_required_sequences=${missing}`,
+        `duplicate_required_sequences=${duplicates}`,
+        `out_of_order_required_sequences=${outOfOrder}`,
         `missing_prefix=${missingPrefix}`,
         `prefix_matches=${prefixMatches}`,
         `catch_up_ms=${result.duration}`,
         `reconstructed_score_matches=${scoreMatches}`,
         `reconstructed_clock_matches=${clockMatches}`,
         `reconstructed_head_matches=${headMatches}`,
-        `count_matches=${historyEvents.length === historyExpected}`,
+        `count_matches=${requiredRangeCount === historyExpected}`,
         `buffer_capacity=${NCHAN_BUFFER_CAPACITY}`,
+        `buffer_safety_margin=${HISTORY_SAFETY_MARGIN}`,
         `live_arrival_margin=${liveArrivalMargin}`,
         `prefill_events=${prefillResult.published}`,
         `prefill_ms=${publishDuration}`,
+        `active_start=${ctx._activePopulationStart ?? this.pool.size}`,
+        `active_peak=${(ctx._activePopulationStart ?? this.pool.size) + 1}`,
+        `active_end=${this.pool.size}`,
       ].join(" ")
 
       // §3.1.B-F: PASS requires ALL of:
       // - caughtUp within timeout
-      // - no missing/duplicate/out-of-order sequences
-      // - no missing prefix (received_first == expected_first)
-      // - expected count == received count
+      // - no missing/duplicate/out-of-order within required range
+      // - required first seq present in received stream
+      // - required range count == expected count
       // - reconstruction all matches (score, clock, head)
       // - catch_up_ms <= 2000
-      const countMatches = historyEvents.length === historyExpected
+      const countMatches = requiredRangeCount === historyExpected
 
       if (result.caughtUp && missing === 0 && duplicates === 0 && outOfOrder === 0
         && scoreMatches && clockMatches && headMatches && prefixMatches && countMatches) {
@@ -198,34 +217,46 @@ export class LateJoinScenario implements Scenario {
     } catch (err) {
       ctx.log(`§3.1 Late-join: connection failed: ${err}`)
       return { name: this.name, passed: false, detail: `connection failed: ${err}` }
+    } finally {
+      // §3.11.C/§3.14: Record active population for this scenario
+      const startPop = ctx._activePopulationStart ?? this.pool.size
+      ctx._lateJoinActivePopulation = {
+        start: startPop,
+        peak: startPop + 1,
+        end: this.pool.size,
+      }
     }
   }
 
-  // §3.1: Validate history replay for missing/duplicate/out-of-order sequences
-  private validateHistory(events: string[]): { missing: number; duplicates: number; outOfOrder: number } {
+  // §3.1.E: Validate history replay within a required range only.
+  // Events outside [rangeStart, rangeEnd] are accepted but not validated.
+  // Gaps, duplicates, and out-of-order are counted only within the required range.
+  private validateHistoryRange(events: string[], rangeStart: number, rangeEnd: number): { missing: number; duplicates: number; outOfOrder: number } {
     let missing = 0
     let duplicates = 0
     let outOfOrder = 0
     const seen = new Set<number>()
-    let prevSeq = -1
+    let prevSeq: number | null = null
 
     for (const raw of events) {
       try {
         const data = JSON.parse(raw)
         if (typeof data.canonical_seq !== "number") continue
-
         const seq = data.canonical_seq
+
+        // Only validate events within the required range
+        if (seq < rangeStart || seq > rangeEnd) continue
 
         if (seen.has(seq)) {
           duplicates++
         }
         seen.add(seq)
 
-        if (prevSeq !== -1 && seq < prevSeq) {
+        if (prevSeq !== null && seq < prevSeq) {
           outOfOrder++
         }
 
-        if (prevSeq !== -1 && seq > prevSeq + 1) {
+        if (prevSeq !== null && seq > prevSeq + 1) {
           missing += seq - prevSeq - 1
         }
 

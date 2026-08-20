@@ -185,42 +185,31 @@ export class ConnectionSurgeScenario implements Scenario {
     ctx.log(`§3.4 derived required_ramp=${requiredRampRate.toFixed(2)}/s actual_avg_established=${establishedPerSec.toFixed(2)}/s`)
     ctx.log(`§4.5 timing: elapsed=${surgeElapsed}ms error=${timingErrorMs}ms attempt_peak=${attemptRatePeak.toFixed(1)} est_peak=${establishmentRatePeak.toFixed(1)} lag_p95=${schedulerLagP95}ms lag_max=${schedulerLagMax}ms`)
 
-    // §3.6: Generator saturation — sustained average rate over full surge, not peak-rate
-    // The actual requirement is sustained additions over 120 seconds.
-    // Tolerance: average rate must be >= 80% of required ramp rate.
-    const sustainedEstablishedPerSec = surgeElapsed > 0 ? surgeEstablished / (surgeElapsed / 1000) : 0
-    const sustainedRateThreshold = requiredRampRate * 0.8
-    const generatorSaturated = sustainedEstablishedPerSec < sustainedRateThreshold
-    if (generatorSaturated) {
-      ctx.log(`§3.6 INCONCLUSIVE: generator saturation (sustained_rate=${sustainedEstablishedPerSec.toFixed(1)}/s < threshold=${sustainedRateThreshold.toFixed(1)}/s)`)
-      // Set surgeHealth so classifier sees the deficit and returns INCONCLUSIVE
-      ctx._surgeHealth = {
-        fan_out_p95_ms: surgeFanOutP95,
-        missing_sequences: surgeMissing,
-        duplicates: surgeDupes,
-        out_of_order: surgeOoo,
-        events_received: surgeEvents,
-        surge_target_additions: surgeCount,
-        surge_attempted: surgeAttempted,
-        surge_established: surgeEstablished,
-        surge_failures: surgeCount - surgeEstablished,
-        surge_start_time: surgeStartTime,
-        surge_end_time: surgeEndTime,
-        surge_elapsed_ms: surgeElapsed,
-        surge_timing_error_ms: timingErrorMs,
-        attempt_rate_peak: attemptRatePeak,
-        establishment_rate_peak: establishmentRatePeak,
-        scheduler_lag_p95: schedulerLagP95,
-        scheduler_lag_max: schedulerLagMax,
-        active_population_start: baseCount,
-        active_population_end: this.pool.size,
-        active_population_peak: this.pool.size,
-      }
-      return {
-        name: this.name,
-        passed: false,
-        detail: `INCONCLUSIVE generator saturated: surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms sustained_rate=${sustainedEstablishedPerSec.toFixed(1)}/s threshold=${sustainedRateThreshold.toFixed(1)}/s required_ramp=${requiredRampRate.toFixed(2)}/s`,
-      }
+    // §3.6.B/§3.6.D: Always populate surge health with actual deficit.
+    // No arbitrary 80% threshold — the classifier decides REJECT vs INCONCLUSIVE
+    // based on generator health (all generator/environment INCONCLUSIVE checks precede classification).
+    const exactTargetReached = surgeEstablished >= surgeCount
+    ctx._surgeHealth = {
+      fan_out_p95_ms: surgeFanOutP95,
+      missing_sequences: surgeMissing,
+      duplicates: surgeDupes,
+      out_of_order: surgeOoo,
+      events_received: surgeEvents,
+      surge_target_additions: surgeCount,
+      surge_attempted: surgeAttempted,
+      surge_established: surgeEstablished,
+      surge_failures: exactTargetReached ? 0 : surgeCount - surgeEstablished,
+      surge_start_time: surgeStartTime,
+      surge_end_time: surgeEndTime,
+      surge_elapsed_ms: surgeElapsed,
+      surge_timing_error_ms: timingErrorMs,
+      attempt_rate_peak: attemptRatePeak,
+      establishment_rate_peak: establishmentRatePeak,
+      scheduler_lag_p95: schedulerLagP95,
+      scheduler_lag_max: schedulerLagMax,
+      active_population_start: baseCount,
+      active_population_end: this.pool.size,
+      active_population_peak: this.pool.size,
     }
 
     // §3.4: Unexpected disconnects during surge — any drop is REJECT
@@ -234,8 +223,6 @@ export class ConnectionSurgeScenario implements Scenario {
     }
 
     const healthOk = surgeMissing === 0 && surgeDupes === 0 && surgeOoo === 0
-    // §3.4: Exact target — PASS requires all requested additions established
-    const exactTargetReached = surgeEstablished >= surgeCount
     const passCriteria = exactTargetReached && healthOk
 
     return {

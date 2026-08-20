@@ -448,6 +448,41 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | redis | 2 CPU / 2 GB | memory: 2G | redis_memory_mb_peak < 1800 MB | PASS |
 | runner | 8 CPU / 8 GB | memory: 8G | (generator) | PASS |
 
+## §3.2.A-I Coordinated multi-shard experiment (global coordinator)
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| One frozen run ID / seed / global target issued at registration | global-coordinator.ts register() | global-coordinator.test.ts "rejects inconsistent seeds...", adversarial "binds every barrier receipt..." | PASS |
+| Phase barriers release only when every registered shard arrives | GlobalExperimentCoordinator.arrive() | "does not release a phase until every shard reaches the same barrier" | PASS |
+| A shard cannot skip an earlier phase boundary | arrive() ordering check | adversarial "detects a shard skipping an earlier phase boundary" | PASS |
+| Global abort propagates to shards waiting at barriers | abort() rejects pending barriers | "propagates a global abort..." + adversarial "keeps the first abort reason..." | PASS |
+| Exactly one authoritative publisher; non-owner publishing invalidates | publisher_owner registration, ctx.publisherEnabled, buildGlobalResult non-owner check | adversarial "flags non-owner shards that published workload" | PASS |
+| Aggregate active concurrency from time-aligned shard samples (not summed peaks) | alignSamples() bucketing, CoordinatedShardClient.startSampling(pool.size) | "computes aligned concurrency instead of summing unrelated shard peaks" + adversarial "never sums peaks from buckets where a shard is missing" | PASS |
+| Cross-phase buckets excluded from aligned evidence | alignSamples() phases.size check | adversarial "excludes cross-phase buckets from aligned concurrency evidence" | PASS |
+| Aligned attempt/establishment/failure rates from counter deltas | alignSamples() delta computation | "computes aligned concurrency... establishments_per_sec" assertion | PASS |
+| Global histograms merged from populations; percentiles recomputed | mergeHistograms() + histogramSummary() | "merges actual histogram populations and recomputes global percentiles" + adversarial merge tests | PASS |
+| Local targets must sum to the global target | buildGlobalResult() sum check | adversarial "marks the aggregate invalid when local targets do not sum..." | PASS |
+| Per-shard source-port headroom validated; failure invalidates aggregate | topology-preflight.ts sourcePortHeadroom + ShardValidity.source_port_headroom_valid | adversarial "treats a failed per-shard source-port headroom flag as invalidating" | PASS |
+| Shard-local verdicts can never produce a global ACCEPT alone | submitResult scope guard + aligned-peak >= target gate | adversarial "prevents a shard-local direct/global acceptance claim", "does not let a single 28k-scale shard verdict stand in..." | PASS |
+| Missing shard result → INCONCLUSIVE (no partial global verdict) | buildGlobalResult() completeness checks | adversarial "returns INCONCLUSIVE when a shard never submits a result" | PASS |
+| Correctness counters summed across shards; nonzero → REJECT | buildGlobalResult() counter aggregation | adversarial "reports REJECT when any correctness counter is nonzero across shards" | PASS |
+| Generator/environment invalidity → INCONCLUSIVE; healthy-generator capacity deficit → REJECT | buildGlobalResult() verdict logic | "returns INCONCLUSIVE for generator/environment invalidity and REJECT for healthy DUT capacity failure" | PASS |
+
+## §3.2.H/§3.11.G/§3.12.D-E Coordinator executable path and campaign provenance
+
+| Rule | Implementation | Focused test | Status |
+|---|---|---|---|
+| RUN_MODE=coordinated-shard selects coordinated path | experiment-config.ts loadConfig | evidence-suite.test.ts §3.3 "100k shards use RUN_MODE=coordinated-shard..." | PASS |
+| compose.evidence-100k.yaml runs one coordinator service + 4 shards with COORDINATOR_URL | compose.evidence-100k.yaml coordinator + runner-shard-0..3 | evidence-suite.test.ts §3.3 assertions (coordinated-shard, no independent campaigns, COORDINATOR_URL present) | PASS |
+| Shards register, sample aligned state, barrier per phase, submit typed results | main.ts CoordinatedShardClient wiring (register/startSampling/phaseBarrier/submitResult) | global-coordinator.test.ts + adversarial suite (typed result contract enforced at submitResult) | PASS |
+| One global machine-readable result emitted by the coordinator (not per-shard) | coordinator-server.ts persistGlobalResult() → GLOBAL_RESULT_PATH + stdout | global-coordinator.test.ts "produces one global ACCEPT..." (aggregate_scope=simultaneous_global_run) | PASS |
+| Campaign-level provenance: participating shard IDs, validity, histogram provenance, verdict, direct-accept eligibility | GlobalExperimentResult fields | global-coordinator.test.ts assertions on scope/publisher_owner_shard_id/histograms/global_direct_accept_eligible | PASS |
+| Cross-shard aggregation is separate from repeated-run aggregation | alignSamples()/mergeHistograms() vs evidence-suite.ts aggregateRuns() | distinct modules + tests in both files | PASS |
+| Shared DUT resources observed once (publisher-owner), not summed across shards | buildGlobalResult() resources from ownerResult | "produces one global ACCEPT..." resources.nchan assertion | PASS |
+| Final 100k-scale measured verdict remains Milestone 3 | reduced-scale machinery proof only; no M3 campaign executed | — (by design; see gap doc §5/§8) | PASS |
+| Reduced end-to-end HTTP integration: real coordinator server + 2 HTTP shard clients complete a full barrier lifecycle and persist one ACCEPT global result | coordinator-server.ts + coordinator-client.ts | coordinator-http-integration.test.ts "registers shards over HTTP..." (exit code 0, persisted global-result.json verified) | PASS |
+| One shard's abort rejects other shards' subsequent barriers over HTTP | coordinator.abort → pending/rejected barriers | coordinator-http-integration.test.ts "aborts the whole experiment when one shard reports failure" | PASS |
+
 ## Blocking status
 
 | Row | BLOCKED items | Reason |

@@ -1,7 +1,13 @@
+# Launch with ./run-smoke.sh; it injects the checkout SHA automatically.
 services:
   redis:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
     network_mode: host
+    entrypoint: ["/bin/sh", "/redis-cgroup-entrypoint.sh"]
+    command: ["redis-server"]
+    volumes:
+      - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
+      - redis-cgroup-evidence:/redis-cgroup
     deploy:
       resources:
         limits:
@@ -43,8 +49,10 @@ services:
       context: ./runner
       network: host
       args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
     network_mode: host
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
     depends_on:
       nchan:
         condition: service_healthy
@@ -62,7 +70,7 @@ services:
       RUN_PROFILE: "smoke"
       RUN_MODE: "single"
       # §3.15: Source commit identity — passed from host since .git is not copied into the image
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
       # §3.8.A: Per-service CPU limits for normalized CPU metrics
       NCHAN_CPU_MAX_QUOTA: "400000"
       REDIS_CPU_MAX_QUOTA: "200000"
@@ -75,3 +83,6 @@ services:
       nofile:
         soft: 100000
         hard: 100000
+
+volumes:
+  redis-cgroup-evidence:

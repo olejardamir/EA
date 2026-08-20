@@ -27,10 +27,14 @@ export class BurstScenario implements Scenario {
 
     ctx.log(`Burst complete, fan-out p95=${this.burstFanOutP95Ms}ms (${burstLatencies.length} samples)`)
 
+    // §3.11.C: Record active population for this scenario (burst doesn't change connection count)
+    const startPop = ctx._activePopulationStart ?? 0
+    ctx._burstActivePopulation = { start: startPop, peak: startPop, end: startPop }
+
     return {
       name: this.name,
       passed: true,
-      detail: `burst for ${ctx.config.burstSeconds}s, fan-out p95=${this.burstFanOutP95Ms}ms`,
+      detail: `burst for ${ctx.config.burstSeconds}s, fan-out p95=${this.burstFanOutP95Ms}ms active_start=${startPop} active_peak=${startPop} active_end=${startPop}`,
     }
   }
 }

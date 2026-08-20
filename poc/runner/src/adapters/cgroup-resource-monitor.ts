@@ -125,6 +125,8 @@ function fetchNchanMetrics(controlUrl: string): Promise<{
   memory_oom_events: number | null
   memory_oom_kill_events: number | null
   cpu_max_quota: number | null  // §3.8: Nchan container cpu.max quota for normalization
+  cpu_max_period: number | null
+  cpuset_effective_cpus: string | null
 } | null> {
   return new Promise((resolve) => {
     try {
@@ -162,6 +164,34 @@ export function normalizeCpuPercent(rawPercent: number | null, cpuLimitCores: nu
   return rawPercent / cpuLimitCores
 }
 
+export function countCpusetCpus(value: string | null | undefined): number | null {
+  if (!value?.trim()) return null
+  const cpus = new Set<number>()
+  for (const token of value.split(",")) {
+    const [firstRaw, lastRaw] = token.trim().split("-")
+    const first = parseInt(firstRaw, 10)
+    const last = lastRaw === undefined ? first : parseInt(lastRaw, 10)
+    if (!Number.isInteger(first) || !Number.isInteger(last) || last < first) return null
+    for (let cpu = first; cpu <= last; cpu++) cpus.add(cpu)
+  }
+  return cpus.size || null
+}
+
+export function effectiveCpuCapacity(
+  quota: number | null,
+  period: number | null,
+  cpusetCpus: number | null,
+): number | null {
+  const quotaCapacity = quota !== null && period !== null && quota > 0 && period > 0 ? quota / period : null
+  if (quotaCapacity !== null && cpusetCpus !== null) return Math.min(quotaCapacity, cpusetCpus)
+  return quotaCapacity ?? cpusetCpus
+}
+
+export function sampleRunMemoryPeak(priorPeak: number | null, currentBytes: number | null): number | null {
+  if (currentBytes === null) return priorPeak
+  return priorPeak === null ? currentBytes : Math.max(priorPeak, currentBytes)
+}
+
 // §3.9: Baseline CPU percent — idle system baseline (no active workloads)
 export function baselineCpuPercent(containerMode: "unlimited" | "limited" | "unknown"): number {
   switch (containerMode) {
@@ -188,12 +218,17 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private nchanCpuThrottledUsec: number | null = null
   private nchanMemoryCurrentBytes: number | null = null
   private nchanMemoryPeakBytes: number | null = null
+  private nchanMemoryContainerLifetimePeakBytes: number | null = null
   private nchanMemoryOomEvents: number | null = null
   private nchanMemoryOomKillEvents: number | null = null
   private redisConnectedClientsPeak: number | null = null
   // §3.8: Per-service CPU quotas for normalization
   private nchanCpuMaxQuota: number | null = null
+  private nchanCpuMaxPeriod: number | null = null  // §3.9: Nchan cpu.max period
   private redisCpuMaxQuota: number | null = null
+  private redisCpuMaxPeriod: number | null = null  // §3.9: Redis cpu.max period (from env)
+  private nchanCpusetEffectiveCpus: number | null = null
+  private redisCpusetEffectiveCpus: number | null = null
   // §3.8: Nchan CPU percent tracking
   private nchanCpuPercentPeak: number | null = null
   private prevNchanCpuUsageUsec: number | null = null
@@ -227,6 +262,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private nchanControlUrl?: string
   // §3.8.C: Track initial poll completion so baseline snapshot waits for Nchan/Redis data
   private _ready: Promise<void>
+  // §3.8.C: Track whether each service has returned data at least once
+  private _nchanDataReceived = false
+  private _redisDataReceived = false
 
   constructor(redisUrl?: string, nchanControlUrl?: string) {
     this.redisUrl = redisUrl
@@ -235,12 +273,39 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     // Compose files pass NCHAN_CPU_MAX_QUOTA and REDIS_CPU_MAX_QUOTA.
     const envNchanQuota = parseInt(process.env.NCHAN_CPU_MAX_QUOTA ?? "", 10)
     if (!isNaN(envNchanQuota) && envNchanQuota > 0) this.nchanCpuMaxQuota = envNchanQuota
+    const envNchanPeriod = parseInt(process.env.NCHAN_CPU_MAX_PERIOD ?? "", 10)
+    if (!isNaN(envNchanPeriod) && envNchanPeriod > 0) this.nchanCpuMaxPeriod = envNchanPeriod
     const envRedisQuota = parseInt(process.env.REDIS_CPU_MAX_QUOTA ?? "", 10)
     if (!isNaN(envRedisQuota) && envRedisQuota > 0) this.redisCpuMaxQuota = envRedisQuota
+    const envRedisPeriod = parseInt(process.env.REDIS_CPU_MAX_PERIOD ?? "", 10)
+    if (!isNaN(envRedisPeriod) && envRedisPeriod > 0) this.redisCpuMaxPeriod = envRedisPeriod
+    this.redisCpusetEffectiveCpus = countCpusetCpus(process.env.REDIS_CPUSET_EFFECTIVE_CPUS)
+    // Redis's entrypoint exports its actual cgroup files to this shared volume.
+    // Runtime observations override configured environment fallbacks.
+    const redisCpuMax = readCgroupFile("/redis-cgroup/cpu.max")
+    if (redisCpuMax) {
+      const actual = readCpuMax(redisCpuMax)
+      this.redisCpuMaxQuota = actual.quota
+      this.redisCpuMaxPeriod = actual.period
+    }
+    this.redisCpusetEffectiveCpus = countCpusetCpus(
+      readCgroupFile("/redis-cgroup/cpuset.cpus.effective"),
+    ) ?? this.redisCpusetEffectiveCpus
     // §3.8.C: Run initial polls and wait for them before the first snapshot.
+    // If a poll fails (service not yet ready), retry up to 3 times with 2s delays
+    // so baseline captures actual data rather than nulls.
+    const maxRetries = 3
+    const retryDelayMs = 2000
+    const tryPoll = async (pollFn: () => Promise<void>, isDataReceived: () => boolean): Promise<void> => {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        await pollFn()
+        if (isDataReceived()) return
+        if (attempt < maxRetries) await new Promise((r) => setTimeout(r, retryDelayMs))
+      }
+    }
     const polls: Promise<void>[] = []
-    if (redisUrl) polls.push(this.pollRedisMemory(redisUrl))
-    if (nchanControlUrl) polls.push(this.pollNchanMetrics(nchanControlUrl))
+    if (redisUrl) polls.push(tryPoll(() => this.pollRedisMemory(redisUrl), () => this._redisDataReceived))
+    if (nchanControlUrl) polls.push(tryPoll(() => this.pollNchanMetrics(nchanControlUrl), () => this._nchanDataReceived))
     this._ready = Promise.all(polls).then(() => {})
     if (redisUrl || nchanControlUrl) {
       this.pollTimer = setInterval(() => {
@@ -254,6 +319,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private async pollRedisMemory(redisUrl: string): Promise<void> {
     try {
       const info = await redisInfo(redisUrl)
+      this._redisDataReceived = true
       const memMb = parseRedisUsedMemory(info)
       if (memMb !== null && (this.redisMemoryMbPeak === null || memMb > this.redisMemoryMbPeak)) {
         this.redisMemoryMbPeak = memMb
@@ -292,17 +358,21 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     try {
       const metrics = await fetchNchanMetrics(controlUrl)
       if (metrics) {
+        this._nchanDataReceived = true
         if (metrics.memory_peak_bytes !== null) {
-          const memMb = metrics.memory_peak_bytes / (1024 * 1024)
-          if (this.nchanMemoryMbPeak === null || memMb > this.nchanMemoryMbPeak) {
-            this.nchanMemoryMbPeak = memMb
-          }
+          this.nchanMemoryContainerLifetimePeakBytes = metrics.memory_peak_bytes
         }
         if (metrics.memory_current_bytes !== null) {
           this.nchanMemoryCurrentBytes = metrics.memory_current_bytes
-        }
-        if (metrics.memory_peak_bytes !== null) {
-          this.nchanMemoryPeakBytes = metrics.memory_peak_bytes
+          // §3.8.D: Derive per-run memory peak from observed current_bytes, not container-lifetime memory.peak.
+          // memory.peak is a cgroup high-water mark for the entire container lifetime and does not reset
+          // between evidence runs that reuse the same container. Tracking the max of memory.current_bytes
+          // across polls gives a genuine per-run peak.
+          this.nchanMemoryPeakBytes = sampleRunMemoryPeak(this.nchanMemoryPeakBytes, metrics.memory_current_bytes)
+          const memMb = metrics.memory_current_bytes / (1024 * 1024)
+          if (this.nchanMemoryMbPeak === null || memMb > this.nchanMemoryMbPeak) {
+            this.nchanMemoryMbPeak = memMb
+          }
         }
         if (metrics.cpu_usage_usec !== null) {
           // §3.8: Compute Nchan CPU percent from cumulative cpu_usage_usec delta
@@ -341,6 +411,10 @@ export class CgroupResourceMonitor implements ResourceMonitor {
         if (metrics.cpu_max_quota !== null) {
           this.nchanCpuMaxQuota = metrics.cpu_max_quota
         }
+        if (metrics.cpu_max_period !== null) {
+          this.nchanCpuMaxPeriod = metrics.cpu_max_period
+        }
+        this.nchanCpusetEffectiveCpus = countCpusetCpus(metrics.cpuset_effective_cpus)
       }
     } catch {
       // Nchan unavailable — leave metrics as-is
@@ -491,6 +565,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       nchan_cpu_throttled_usec: this.nchanCpuThrottledUsec,
       nchan_memory_current_bytes: this.nchanMemoryCurrentBytes,
       nchan_memory_peak_bytes: this.nchanMemoryPeakBytes,
+      nchan_memory_container_lifetime_peak_bytes: this.nchanMemoryContainerLifetimePeakBytes,
       nchan_memory_oom_events: this.nchanMemoryOomEvents,
       nchan_memory_oom_kill_events: this.nchanMemoryOomKillEvents,
       // §4.9: Redis connected-client peak
@@ -501,6 +576,12 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       // §3.8: Per-service CPU quotas for normalization
       nchan_cpu_max_quota: this.nchanCpuMaxQuota,
       redis_cpu_max_quota: this.redisCpuMaxQuota,
+      // §3.9: Per-service CPU periods for normalization
+      nchan_cpu_max_period: this.nchanCpuMaxPeriod,
+      redis_cpu_max_period: this.redisCpuMaxPeriod,
+      runner_cpuset_effective_cpus: countCpusetCpus(readCgroupFile("/sys/fs/cgroup/cpuset.cpus.effective")),
+      nchan_cpuset_effective_cpus: this.nchanCpusetEffectiveCpus,
+      redis_cpuset_effective_cpus: this.redisCpusetEffectiveCpus,
       // §3.8E: CPU nanoseconds — derived from cpu_usage_usec
       cpu_ns: this.cgroupCpuUsageUsec > 0
         ? BigInt(this.cgroupCpuUsageUsec) * 1_000_000n
@@ -511,14 +592,14 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   }
 
   // §4.24: Runtime nginx capacity preflight
-  async preflight(controlUrl: string): Promise<NginxPreflight | null> {
+  async preflight(controlUrl: string, targetConnections = 100_000): Promise<NginxPreflight | null> {
     return new Promise((resolve) => {
       try {
         const url = new URL(controlUrl)
         const req = http.request({
           hostname: url.hostname,
           port: url.port,
-          path: "/preflight",
+          path: `/preflight?target=${encodeURIComponent(String(targetConnections))}`,
           method: "GET",
           timeout: 5000,
         }, (res) => {

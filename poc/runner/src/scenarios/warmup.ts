@@ -21,8 +21,12 @@ export class WarmupScenario implements Scenario {
     ctx.log(`All connections established in ${connectDuration}ms (pool size: ${this.pool.size})`)
 
     // §BT: Publisher begins generating events during warm-up (not after)
-    ctx.publisher.start(true)
-    ctx.log("Publisher started during warm-up")
+    if (ctx.publisherEnabled !== false) {
+      ctx.publisher.start(true)
+      ctx.log("Authoritative publisher started during warm-up")
+    } else {
+      ctx.log("Publisher disabled on non-owner shard")
+    }
 
     // §BT: Remaining warm-up time allows events to flow to base connections
     const remainingWarmup = Math.max(0, ctx.config.warmupSeconds * 1000 - connectDuration)

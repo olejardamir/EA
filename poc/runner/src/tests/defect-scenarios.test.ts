@@ -138,6 +138,11 @@ function mockResourceMonitor(): ResourceMonitor {
         redis_cpu_percent_peak: null,
         nchan_cpu_max_quota: null,
         redis_cpu_max_quota: null,
+        nchan_cpu_max_period: null,
+        redis_cpu_max_period: null,
+        runner_cpuset_effective_cpus: null,
+        nchan_cpuset_effective_cpus: null,
+        redis_cpuset_effective_cpus: null,
         cpu_ns: null,
         thread_count: null,
       }

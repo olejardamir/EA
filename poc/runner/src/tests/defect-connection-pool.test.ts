@@ -44,10 +44,10 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementLiteralRestartReceived() {},
     incrementCrossNodeExpected() {},
     incrementCrossNodeReceived() {},
-    incrementDeliberateDisconnects() {},
-    incrementUnexpectedClientDisconnects() {},
-    incrementServerInitiatedDisconnects() {},
-    incrementNetworkFailures() {},
+    incrementDeliberateDisconnects: () => inc("deliberate_disconnects"),
+    incrementUnexpectedClientDisconnects: () => inc("unexpected_client_disconnects"),
+    incrementServerInitiatedDisconnects: () => inc("server_initiated_disconnects"),
+    incrementNetworkFailures: () => inc("network_failures"),
     incrementShutdownCleanup() {},
     incrementSchemaValidationErrors() {},
     incrementMissingTransportId() {},
@@ -202,5 +202,60 @@ describe("ConnectionPool defect fixes", () => {
 
     await pool.connectAll(stream, 3, 5)
     assert.equal(pool.size, 8)
+  })
+
+  // §3.10.E: Duplicate terminal event must produce exactly one attribution category,
+  // one active removal, and one dropped increment.
+  it("duplicate terminal error event attributes disconnect exactly once", async () => {
+    const stream = mockStream()
+    const metrics = mockMetrics()
+    const pool = new ConnectionPool(
+      { subUrl: "http://localhost:8081", matchIds: ["match-001"] },
+      metrics, mockClock(),
+    )
+    await pool.connectAll(stream, 2, 0)
+    assert.equal(pool.size, 2)
+
+    const entry = pool.entries[0]
+    const sub = stream.subscriptions[0] as typeof stream.subscriptions[0] & { _emit: (e: SubscriptionEvent) => void }
+    void entry
+
+    const terminalError: SubscriptionEvent = {
+      type: "error",
+      error: new Error("stream ended"),
+    }
+
+    // First terminal event — removes the entry and attributes once
+    sub._emit(terminalError)
+    // Repeated terminal events for the same connection — must be no-ops
+    sub._emit(terminalError)
+    sub._emit(terminalError)
+
+    assert.equal(pool.size, 1, "entry removed exactly once")
+    assert.equal(metrics.counts["connections_dropped"], 1, "one dropped increment")
+    assert.equal(metrics.counts["server_initiated_disconnects"], 1, "one attribution category increment")
+    assert.equal(metrics.counts["unexpected_client_disconnects"], undefined, "no cross-category double count")
+    assert.equal(metrics.counts["network_failures"], undefined, "no network misattribution")
+  })
+
+  it("duplicate terminal errors across two connections attribute independently", async () => {
+    const stream = mockStream()
+    const metrics = mockMetrics()
+    const pool = new ConnectionPool(
+      { subUrl: "http://localhost:8081", matchIds: ["match-001"] },
+      metrics, mockClock(),
+    )
+    await pool.connectAll(stream, 2, 0)
+
+    for (let i = 0; i < 2; i++) {
+      const sub = stream.subscriptions[i] as unknown as { _emit: (e: SubscriptionEvent) => void }
+      const evt: SubscriptionEvent = { type: "error", error: new Error("ECONNRESET") }
+      sub._emit(evt)
+      sub._emit(evt)
+    }
+
+    assert.equal(pool.size, 0)
+    assert.equal(metrics.counts["connections_dropped"], 2)
+    assert.equal(metrics.counts["network_failures"], 2)
   })
 })

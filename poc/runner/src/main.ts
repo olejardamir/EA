@@ -3,7 +3,7 @@ import { NchanHttpPublisher } from "./adapters/nchan-http-publisher.js"
 import { SSEHttpClient } from "./adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "./adapters/metrics-recorder.js"
 import { SystemClock } from "./adapters/system-clock.js"
-import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode } from "./adapters/cgroup-resource-monitor.js"
+import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode, effectiveCpuCapacity } from "./adapters/cgroup-resource-monitor.js"
 import { MatchEventPublisher } from "./adapters/match-event-publisher.js"
 import { ConnectionPool } from "./application/connection-pool.js"
 import { createMatchHeadTracker } from "./domain/match-state.js"
@@ -24,14 +24,18 @@ import { runTopologyPreflight } from "./adapters/topology-preflight.js"
 import crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import type { ScenarioContext } from "./scenarios/scenario.js"
+import { CoordinatedShardClient } from "./application/coordinator-client.js"
+import type { CoordinatedPhase, ShardExperimentResult } from "./application/global-coordinator.js"
+import { resetRedisForExperiment } from "./adapters/redis-run-isolation.js"
 
 function getGitCommitSha(): string | null {
   // §3.15: Check environment variable first (set via build ARG or Compose)
   const envSha = process.env.GIT_COMMIT_SHA
   // §3.11.A: Reject non-hex values (e.g. "unknown") — only accept valid SHA-256/SHA-1 prefixes
-  if (envSha && /^[0-9a-f]{7,40}$/i.test(envSha)) return envSha
+  if (envSha && /^[0-9a-f]{40}$/i.test(envSha)) return envSha
   try {
-    return execSync("git rev-parse HEAD", { encoding: "utf-8", timeout: 2000 }).trim()
+    const resolved = execSync("git rev-parse HEAD", { encoding: "utf-8", timeout: 2000 }).trim()
+    return /^[0-9a-f]{40}$/i.test(resolved) ? resolved : null
   } catch {
     return null
   }
@@ -74,7 +78,7 @@ async function main(): Promise<void> {
       const resourceMonitor = new CgroupResourceMonitor(undefined, config.nchanControlUrl)
       const preflight = await resourceMonitor.preflight(config.nchanControlUrl)
       if (preflight) {
-        log(`§4.24 preflight: worker_processes=${preflight.worker_processes} worker_connections=${preflight.worker_connections} total=${preflight.worker_connections_total} fd_soft=${preflight.fd_soft_limit} cpu_quota=${preflight.cpu_quota} sufficient=${preflight.sufficient}`)
+        log(`§4.24 preflight: worker_processes=${preflight.worker_processes} worker_connections=${preflight.worker_connections} total=${preflight.worker_connections_total} fd_soft=${preflight.nginx_worker_fd_soft ?? preflight.nginx_master_fd_soft} cpu_quota=${preflight.cpu_quota} sufficient=${preflight.sufficient}`)
         if (!preflight.sufficient) {
           log(`§4.24 preflight FAILED: ${preflight.reason}`)
           process.exitCode = 1
@@ -141,6 +145,30 @@ async function main(): Promise<void> {
     },
   })
 
+  const coordinatedMode = config.runMode === "coordinated-shard"
+  const shardId = parseInt(process.env.SHARD_ID ?? "0", 10)
+  const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10)
+  const globalTarget = parseInt(process.env.GLOBAL_TARGET ?? String(config.targetConnections * shardCount), 10)
+  const publisherOwner = !coordinatedMode || process.env.PUBLISHER_OWNER === "true"
+  const sourceCommit = getGitCommitSha()
+  const coordinator = coordinatedMode
+    ? new CoordinatedShardClient(process.env.COORDINATOR_URL ?? "http://coordinator:3000", {
+        shard_id: shardId,
+        shard_count: shardCount,
+        local_target: config.targetConnections,
+        global_target: globalTarget,
+        seed: parseInt(process.env.GLOBAL_SEED ?? String(config.seed), 10),
+        source_commit: sourceCommit ?? "",
+        publisher_owner: publisherOwner,
+      })
+    : null
+
+  const phaseBarrier = async (phase: CoordinatedPhase, boundary: "start" | "end"): Promise<void> => {
+    if (!coordinator) return
+    const receipt = await coordinator.barrier(phase, boundary)
+    log(`coordinator released ${phase}:${boundary} at ${receipt.released_at_ms} shards=${receipt.participating_shard_ids.join(",")}`)
+  }
+
   // §BS: Maximum run deadline to prevent indefinite hangs
   const MAX_RUN_MS = 10 * 60 * 1000 // 10 minutes
   const runTimer = setTimeout(() => {
@@ -150,8 +178,26 @@ async function main(): Promise<void> {
 
   let loopMonitor: NodeJS.Timeout | null = null
   let verdictVerdict = "NOT_APPLICABLE" as string
+  let nginxRuntimePreflight: Awaited<ReturnType<CgroupResourceMonitor["preflight"]>> = null
 
   try {
+    if (coordinator) {
+      const registration = await coordinator.register()
+      if (registration.seed !== config.seed || registration.global_target !== globalTarget) {
+        throw new Error("coordinator returned inconsistent global seed/target")
+      }
+      coordinator.startSampling(() => {
+        const snapshot = metrics.snapshot()
+        return {
+          active_current: pool.size,
+          connections_attempted: snapshot.connections_attempted,
+          connections_established: snapshot.connections_established,
+          connection_failures: snapshot.connection_failures,
+        }
+      })
+      log(`coordinated shard registered run=${registration.experiment_run_id} shard=${shardId}/${shardCount} publisher_owner=${publisherOwner}`)
+    }
+    await phaseBarrier("preflight", "start")
     await waitForNchan(config.nchanPubUrl)
 
     // §4.15: Clock compatibility — same-host containers share the Linux kernel clock.
@@ -203,6 +249,7 @@ async function main(): Promise<void> {
       phaseSnapshots: [],
       log,
       sleep,
+      publisherEnabled: publisherOwner,
     }
 
     log("=== POC Runner Starting ===")
@@ -211,7 +258,22 @@ async function main(): Promise<void> {
     log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
 
     // §4.2/§4.24: Run topology and capacity preflight
-    const topologyPreflight = runTopologyPreflight(config.targetConnections)
+    // §3.3: Fetch Nginx container's actual FD limits from control server /preflight API.
+    // In the 100k topology, Nginx is in a separate container; its RLIMIT_NOFILE
+    // differs from the runner's. The control server reads the Nginx container's limits.
+    let nginxFdLimits: { soft: number | null; hard: number | null } | undefined
+    if (config.nchanControlUrl) {
+      const rm = new CgroupResourceMonitor(undefined, config.nchanControlUrl)
+      const nginxPreflight = await rm.preflight(config.nchanControlUrl, globalTarget)
+      nginxRuntimePreflight = nginxPreflight
+      if (nginxPreflight) {
+        const soft = nginxPreflight.nginx_worker_fd_soft ?? nginxPreflight.nginx_master_fd_soft
+        const hard = nginxPreflight.nginx_worker_fd_hard ?? nginxPreflight.nginx_master_fd_hard
+        if (soft !== null) nginxFdLimits = { soft, hard }
+      }
+      rm.dispose()
+    }
+    const topologyPreflight = runTopologyPreflight(config.targetConnections, undefined, undefined, undefined, nginxFdLimits)
     log(`§4.2 topology preflight: FD_soft=${topologyPreflight.fd_soft_limit}, ephemeral_ports=${topologyPreflight.ephemeral_port_count}, nginx_capacity=${topologyPreflight.nginx_max_sse_capacity}, sufficient=${topologyPreflight.capacity_sufficient}`)
     if (topologyPreflight.warnings.length > 0) {
       for (const w of topologyPreflight.warnings) log(`  WARNING: ${w}`)
@@ -226,9 +288,16 @@ async function main(): Promise<void> {
       process.exit(2)
     }
 
+    // The publisher owner establishes a known run namespace before any shard
+    // opens viewers. This makes active-match retained history start at seq=1.
+    if (coordinator && publisherOwner) {
+      await resetRedisForExperiment(config.redisUrl)
+      log("Redis history reset and verified for coordinated run isolation")
+    }
+
     // §4.22: Build identity — immutable provenance
     const buildIdentity = {
-      git_commit_sha: getGitCommitSha(),
+      git_commit_sha: sourceCommit,
       nginx_version: "1.27.4",
       nchan_version: "1.3.8",
       node_version: process.version,
@@ -254,8 +323,10 @@ async function main(): Promise<void> {
     // §3.8.C: Wait for initial Nchan/Redis polls so baseline includes service metrics
     await resourceMonitor.ready()
     const cgroupBaseline = resourceMonitor.snapshot()
+    await phaseBarrier("preflight", "end")
 
     // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
+    await phaseBarrier("warmup", "start")
     metrics.beginPhase("warmup")
     const warmup = new WarmupScenario(pool)
     const warmupResult = await warmup.execute(ctx)
@@ -264,8 +335,10 @@ async function main(): Promise<void> {
     // §4.6: Record phase snapshot for publish rate measurement
     const warmupSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000, matchPublished: warmupSnap.matchPublished, lobbyPublished: warmupSnap.lobbyPublished, matchAttempts: warmupSnap.matchAttempts, lobbyAttempts: warmupSnap.lobbyAttempts })
+    await phaseBarrier("warmup", "end")
 
     // Phase 2: Steady — publisher already running from warm-up
+    await phaseBarrier("steady", "start")
     metrics.beginPhase("steady")
     const steady = new SteadyScenario(pool)
     const steadyResult = await steady.execute(ctx)
@@ -274,8 +347,10 @@ async function main(): Promise<void> {
     // §4.6: Record phase snapshot
     const steadySnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000, matchPublished: steadySnap.matchPublished, lobbyPublished: steadySnap.lobbyPublished, matchAttempts: steadySnap.matchAttempts, lobbyAttempts: steadySnap.lobbyAttempts })
+    await phaseBarrier("steady", "end")
 
     // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
+    await phaseBarrier("surge", "start")
     metrics.beginPhase("surge")
     const connectionSurge = new ConnectionSurgeScenario(pool)
     const surgeResult = await connectionSurge.execute(ctx)
@@ -284,50 +359,74 @@ async function main(): Promise<void> {
     // §4.6: Record phase snapshot
     const surgeSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0, matchPublished: surgeSnap.matchPublished, lobbyPublished: surgeSnap.lobbyPublished, matchAttempts: surgeSnap.matchAttempts, lobbyAttempts: surgeSnap.lobbyAttempts })
+    await phaseBarrier("surge", "end")
+
+    // Aggregate target barrier: no peak-load scenario starts until all shards
+    // have completed the surge and reported their time-aligned population.
+    await phaseBarrier("target-barrier", "start")
+    await sleep(1000)
+    await phaseBarrier("target-barrier", "end")
 
     // Phase 4: Post-surge stabilization
+    await phaseBarrier("stabilization", "start")
     metrics.beginPhase("post-surge")
     log(`--- PHASE: POST-SURGE STABILIZATION (${config.cooldownSeconds}s) ---`)
     await sleep(config.cooldownSeconds * 1000)
     metrics.endPhase()
     log("Post-surge stabilization complete")
+    await phaseBarrier("stabilization", "end")
 
     // Phase 5: Late-join under peak load
+    await phaseBarrier("late-join", "start")
     metrics.beginPhase("late-join")
     const lateJoinStart = ctx.clock.now()
+    ctx._activePopulationStart = pool.size
     const lateJoin = new LateJoinScenario(pool)
-    const lateJoinResult = await lateJoin.execute(ctx)
+    const lateJoinResult = publisherOwner
+      ? await lateJoin.execute(ctx)
+      : { name: "late-join", passed: true, detail: "not-participating: authoritative publisher-owner shard only" }
     const lateJoinDuration = ctx.clock.now() - lateJoinStart
     metrics.endPhase()
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const lateJoinSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration, matchPublished: lateJoinSnap.matchPublished, lobbyPublished: lateJoinSnap.lobbyPublished, matchAttempts: lateJoinSnap.matchAttempts, lobbyAttempts: lateJoinSnap.lobbyAttempts })
+    await phaseBarrier("late-join", "end")
 
     // Phase 6: Burst at peak
+    await phaseBarrier("burst", "start")
     metrics.beginPhase("burst")
+    ctx._activePopulationStart = pool.size
     const burst = new BurstScenario()
-    const burstResult = await burst.execute(ctx)
+    const burstResult = publisherOwner
+      ? await burst.execute(ctx)
+      : (await sleep(config.burstSeconds * 1000), { name: "burst", passed: true, detail: "not-participating: observing authoritative burst" })
     metrics.endPhase()
     log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
     // §4.6: Record phase snapshot
     const burstSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000, matchPublished: burstSnap.matchPublished, lobbyPublished: burstSnap.lobbyPublished, matchAttempts: burstSnap.matchAttempts, lobbyAttempts: burstSnap.lobbyAttempts })
+    await phaseBarrier("burst", "end")
 
     // Phase 7: Post-burst steady
+    await phaseBarrier("post-burst", "start")
     metrics.beginPhase("post-burst")
     log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
-    await publisher.drain()
-    publisher.burstMode = false
-    publisher.start(true)
+    if (publisherOwner) {
+      await publisher.drain()
+      publisher.burstMode = false
+      publisher.start(true)
+    }
     await sleep(config.cooldownSeconds * 1000)
     metrics.endPhase()
     log("Post-burst steady complete")
     // §4.6: Record phase snapshot
     const postBurstSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000, matchPublished: postBurstSnap.matchPublished, lobbyPublished: postBurstSnap.lobbyPublished, matchAttempts: postBurstSnap.matchAttempts, lobbyAttempts: postBurstSnap.lobbyAttempts })
+    await phaseBarrier("post-burst", "end")
 
     // Phase 8: Reconnect while publishing
+    await phaseBarrier("reconnect", "start")
     metrics.beginPhase("reconnect")
     const reconnectStart = ctx.clock.now()
     const reconnect = new ReconnectScenario(pool)
@@ -338,10 +437,13 @@ async function main(): Promise<void> {
     // §4.6: Record phase snapshot with actual duration
     const reconnectSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, matchPublished: reconnectSnap.matchPublished, lobbyPublished: reconnectSnap.lobbyPublished, matchAttempts: reconnectSnap.matchAttempts, lobbyAttempts: reconnectSnap.lobbyAttempts })
+    await phaseBarrier("reconnect", "end")
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
+    await phaseBarrier("slow-consumer", "start")
     metrics.beginPhase("slow-consumer")
     const slowConsumerStart = ctx.clock.now()
+    ctx._activePopulationStart = pool.size
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     const slowConsumerDuration = ctx.clock.now() - slowConsumerStart
@@ -350,20 +452,27 @@ async function main(): Promise<void> {
     // §4.6: Record phase snapshot with actual duration
     const slowSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, matchPublished: slowSnap.matchPublished, lobbyPublished: slowSnap.lobbyPublished, matchAttempts: slowSnap.matchAttempts, lobbyAttempts: slowSnap.lobbyAttempts })
+    await phaseBarrier("slow-consumer", "end")
 
     // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
+    await phaseBarrier("restart-replacement", "start")
     metrics.beginPhase("nchan-restart")
     const restartStart = ctx.clock.now()
+    ctx._activePopulationStart = pool.size
     const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
-    const nchanResult = await nchanRestart.execute(ctx)
+    const nchanResult = publisherOwner
+      ? await nchanRestart.execute(ctx)
+      : { name: "nchan-restart", passed: true, detail: "not-participating: authoritative publisher-owner shard only" }
     const restartDuration = ctx.clock.now() - restartStart
     metrics.endPhase()
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const restartSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, matchPublished: restartSnap.matchPublished, lobbyPublished: restartSnap.lobbyPublished, matchAttempts: restartSnap.matchAttempts, lobbyAttempts: restartSnap.lobbyAttempts })
+    await phaseBarrier("restart-replacement", "end")
 
     // Collect metrics
+    await phaseBarrier("final-metrics", "start")
     log("\n--- COLLECTING METRICS ---")
     resourceMonitor.stopEventLoopMonitor()
     resourceMonitor.measureCpu()
@@ -388,8 +497,6 @@ async function main(): Promise<void> {
     aggregated.aggregate_type = "single_run"
     aggregated.run_count = 1
     // §3.2: Shard identity — detected from environment variables
-    const shardId = parseInt(process.env.SHARD_ID ?? "0", 10) || 0
-    const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1
     aggregated.shard_identity = {
       shard_id: shardId,
       shard_count: shardCount,
@@ -424,6 +531,7 @@ async function main(): Promise<void> {
       : resourceSnap.nchan_cpu_throttled_usec
     aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
     aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
+    aggregated.nchan_memory_container_lifetime_peak_bytes = resourceSnap.nchan_memory_container_lifetime_peak_bytes
     aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events !== null && cgroupBaseline.nchan_memory_oom_events !== null
       ? resourceSnap.nchan_memory_oom_events - cgroupBaseline.nchan_memory_oom_events
       : resourceSnap.nchan_memory_oom_events
@@ -436,15 +544,17 @@ async function main(): Promise<void> {
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
     // §3.9: Normalized CPU percent peaks — divide raw per-core % by core count
-    // §3.8.B: Use actual cpu.max period from cgroup, not hard-coded 100000µs
-    const cpuPeriod = resourceSnap.cpu_max_period ?? 100_000
-    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / cpuPeriod : null
+    // §3.8.B: Use actual cpu.max period from each service's own cgroup, not hard-coded 100000µs
+    const runnerCpuPeriod = resourceSnap.cpu_max_period ?? 100_000
+    const cpuLimitCores = effectiveCpuCapacity(resourceSnap.cpu_max_quota, runnerCpuPeriod, resourceSnap.runner_cpuset_effective_cpus)
     const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
     aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
     aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
-    // §3.8.A: Per-service CPU normalization — use each service's own cgroup limit, not the runner's
-    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / cpuPeriod : cpuLimitCores
-    const redisCpuLimitCores = resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / cpuPeriod : cpuLimitCores
+    // §3.8.A/§3.9: Per-service CPU normalization — use each service's own cgroup limit AND period
+    const nchanCpuPeriod = resourceSnap.nchan_cpu_max_period ?? runnerCpuPeriod
+    const nchanCpuLimitCores = effectiveCpuCapacity(resourceSnap.nchan_cpu_max_quota, nchanCpuPeriod, resourceSnap.nchan_cpuset_effective_cpus) ?? cpuLimitCores
+    const redisCpuPeriod = resourceSnap.redis_cpu_max_period ?? runnerCpuPeriod
+    const redisCpuLimitCores = effectiveCpuCapacity(resourceSnap.redis_cpu_max_quota, redisCpuPeriod, resourceSnap.redis_cpuset_effective_cpus) ?? cpuLimitCores
     aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, nchanCpuLimitCores)
     aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, redisCpuLimitCores)
     // §4.2: Topology capacity
@@ -515,11 +625,35 @@ async function main(): Promise<void> {
       aggregated.reconnect_active_peak = ctx._reconnectHealth.active_peak
       aggregated.reconnect_active_end = ctx._reconnectHealth.active_end
     }
+    // §3.14: Wire remaining per-scenario active populations
+    if (ctx._lateJoinActivePopulation) {
+      aggregated.late_join_active_start = ctx._lateJoinActivePopulation.start
+      aggregated.late_join_active_peak = ctx._lateJoinActivePopulation.peak
+      aggregated.late_join_active_end = ctx._lateJoinActivePopulation.end
+    }
+    if (ctx._burstActivePopulation) {
+      aggregated.burst_active_start = ctx._burstActivePopulation.start
+      aggregated.burst_active_peak = ctx._burstActivePopulation.peak
+      aggregated.burst_active_end = ctx._burstActivePopulation.end
+    }
+    if (ctx._slowConsumerActivePopulation) {
+      aggregated.slow_consumer_active_start = ctx._slowConsumerActivePopulation.start
+      aggregated.slow_consumer_active_peak = ctx._slowConsumerActivePopulation.peak
+      aggregated.slow_consumer_active_end = ctx._slowConsumerActivePopulation.end
+    }
+    if (ctx._restartActivePopulation) {
+      aggregated.restart_active_start = ctx._restartActivePopulation.start
+      aggregated.restart_active_peak = ctx._restartActivePopulation.peak
+      aggregated.restart_active_end = ctx._restartActivePopulation.end
+    }
 
     const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
-    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight)
+    // A coordinated shard is classified only for its local validity. It cannot
+    // substitute local active population for the simultaneous global target.
+    const resourceEvidenceTarget = coordinatedMode ? globalTarget : config.targetConnections * shardCount
+    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight, resourceEvidenceTarget)
     verdictVerdict = verdictResult.verdict
 
     printSummary(aggregated, publisher.totalPublished, verdictResult)
@@ -540,9 +674,129 @@ async function main(): Promise<void> {
       nchanSubUrl: config.nchanSubUrl,
       redisUrl: config.redisUrl,
       nchanControlUrl: config.nchanControlUrl,
-    }, topologyPreflight)
+    }, topologyPreflight, {
+      reconnect_clients: ctx._reconnectPerClient ?? [],
+      restart_replay: ctx._restartReplay ?? {},
+    })
+
+    if (coordinator) {
+      const sampleSnapshot = metrics.snapshot()
+      const validityReasons = [
+        ...(!sourceCommit ? ["source commit unavailable"] : []),
+        ...(!generatorHealthy ? ["generator CPU/event-loop saturation"] : []),
+        ...(sampleSnapshot.generator_backlog_peak > 1000 ? [`generator backlog ${sampleSnapshot.generator_backlog_peak} > 1000`] : []),
+        ...(!timingValid ? ["timing invalid"] : []),
+        ...(!topologyPreflight.source_port_headroom_valid ? topologyPreflight.warnings : []),
+        ...(!nginxRuntimePreflight?.sufficient ? [nginxRuntimePreflight?.reason ?? "Nginx worker preflight unavailable"] : []),
+        ...(!clockEvidence.passed ? ["shared-kernel clock reachability invalid"] : []),
+      ]
+      const phaseRate = (phase: typeof aggregated.phase_publish_rates[number]) => {
+        const durationMs = ctx.phaseSnapshots.find((snapshot) => snapshot.phase === phase.phase)?.durationMs ?? 0
+        return {
+          phase: phase.phase,
+          attempted_per_sec: durationMs > 0 ? phase.totalEventsAttempted / (durationMs / 1000) : 0,
+          accepted_per_sec: phase.totalEventsPerSec,
+        }
+      }
+      const shardResult: ShardExperimentResult = {
+        aggregate_scope: "shard",
+        scope: "shard",
+        global_direct_accept_eligible: false,
+        experiment_run_id: coordinator.experimentRunId!,
+        run_index: 0,
+        shard_id: shardId,
+        shard_count: shardCount,
+        local_target: config.targetConnections,
+        global_target: globalTarget,
+        seed: config.seed,
+        source_commit: sourceCommit!,
+        publisher_owner: publisherOwner,
+        verdict: verdictResult.verdict,
+        validity: {
+          generator_valid: generatorHealthy && sampleSnapshot.generator_backlog_peak <= 1000,
+          source_port_headroom_valid: topologyPreflight.source_port_headroom_valid,
+          nginx_worker_capacity_valid: nginxRuntimePreflight?.sufficient ?? false,
+          environment_valid: clockEvidence.passed,
+          timing_valid: timingValid,
+          reasons: validityReasons,
+        },
+        samples: coordinator.stopSampling(),
+        histograms: {
+          fan_out: metrics.getFanOutHistogram().serialize(),
+          late_join: metrics.getLateJoinHistogram().serialize(),
+        },
+        correctness_counters: {
+          missing_sequences: aggregated.missing_sequences,
+          duplicates: aggregated.duplicates,
+          out_of_order: aggregated.out_of_order,
+          reconnect_gaps: aggregated.reconnect_gaps,
+          reconnect_duplicates: aggregated.reconnect_duplicates,
+          reconnect_order_violations: aggregated.reconnect_order_violations,
+          schema_validation_errors: aggregated.schema_validation_errors,
+          sse_parse_errors: aggregated.sse_parse_errors,
+          json_parse_errors: aggregated.json_parse_errors,
+          restart_missing_sequences: aggregated.nchan_restart_missing_sequences,
+        },
+        workload: {
+          events_published: publisher.totalPublished,
+          phase_rates: aggregated.phase_publish_rates.map(phaseRate),
+        },
+        resources: {
+          generator: {
+            cpu_raw_percent_peak: resourceSnap.cpuPercentPeak,
+            cpu_percent_of_capacity_peak: aggregated.resource_cpu_percent_peak,
+            cpu_max_quota: resourceSnap.cpu_max_quota,
+            cpu_max_period: resourceSnap.cpu_max_period,
+            cpuset_effective_cpus: resourceSnap.runner_cpuset_effective_cpus,
+            event_loop_p99_ms: resourceSnap.eventLoopDelayP99Ms,
+            memory_peak_bytes: resourceSnap.memory_peak_bytes,
+          },
+          nchan: {
+            cpu_raw_percent_peak: resourceSnap.nchan_cpu_percent_peak,
+            cpu_percent_of_capacity_peak: aggregated.nchan_resource_cpu_percent_peak,
+            cpu_max_quota: resourceSnap.nchan_cpu_max_quota,
+            cpu_max_period: resourceSnap.nchan_cpu_max_period,
+            cpuset_effective_cpus: resourceSnap.nchan_cpuset_effective_cpus,
+            memory_peak_run_bytes: resourceSnap.nchan_memory_peak_bytes,
+            memory_peak_container_lifetime_bytes: resourceSnap.nchan_memory_container_lifetime_peak_bytes ?? null,
+          },
+          redis: {
+            cpu_raw_percent_peak: resourceSnap.redis_cpu_percent_peak,
+            cpu_percent_of_capacity_peak: aggregated.redis_resource_cpu_percent_peak,
+            cpu_max_quota: resourceSnap.redis_cpu_max_quota,
+            cpu_max_period: resourceSnap.redis_cpu_max_period,
+            cpuset_effective_cpus: resourceSnap.redis_cpuset_effective_cpus,
+            memory_peak_run_mb: resourceSnap.redisMemoryMbPeak,
+          },
+        },
+        scenarios: [
+          { name: "late-join", participated: publisherOwner, passed: lateJoinResult.passed, detail: lateJoinResult.detail },
+          { name: "burst", participated: publisherOwner, passed: burstResult.passed, detail: burstResult.detail },
+          {
+            name: "reconnect",
+            participated: true,
+            passed: reconnectResult.passed,
+            detail: reconnectResult.detail,
+            structured: { clients: ctx._reconnectPerClient ?? [] },
+          },
+          { name: "slow-consumer", participated: true, passed: slowResult.passed, detail: slowResult.detail },
+          {
+            name: "restart-replacement",
+            participated: publisherOwner,
+            passed: nchanResult.passed,
+            detail: nchanResult.detail,
+            structured: { paths: ctx._restartReplay ?? {} },
+          },
+        ],
+      }
+      await coordinator.submitResult(shardResult)
+      await phaseBarrier("final-metrics", "end")
+    }
 
     log("=== POC Runner Complete ===")
+  } catch (error) {
+    await coordinator?.abort(error instanceof Error ? error.message : String(error))
+    throw error
   } finally {
     // §BS: Guaranteed cleanup on all exit paths
     clearTimeout(runTimer)

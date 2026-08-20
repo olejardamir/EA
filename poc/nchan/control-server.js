@@ -14,6 +14,46 @@ function readCgroupFile(path) {
   }
 }
 
+// §M2-3: Find all nginx process IDs by scanning /proc.
+// Returns { master, workers } — master is the oldest nginx process (lowest PID,
+// started first by the entrypoint); workers are the remaining nginx processes.
+function findNginxProcesses() {
+  const pids = []
+  try {
+    for (const name of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(name)) continue
+      let comm = null
+      try {
+        comm = fs.readFileSync(`/proc/${name}/comm`, "utf-8").trim()
+      } catch {
+        continue // process vanished between readdir and read
+      }
+      if (comm === "nginx" || comm === "nginx: master" || comm.startsWith("nginx:")) pids.push(parseInt(name, 10))
+    }
+  } catch {}
+  pids.sort((a, b) => a - b)
+  // Master started first → lowest PID. Workers were forked after → higher PIDs.
+  const master = pids.length > 0 ? pids[0] : null
+  const workers = pids.slice(1)
+  return { master, workers }
+}
+
+// §M2-3: Read RLIMIT_NOFILE from a specific process — proves the ACTUAL
+// Nginx master/worker FD limits, not a helper process's limits.
+function readProcFdLimits(pid) {
+  if (pid === null || pid === undefined) return { soft: null, hard: null }
+  try {
+    const limits = fs.readFileSync(`/proc/${pid}/limits`, "utf-8")
+    for (const line of limits.split("\n")) {
+      if (line.includes("Max open files")) {
+        const parts = line.trim().split(/\s+/)
+        return { soft: parseInt(parts[3], 10), hard: parseInt(parts[4], 10) }
+      }
+    }
+  } catch {}
+  return { soft: null, hard: null }
+}
+
 function getNchanMetrics() {
   const metrics = {
     memory_current_bytes: null,
@@ -23,6 +63,9 @@ function getNchanMetrics() {
     cpu_throttled_usec: null,
     memory_oom_events: null,
     memory_oom_kill_events: null,
+    cpu_max_quota: null,
+    cpu_max_period: null,
+    cpuset_effective_cpus: null,
   }
 
   const memCurrent = readCgroupFile("/sys/fs/cgroup/memory.current")
@@ -64,6 +107,18 @@ function getNchanMetrics() {
     }
   }
 
+  const cpuMax = readCgroupFile("/sys/fs/cgroup/cpu.max")
+  if (cpuMax) {
+    const [quota, period] = cpuMax.split(/\s+/)
+    const parsedPeriod = parseInt(period, 10)
+    if (quota !== "max") {
+      const parsedQuota = parseInt(quota, 10)
+      if (!isNaN(parsedQuota)) metrics.cpu_max_quota = parsedQuota
+    }
+    if (!isNaN(parsedPeriod)) metrics.cpu_max_period = parsedPeriod
+  }
+  metrics.cpuset_effective_cpus = readCgroupFile("/sys/fs/cgroup/cpuset.cpus.effective")
+
   return metrics
 }
 
@@ -83,7 +138,7 @@ const server = http.createServer((req, res) => {
     const metrics = getNchanMetrics()
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify(metrics))
-  } else if (req.method === "GET" && req.url === "/preflight") {
+  } else if (req.method === "GET" && req.url.startsWith("/preflight")) {
     // §4.24: Runtime nginx capacity preflight
     const result = {
       worker_processes: null,
@@ -91,8 +146,12 @@ const server = http.createServer((req, res) => {
       nginx_active: null,
       nginx_reading: null,
       nginx_writing: null,
-      fd_soft_limit: null,
-      fd_hard_limit: null,
+      nginx_master_pid: null,
+      nginx_worker_pids: [],
+      nginx_master_fd_soft: null,
+      nginx_master_fd_hard: null,
+      nginx_worker_fd_soft: null,
+      nginx_worker_fd_hard: null,
       cpu_quota: null,
       worker_connections_total: null,
       sufficient: false,
@@ -124,19 +183,48 @@ const server = http.createServer((req, res) => {
       }
     } catch {}
 
-    // §3.4.B: FD limits — /proc/self/limits proves the control-server Node process limit,
-    // NOT the Nginx master/worker FD limit. Nginx workers inherit the container cgroup FD limit.
-    // The control server and Nginx share the same container cgroup, so the limit is the same,
-    // but the semantic proof is the cgroup limit, not the helper process limit.
-    try {
-      const limits = fs.readFileSync("/proc/self/limits", "utf-8")
-      for (const line of limits.split("\n")) {
-        if (line.includes("Max open files")) {
-          const parts = line.trim().split(/\s+/)
-          result.fd_soft_limit = parseInt(parts[3], 10)
-          result.fd_hard_limit = parseInt(parts[4], 10)
-        }
+    // Read the actual Nginx master and worker RLIMIT_NOFILE values. A helper's
+    // /proc/self/limits is not evidence for another process' inherited limit.
+    function parseFdLimits(pid) {
+      try {
+        const limits = fs.readFileSync(`/proc/${pid}/limits`, "utf-8")
+        const line = limits.split("\n").find((value) => value.startsWith("Max open files"))
+        if (!line) return null
+        const match = line.match(/^Max open files\s+(\d+|unlimited)\s+(\d+|unlimited)/)
+        if (!match) return null
+        const parse = (value) => value === "unlimited" ? Number.MAX_SAFE_INTEGER : parseInt(value, 10)
+        return { soft: parse(match[1]), hard: parse(match[2]) }
+      } catch {
+        return null
       }
+    }
+    try {
+      const nginxProcesses = []
+      for (const entry of fs.readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue
+        try {
+          const comm = fs.readFileSync(`/proc/${entry}/comm`, "utf-8").trim()
+          if (comm !== "nginx") continue
+          const status = fs.readFileSync(`/proc/${entry}/status`, "utf-8")
+          const parent = parseInt(status.match(/^PPid:\s+(\d+)/m)?.[1] || "0", 10)
+          const cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, "utf-8").replace(/\0/g, " ")
+          nginxProcesses.push({ pid: parseInt(entry, 10), parent, cmdline })
+        } catch {}
+      }
+      const master = nginxProcesses.find((process) => process.cmdline.includes("master process"))
+        || nginxProcesses.find((process) => !nginxProcesses.some((candidate) => candidate.pid === process.parent))
+      const workers = master
+        ? nginxProcesses.filter((process) => process.parent === master.pid)
+        : nginxProcesses.filter((process) => process.cmdline.includes("worker process"))
+      const masterLimits = master ? parseFdLimits(master.pid) : null
+      const workerLimits = workers.map((worker) => parseFdLimits(worker.pid)).filter(Boolean)
+      result.nginx_master_pid = master?.pid ?? null
+      result.nginx_worker_pids = workers.map((worker) => worker.pid)
+      result.worker_processes = workers.length || result.worker_processes
+      result.nginx_master_fd_soft = masterLimits?.soft ?? null
+      result.nginx_master_fd_hard = masterLimits?.hard ?? null
+      result.nginx_worker_fd_soft = workerLimits.length ? Math.min(...workerLimits.map((limit) => limit.soft)) : null
+      result.nginx_worker_fd_hard = workerLimits.length ? Math.min(...workerLimits.map((limit) => limit.hard)) : null
     } catch {}
 
     // Read CPU quota from cgroup
@@ -153,23 +241,30 @@ const server = http.createServer((req, res) => {
       result.worker_connections_total = result.worker_processes * result.worker_connections
     }
 
-    // §3.4.C: Raw workers × connections is not all usable SSE capacity.
-    // Account for: listener sockets, Redis connections, publisher/control traffic,
-    // Nginx internal FDs, other connection classes, operating headroom.
-    // Conservative: 1 listener + 1 Redis + 1 publisher + 1 control + 60 internal + 36 headroom = 100
-    const NON_VIEWER_FDS = 100
-    if (result.worker_connections_total) {
-      result.usable_sse_capacity = result.worker_connections_total - NON_VIEWER_FDS
+    // Capacity is bounded independently for every worker by both the configured
+    // worker_connections ceiling and that worker's actual RLIMIT_NOFILE.
+    const PER_WORKER_FD_RESERVE = 256
+    if (result.worker_processes && result.worker_connections && result.nginx_worker_fd_soft) {
+      const perWorker = Math.max(0, Math.min(result.worker_connections, result.nginx_worker_fd_soft) - PER_WORKER_FD_RESERVE)
+      result.usable_sse_capacity = result.worker_processes * perWorker
     }
 
-    // Assess sufficiency
+    // Assess sufficiency against the requested aggregate target.
+    const requestedTarget = (() => {
+      try {
+        const parsed = new URL(req.url, "http://localhost")
+        const value = parseInt(parsed.searchParams.get("target") || "100000", 10)
+        return Number.isInteger(value) && value > 0 ? value : 100000
+      } catch { return 100000 }
+    })()
+    result.target_connections = requestedTarget
     const reasons = []
     const usableCapacity = result.usable_sse_capacity ?? result.worker_connections_total
-    if (usableCapacity && usableCapacity < 100000) {
-      reasons.push(`usable_sse_capacity=${usableCapacity} (total=${result.worker_connections_total} − overhead=${NON_VIEWER_FDS}) < 100000`)
+    if (!result.nginx_master_fd_soft || !result.nginx_worker_fd_soft || result.nginx_worker_pids.length === 0) {
+      reasons.push("actual Nginx master/worker RLIMIT_NOFILE could not be read")
     }
-    if (result.fd_soft_limit && result.fd_soft_limit < 200000) {
-      reasons.push(`fd_soft_limit=${result.fd_soft_limit} < 200000`)
+    if (usableCapacity === null || usableCapacity < requestedTarget) {
+      reasons.push(`usable_sse_capacity=${usableCapacity} < ${requestedTarget}`)
     }
     if (result.cpu_quota && result.cpu_quota < 4) {
       reasons.push(`cpu_quota=${result.cpu_quota} < 4 (need >= 4 for DUT — frozen primary Nchan 4-CPU limit)`)

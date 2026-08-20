@@ -1,22 +1,8 @@
-import type { Scenario, ScenarioContext } from "./scenario.js"
+import type { RestartPathResult, Scenario, ScenarioContext } from "./scenario.js"
 
-// §3.9.E: Separate structured results for literal restart and cross-node replacement
-export interface RestartPathResult {
-  transport_resume_id: string | null
-  expected_first_seq: number | null
-  expected_last_seq: number | null
-  received_first_seq: number | null
-  received_last_seq: number | null
-  expected_count: number
-  received_required_count: number
-  missing_required: number
-  duplicates: number
-  out_of_order: number
-  missing_prefix: boolean
-  target_reached: boolean
-  recovery_ms: number
-  passed: boolean
-}
+// A small accepted range is deliberately created after each resume cursor. This
+// prevents a vacuous restart PASS when the publisher happens to be between ticks.
+const RESTART_REPLAY_DEPTH = 8
 
 export class NchanRestartScenario implements Scenario {
   name = "nchan-restart"
@@ -105,13 +91,15 @@ export class NchanRestartScenario implements Scenario {
         } catch {}
       }
 
-      // §3.11/§3.13: Freeze expected range BEFORE connecting to nchan-2
-      // Expected = events between resume cursor and head at replacement time
+      // §3.11/§3.13: Deliberately create and freeze a non-empty accepted range
+      // BEFORE connecting to nchan-2. publishPrefill is serialized per match, so
+      // its last accepted sequence is an unambiguous replacement boundary.
       const frozenExpectedFirstSeq1 = lastSeq1 !== null ? lastSeq1 + 1 : null
-      const headAtReplacement = ctx.headTracker.getHead(testMatch)
+      const acceptedRange = await ctx.publisher.publishPrefill(testMatch, RESTART_REPLAY_DEPTH)
+      const headAtReplacement = acceptedRange.lastSeq
 
-      // §3.9.D: Do not fall back to expectedCount=1 — require a valid frozen range
-      if (frozenExpectedFirstSeq1 === null || headAtReplacement < frozenExpectedFirstSeq1) {
+      // §3.9.D: Never fall back to expectedCount=1 or accept an empty range.
+      if (acceptedRange.published !== RESTART_REPLAY_DEPTH || frozenExpectedFirstSeq1 === null || headAtReplacement < frozenExpectedFirstSeq1) {
         ctx.log(`§3.9 Cross-node: invalid frozen range (first=${frozenExpectedFirstSeq1}, head=${headAtReplacement})`)
         return { name: this.name, passed: false, detail: `cross-node: invalid frozen range first=${frozenExpectedFirstSeq1} head=${headAtReplacement}` }
       }
@@ -201,9 +189,8 @@ export class NchanRestartScenario implements Scenario {
       ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq}`)
 
       // §3.9: Compute missing required sequences
-      const missingRequired = replayResult.ok && !missingPrefix
-        ? Math.max(0, frozenExpectedCount1 - replayEvents.length)
-        : replayEvents.length === 0 ? frozenExpectedCount1 : 0
+      const receivedRequired = Math.min(replayEvents.length, frozenExpectedCount1)
+      const missingRequired = Math.max(0, frozenExpectedCount1 - receivedRequired)
 
       // §3.9.F: Required structured result
       const pathResult: RestartPathResult = {
@@ -213,15 +200,18 @@ export class NchanRestartScenario implements Scenario {
         received_first_seq: replayResult.firstSeq,
         received_last_seq: replayResult.lastSeq,
         expected_count: frozenExpectedCount1,
-        received_required_count: replayEvents.length,
+        received_required_count: receivedRequired,
         missing_required: missingRequired,
         duplicates: replayResult.dup ? 1 : 0,
         out_of_order: outOfOrder ? 1 : 0,
         missing_prefix: missingPrefix,
         target_reached: replayResult.ok,
         recovery_ms: 0,
-        passed: replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder && !missingPrefix,
+        passed: frozenExpectedCount1 > 0 && replayResult.ok && !replayResult.gap && !replayResult.dup &&
+          !outOfOrder && !missingPrefix && receivedRequired === frozenExpectedCount1 && missingRequired === 0,
       }
+      ctx._restartReplay ??= {}
+      ctx._restartReplay.cross_node = pathResult
 
       // §3.9.E: Wire delivery accounting — separate from literal restart
       ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount1)
@@ -303,12 +293,15 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
 
-      // §3.11/§3.13: Record canonical range BEFORE restart — independent frozen expected range
+      // §3.11/§3.13: Deliberately publish and freeze a non-empty canonical
+      // range BEFORE restart. This makes the literal-restart assertion test real
+      // retained history rather than accepting an idle/empty interval.
       const frozenExpectedFirstSeq = lastSeq !== null ? lastSeq + 1 : null
-      const headAtRestart = ctx.headTracker.getHead(testMatch)
+      const acceptedRange = await ctx.publisher.publishPrefill(testMatch, RESTART_REPLAY_DEPTH)
+      const headAtRestart = acceptedRange.lastSeq
 
-      // §3.9.D: Do not fall back to expectedCount=1
-      if (frozenExpectedFirstSeq === null || headAtRestart < frozenExpectedFirstSeq) {
+      // §3.9.D: Do not fall back to expectedCount=1 or allow an empty range.
+      if (acceptedRange.published !== RESTART_REPLAY_DEPTH || frozenExpectedFirstSeq === null || headAtRestart < frozenExpectedFirstSeq) {
         ctx.log(`§3.9 Literal restart: invalid frozen range (first=${frozenExpectedFirstSeq}, head=${headAtRestart})`)
         return { name: this.name, passed: false, detail: `literal: invalid frozen range first=${frozenExpectedFirstSeq} head=${headAtRestart}` }
       }
@@ -438,9 +431,8 @@ export class NchanRestartScenario implements Scenario {
       ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} restartMs=${restartMs}`)
 
       // §3.9: Compute missing required sequences
-      const missingRequired = replayResult.ok && !missingPrefix
-        ? Math.max(0, frozenExpectedCount - replayEvents.length)
-        : replayEvents.length === 0 ? frozenExpectedCount : 0
+      const receivedRequired = Math.min(replayEvents.length, frozenExpectedCount)
+      const missingRequired = Math.max(0, frozenExpectedCount - receivedRequired)
 
       // §3.9.F: Required structured result
       const pathResult: RestartPathResult = {
@@ -450,15 +442,18 @@ export class NchanRestartScenario implements Scenario {
         received_first_seq: replayResult.firstSeq,
         received_last_seq: replayResult.lastSeq,
         expected_count: frozenExpectedCount,
-        received_required_count: replayEvents.length,
+        received_required_count: receivedRequired,
         missing_required: missingRequired,
         duplicates: replayResult.dup ? 1 : 0,
         out_of_order: outOfOrder ? 1 : 0,
         missing_prefix: missingPrefix,
         target_reached: replayResult.ok,
         recovery_ms: restartMs,
-        passed: replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder && !missingPrefix,
+        passed: frozenExpectedCount > 0 && replayResult.ok && !replayResult.gap && !replayResult.dup &&
+          !outOfOrder && !missingPrefix && receivedRequired === frozenExpectedCount && missingRequired === 0,
       }
+      ctx._restartReplay ??= {}
+      ctx._restartReplay.literal_restart = pathResult
 
       // §3.11/§3.13: Wire delivery accounting — frozen expected range from pre-restart head observation
       ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount)
@@ -489,6 +484,10 @@ export class NchanRestartScenario implements Scenario {
     } catch (err) {
       ctx.log(`Nchan literal restart test failed: ${err}`)
       return { name: this.name, passed: false, detail: `error: ${err}` }
+    } finally {
+      // §3.11.C: Record active population for this scenario
+      const startPop = ctx._activePopulationStart ?? 0
+      ctx._restartActivePopulation = { start: startPop, peak: startPop, end: startPop }
     }
   }
 }

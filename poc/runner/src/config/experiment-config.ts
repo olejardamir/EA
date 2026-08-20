@@ -14,7 +14,7 @@ export interface ExperimentConfig {
   historyUrl: string
   seed: number
   runProfile: "smoke" | "evidence"
-  runMode: "single" | "evidence"
+  runMode: "single" | "evidence" | "coordinated-shard"
 }
 
 function requirePositiveInt(value: string | undefined, name: string, fallback?: number): number {
@@ -69,6 +69,10 @@ export function loadConfig(): ExperimentConfig {
     historyUrl: nchanSubUrl,
     seed: requirePositiveInt(process.env.SEED, "SEED", 42),
     runProfile: (process.env.RUN_PROFILE === "evidence" ? "evidence" : "smoke") as "smoke" | "evidence",
-    runMode: (process.env.RUN_MODE === "evidence" ? "evidence" : "single") as "single" | "evidence",
+    runMode: process.env.RUN_MODE === "evidence"
+      ? "evidence"
+      : process.env.RUN_MODE === "coordinated-shard"
+        ? "coordinated-shard"
+        : "single",
   }
 }

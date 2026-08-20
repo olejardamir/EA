@@ -6,7 +6,9 @@ Every result-affecting non-assignment constant has a value, unit, classification
 
 | Parameter | Value | Unit | Classification | Rationale | Where Used |
 |---|---|---|---|---|---|
-| TARGET_CONNECTIONS (evidence) | 100000 | connections | ASSIGNMENT_FACT | 100,000 concurrent viewers (assignment §2.0) | compose.evidence.yaml, experiment-config.ts |
+| GLOBAL_TARGET (coordinated evidence) | 100000 | connections | ASSIGNMENT_FACT | 100,000 simultaneous global viewers | compose.evidence-100k.yaml, global-coordinator.ts |
+| TARGET_CONNECTIONS (coordinated shard) | 25000 | connections/shard | DERIVED_VALUE | 4 × 25,000 = 100,000 while preserving frozen source-port reserves | compose.evidence-100k.yaml, topology-preflight.ts |
+| TARGET_CONNECTIONS (legacy repeated single-runner evidence) | 100000 | connections | HISTORICAL_CONTRACT | v2.0.3 cross-run path; it is not direct global v2.0.4 eligibility | compose.evidence.yaml, evidence-suite.ts |
 | TARGET_CONNECTIONS (smoke) | 100 | connections | PLANNING_ASSUMPTION | Scaled-down for fast iteration; exercises same logic | compose.yaml, experiment-config.ts |
 | WARMUP_SECONDS (evidence) | 30 | s | PLANNING_ASSUMPTION | Sufficient for 60k connections + events to stabilize | compose.evidence.yaml |
 | WARMUP_SECONDS (smoke) | 5 | s | PLANNING_ASSUMPTION | Proportional reduction for 100-connection smoke | compose.yaml |
@@ -38,12 +40,16 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Parameter | Value | Unit | Classification | Rationale | Where Used |
 |---|---|---|---|---|---|
 | Base connection fraction | 60% | percentage | ASSIGNMENT_FACT | 60% base → 40% surge (assignment §2.0: +40k within 2 min) | warmup.ts:15 |
-| Surge duration | 120000 | ms | ASSIGNMENT_FACT | 120-second surge window (assignment §2.0) | connection-surge.ts:18 |
+| Surge duration | 120000 | ms | ASSIGNMENT_FACT | 120-second absolute-deadline surge window; no arbitrary 80% rate threshold | connection-surge.ts |
 | Surge batch count | 24 | count | DERIVED_VALUE | 120s / 5s per batch = 24 batches | connection-surge.ts:19-20 |
 | Connection batch size | 50 | count | PLANNING_ASSUMPTION | HTTP connection batch size for backpressure control | connection-pool.ts:132 |
 | Connection batch delay | 50 | ms | PLANNING_ASSUMPTION | 50ms pause between connection batches | connection-pool.ts:163 |
 | Reconnect fraction | 10% | percentage | PLANNING_ASSUMPTION | 10% of connections disconnected for reconnect test | reconnect.ts (scenario) |
 | Reconnect wait duration | 2000 | ms | PLANNING_ASSUMPTION | 2s disruption interval before reconnect | reconnect.ts (scenario) |
+| Source-port reconnect/TIME_WAIT allowance | 10% of shard target | sockets | PLANNING_ASSUMPTION | Reserves ports for the frozen reconnect cohort and TIME_WAIT | topology-preflight.ts |
+| Source-port non-viewer allowance | 64 | sockets/shard | PLANNING_ASSUMPTION | Publisher, Redis/control and other outbound sockets | topology-preflight.ts |
+| Source-port safety margin | 512 | ports/shard | PLANNING_ASSUMPTION | Explicit margin beyond viewers and known overhead | topology-preflight.ts |
+| Nginx per-worker FD reserve | 256 | FDs/worker | PLANNING_ASSUMPTION | Internal/listening/upstream descriptors are excluded from SSE capacity | control-server.js, topology-preflight.ts |
 
 ## Nchan Configuration Parameters
 
@@ -66,7 +72,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | nchan-primary | 4 | 8 GB | 200,000 | PLANNING_ASSUMPTION | Frozen DUT envelope (contract §6) |
 | nchan-2 (evidence only) | 4 | 4 GB | 200,000 | PLANNING_ASSUMPTION | Cross-node replacement test resource |
 | redis | 2 | 2 GB | — | PLANNING_ASSUMPTION | Local Redis for shared history |
-| runner | 8 | 8 GB | 100,000 | PLANNING_ASSUMPTION | Must support 100k SSE connections + metrics |
+| runner shard (×4) | 8 each | 8 GB each | 120,000 each | PLANNING_ASSUMPTION | Each shard supports 25k viewers plus reconnect and generator work |
 
 ## Latency and Histogram Parameters
 
@@ -104,6 +110,27 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Slow event interval | 2000 | ms | ASSIGNMENT_FACT | ~1 event per 2 seconds (contract §20 / assignment §U) | slow-consumer.ts:8 |
 | Backpressure duration | 15000 | ms | PLANNING_ASSUMPTION | 15s observation window for backpressure effects | slow-consumer.ts:6 |
 | Latency degradation threshold | 5% | percentage | PLANNING_ASSUMPTION | Healthy clients must not degrade >5% during slow-consumer phase | slow-consumer.ts:7 |
+| Slow pacing tolerance | 1600–2400 | ms median/client | PLANNING_ASSUMPTION | Frozen ±20% band around the intended 2-second application rate | slow-consumer.ts |
+| Dedicated healthy baseline | 3000 | ms | PLANNING_ASSUMPTION | Isolates immediately-before-slow latency from prior phases | slow-consumer.ts |
+| Slow recovery timeout | 10000 | ms | PLANNING_ASSUMPTION | Allows replay/drain after application throttling stops | slow-consumer.ts |
+| Slow replay recovery | ≥95% | percentage | PLANNING_ASSUMPTION | Requires material recovery of independently measured backlog | slow-consumer.ts, result-classifier.ts |
+| Slow max Nchan growth | <50 MiB and <10% | bytes/fraction | PLANNING_ASSUMPTION | Both absolute and relative run growth must be bounded | slow-consumer.ts |
+| Slow max recovery delta | <50 MiB | bytes | PLANNING_ASSUMPTION | Post-throttle memory must return near baseline | slow-consumer.ts |
+| Meaningful memory growth | >1 MiB and >5% | bytes/fraction | PLANNING_ASSUMPTION | Excludes ordinary memory noise from backpressure attribution | slow-consumer.ts |
+
+## Coordinated Global Parameters
+
+| Parameter | Value | Unit | Classification | Rationale | Where Used |
+|---|---|---|---|---|---|
+| SHARD_TOTAL | 4 | shards | DERIVED_VALUE | Four distinct source network namespaces reach exactly 100k at 25k each | compose.evidence-100k.yaml |
+| Aligned sample bucket | 1000 | ms | PLANNING_ASSUMPTION | Aggregates simultaneous concurrency and counter deltas without summing historical peaks | global-coordinator.ts |
+| Live shard sample interval | 250 | ms | PLANNING_ASSUMPTION | Supplies several observations per aligned bucket | coordinator-client.ts |
+| Publisher owners | exactly 1 | shard | PROTOCOL_REQUIREMENT | Preserves one authoritative logical event workload | global-coordinator.ts, main.ts |
+| Restart replay depth | 8 | accepted events/path | PLANNING_ASSUMPTION | Small deterministic non-empty range for literal and replacement paths | nchan-restart.ts |
+| Late-join deterministic prefill | 500 | accepted events | PLANNING_ASSUMPTION | Meaningful deterministic retained-history extension | late-join.ts |
+| Late-join live margin | 120 | events | DERIVED_VALUE | 60 events/s × 2-second catch-up bound | late-join.ts |
+| Late-join safety margin | 256 | events | PLANNING_ASSUMPTION | Guards live-arrival and scheduling variation | late-join.ts |
+| Scenario active minimum | 100% target; reconnect 90% | percentage | PROTOCOL_REQUIREMENT | Peak claims remain at target; reconnect permits its deliberate 10% cohort outage | global-coordinator.ts |
 
 ## Publisher Parameters
 

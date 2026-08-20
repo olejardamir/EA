@@ -185,4 +185,78 @@ describe("ReconnectScenario", () => {
     assert.ok(!result.passed)
     assert.ok(result.detail.includes("gaps=3"))
   })
+
+  // §M2-5: A client whose reconnect attempt fails must NOT be counted as
+  // successfully reconnected. allReconnectedCount previously incremented while
+  // iterating expected clients, producing a false PASS.
+  it("failed reconnect client is not counted as reconnected (no false PASS)", async () => {
+    const entries = Array.from({ length: 20 }, (_, i) => makeEntry(i))
+    const pool = {
+      entries, running: true, handleMessage() {},
+      removeActiveEntry(_entry: ConnectionEntry, _reason: string) {
+        const idx = entries.indexOf(_entry)
+        if (idx >= 0) entries.splice(idx, 1)
+      },
+      addActiveEntry(_entry: ConnectionEntry) { entries.push(_entry) },
+    }
+    const ctx = mockCtx(entries)
+    // Fail the SECOND reconnect attempt (cohort size is 2 for a 20-entry pool)
+    let connectCalls = 0
+    ;(ctx.eventStream as any).connect = async (_url: string, _lastEventId?: string): Promise<Subscription> => {
+      connectCalls++
+      if (connectCalls === 2) throw new Error("connection refused")
+      return {
+        connected: true,
+        lastEventId: null,
+        onEvent(_h) {},
+        pause() {},
+        resume() {},
+        close() {},
+        getEventHandler() { return null },
+      }
+    }
+    const reconnect = new ReconnectScenario(pool as any)
+    const result = await reconnect.execute(ctx)
+
+    // Must FAIL: only 1 of 2 intended clients actually re-established
+    assert.ok(!result.passed, `expected FAIL when a client fails to reconnect: ${result.detail}`)
+    assert.ok(result.detail.includes("reconnected=1/2"), `expected reconnected=1/2: ${result.detail}`)
+    assert.ok(result.detail.includes("all_reconnected=false"))
+
+    // Per-client structured results must mark the failed client
+    const perClient = ctx._reconnectPerClient
+    assert.ok(Array.isArray(perClient) && perClient.length === 2, "per-client results emitted for every intended client")
+    const failed = perClient!.find((r) => !r.subscription_reestablished)
+    assert.ok(failed, "failed client marked subscription_reestablished=false")
+    assert.equal(failed!.target_reached, false, "failed client cannot reach target")
+    assert.ok(perClient!.filter((r) => r.subscription_reestablished).length === 1)
+  })
+
+  it("per-client results include required fields", async () => {
+    const entries = Array.from({ length: 10 }, (_, i) => makeEntry(i))
+    const pool = {
+      entries, running: true, handleMessage() {},
+      removeActiveEntry(_entry: ConnectionEntry, _reason: string) {
+        const idx = entries.indexOf(_entry)
+        if (idx >= 0) entries.splice(idx, 1)
+      },
+      addActiveEntry(_entry: ConnectionEntry) { entries.push(_entry) },
+    }
+    const ctx = mockCtx(entries)
+    const reconnect = new ReconnectScenario(pool as any)
+    await reconnect.execute(ctx)
+
+    const perClient = ctx._reconnectPerClient
+    assert.ok(Array.isArray(perClient) && perClient.length === 1)
+    for (const r of perClient!) {
+      for (const field of [
+        "connection_id", "subscription_reestablished", "saved_last_seq",
+        "expected_first_seq", "expected_last_seq", "expected_count",
+        "first_received_seq", "received_required_count", "missing",
+        "duplicates", "out_of_order", "target_reached", "catch_up_ms",
+      ]) {
+        assert.ok(field in r, `per-client result missing field: ${field}`)
+      }
+    }
+  })
 })

@@ -1,13 +1,22 @@
 # §3.2: Multi-shard 100k generator topology
 # 4 runner shards on a Docker bridge network, each with distinct source IP.
-# Total capacity: 4 × ~28k ephemeral ports = ~112k > 100k (12% headroom).
+# Per-shard allocation: 25,000 connections (safe within typical 28,232-port range).
+# Aggregate: 4 × 25,000 = 100,000 = target (exact match, no excess port pressure).
+# Frozen proof: 25,000 viewers + 2,500 reconnect/TIME_WAIT + 64 non-viewer
+# sockets + 512 safety = 28,076 required, leaving 156 ports of headroom.
 # Nchan and Redis remain on host networking for stability.
 # Runners reach host-network services via host.docker.internal.
+# Launch with ./run-evidence-100k.sh; it injects the checkout SHA automatically.
 
 services:
   redis:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
     network_mode: host
+    entrypoint: ["/bin/sh", "/redis-cgroup-entrypoint.sh"]
+    command: ["redis-server"]
+    volumes:
+      - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
+      - redis-cgroup-evidence:/redis-cgroup
     deploy:
       resources:
         limits:
@@ -70,20 +79,50 @@ services:
       timeout: 3s
       retries: 10
 
+  coordinator:
+    build:
+      context: ./runner
+      network: host
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+    command: ["npm", "run", "start:coordinator"]
+    networks:
+      - shard-net
+    environment:
+      SHARD_TOTAL: "4"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "42"
+      GLOBAL_RESULT_PATH: "/evidence/global-result.json"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+    volumes:
+      - global-evidence:/evidence
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
   # §3.2: 4 runner shards on a shared bridge network.
   # Each container gets a unique Docker-assigned IP on the bridge subnet.
   # Each shard connects to Nchan via host.docker.internal (host-network gateway).
-  # Per-shard capacity: ~28k ephemeral ports. Aggregate: ~112k > 100k.
+  # Per-shard capacity: 25,000 connections (safe within ~28k ephemeral range).
+  # Aggregate: 4 × 25,000 = 100,000 = target.
 
   runner-shard-0:
     build:
       context: ./runner
       network: host
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
     depends_on:
       nchan:
         condition: service_healthy
+      coordinator:
+        condition: service_healthy
     networks:
       - shard-net
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -92,21 +131,26 @@ services:
       NCHAN2_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       REDIS_URL: "redis://host.docker.internal:6379"
-      TARGET_CONNECTIONS: "28000"
+      TARGET_CONNECTIONS: "25000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
-      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
-      RUN_MODE: "single"
+      RUN_MODE: "coordinated-shard"
+      COORDINATOR_URL: "http://coordinator:3000"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "42"
+      SEED: "42"
+      PUBLISHER_OWNER: "true"
       SHARD_ID: "0"
       SHARD_TOTAL: "4"
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
       NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
     deploy:
       resources:
         limits:
@@ -121,11 +165,17 @@ services:
     build:
       context: ./runner
       network: host
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
     depends_on:
       nchan:
         condition: service_healthy
+      coordinator:
+        condition: service_healthy
     networks:
       - shard-net
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -134,21 +184,26 @@ services:
       NCHAN2_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       REDIS_URL: "redis://host.docker.internal:6379"
-      TARGET_CONNECTIONS: "28000"
+      TARGET_CONNECTIONS: "25000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
-      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
-      RUN_MODE: "single"
+      RUN_MODE: "coordinated-shard"
+      COORDINATOR_URL: "http://coordinator:3000"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "42"
+      SEED: "42"
+      PUBLISHER_OWNER: "false"
       SHARD_ID: "1"
       SHARD_TOTAL: "4"
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
       NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
     deploy:
       resources:
         limits:
@@ -163,11 +218,17 @@ services:
     build:
       context: ./runner
       network: host
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
     depends_on:
       nchan:
         condition: service_healthy
+      coordinator:
+        condition: service_healthy
     networks:
       - shard-net
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -176,21 +237,26 @@ services:
       NCHAN2_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       REDIS_URL: "redis://host.docker.internal:6379"
-      TARGET_CONNECTIONS: "28000"
+      TARGET_CONNECTIONS: "25000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
-      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
-      RUN_MODE: "single"
+      RUN_MODE: "coordinated-shard"
+      COORDINATOR_URL: "http://coordinator:3000"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "42"
+      SEED: "42"
+      PUBLISHER_OWNER: "false"
       SHARD_ID: "2"
       SHARD_TOTAL: "4"
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
       NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
     deploy:
       resources:
         limits:
@@ -205,11 +271,17 @@ services:
     build:
       context: ./runner
       network: host
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
     depends_on:
       nchan:
         condition: service_healthy
+      coordinator:
+        condition: service_healthy
     networks:
       - shard-net
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -218,21 +290,26 @@ services:
       NCHAN2_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       REDIS_URL: "redis://host.docker.internal:6379"
-      TARGET_CONNECTIONS: "28000"
+      TARGET_CONNECTIONS: "25000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
-      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
-      RUN_MODE: "single"
+      RUN_MODE: "coordinated-shard"
+      COORDINATOR_URL: "http://coordinator:3000"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "42"
+      SEED: "42"
+      PUBLISHER_OWNER: "false"
       SHARD_ID: "3"
       SHARD_TOTAL: "4"
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
       NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
     deploy:
       resources:
         limits:
@@ -249,3 +326,7 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+
+volumes:
+  global-evidence:
+  redis-cgroup-evidence:

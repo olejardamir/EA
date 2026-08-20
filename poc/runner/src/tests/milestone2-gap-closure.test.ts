@@ -271,6 +271,18 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     reconnect_active_start: 0,
     reconnect_active_peak: 0,
     reconnect_active_end: 0,
+    late_join_active_start: 0,
+    late_join_active_peak: 0,
+    late_join_active_end: 0,
+    burst_active_start: 0,
+    burst_active_peak: 0,
+    burst_active_end: 0,
+    slow_consumer_active_start: 0,
+    slow_consumer_active_peak: 0,
+    slow_consumer_active_end: 0,
+    restart_active_start: 0,
+    restart_active_peak: 0,
+    restart_active_end: 0,
     ...overrides,
   }
 }

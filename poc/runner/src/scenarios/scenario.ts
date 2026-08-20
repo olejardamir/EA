@@ -31,6 +31,8 @@ export interface ScenarioContext {
   phaseSnapshots: PhaseSnapshot[]
   log: (msg: string) => void
   sleep: (ms: number) => Promise<void>
+  // In coordinated mode exactly one shard owns the logical publisher workload.
+  publisherEnabled?: boolean
   // §BH: surge scenario writes health metrics here for main.ts aggregation
   _surgeHealth?: {
     fan_out_p95_ms: number
@@ -60,12 +62,64 @@ export interface ScenarioContext {
     active_peak: number
     active_end: number
   }
+  // §M2-5: Per-client reconnect results — one record per intended client
+  _reconnectPerClient?: ReconnectClientResult[]
+  // §M2-10: Both restart paths emit their independently frozen canonical range.
+  _restartReplay?: {
+    literal_restart?: RestartPathResult
+    cross_node?: RestartPathResult
+  }
+  // §3.11.C: Per-scenario active population tracking for peak-load scenarios
+  _lateJoinActivePopulation?: { start: number; peak: number; end: number }
+  _burstActivePopulation?: { start: number; peak: number; end: number }
+  _slowConsumerActivePopulation?: { start: number; peak: number; end: number }
+  _restartActivePopulation?: { start: number; peak: number; end: number }
+  // §3.11.C: Pool size snapshot — main.ts sets this before each scenario so scenarios without direct pool access can report active population
+  _activePopulationStart?: number
 }
 
 export interface ScenarioResult {
   name: string
   passed: boolean
   detail: string
+}
+
+// §M2-5: Structured per-client reconnect result.
+// PASS requires every intended client to have subscription_reestablished=true
+// and target_reached=true. A client with expected_count=0/received=0 only counts
+// as reconnected when subscription_reestablished is true.
+export interface ReconnectClientResult {
+  connection_id: number
+  match_id: string
+  subscription_reestablished: boolean
+  saved_last_seq: number
+  expected_first_seq: number
+  expected_last_seq: number
+  expected_count: number
+  first_received_seq: number | null
+  received_required_count: number
+  missing: number
+  duplicates: number
+  out_of_order: number
+  target_reached: boolean
+  catch_up_ms: number
+}
+
+export interface RestartPathResult {
+  transport_resume_id: string | null
+  expected_first_seq: number | null
+  expected_last_seq: number | null
+  received_first_seq: number | null
+  received_last_seq: number | null
+  expected_count: number
+  received_required_count: number
+  missing_required: number
+  duplicates: number
+  out_of_order: number
+  missing_prefix: boolean
+  target_reached: boolean
+  recovery_ms: number
+  passed: boolean
 }
 
 export interface Scenario {

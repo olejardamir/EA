@@ -5,6 +5,13 @@
 const DEFAULT_MAX_MS = 30_000
 const DEFAULT_BUCKET_COUNT = DEFAULT_MAX_MS + 1
 
+export interface SerializedHistogram {
+  max_ms: number
+  total_count: number
+  overflow_count: number
+  buckets: Array<[milliseconds: number, count: number]>
+}
+
 export class StreamingHistogram {
   private buckets: Uint32Array
   private maxMs: number
@@ -88,5 +95,47 @@ export class StreamingHistogram {
     copy.trackedMax = this.trackedMax
     copy.buckets = new Uint32Array(this.buckets)
     return copy
+  }
+
+  // Sparse, lossless representation used for simultaneous cross-shard merging.
+  // Percentiles must be recomputed from the merged buckets; percentile values
+  // themselves are never averaged or maximized.
+  serialize(): SerializedHistogram {
+    const buckets: Array<[number, number]> = []
+    for (let ms = 0; ms <= this.maxMs; ms++) {
+      const count = this.buckets[ms]
+      if (count > 0) buckets.push([ms, count])
+    }
+    return {
+      max_ms: this.maxMs,
+      total_count: this.totalCount,
+      overflow_count: this.overflowCount,
+      buckets,
+    }
+  }
+
+  static deserialize(value: SerializedHistogram): StreamingHistogram {
+    if (!Number.isInteger(value.max_ms) || value.max_ms < 1) {
+      throw new Error("histogram max_ms must be a positive integer")
+    }
+    const histogram = new StreamingHistogram(value.max_ms)
+    let populated = 0
+    for (const [milliseconds, count] of value.buckets) {
+      if (!Number.isInteger(milliseconds) || milliseconds < 0 || milliseconds > value.max_ms) {
+        throw new Error(`invalid histogram bucket: ${milliseconds}`)
+      }
+      if (!Number.isInteger(count) || count < 1) {
+        throw new Error(`invalid histogram bucket count: ${count}`)
+      }
+      histogram.buckets[milliseconds] = count
+      populated += count
+      if (milliseconds > histogram.trackedMax) histogram.trackedMax = milliseconds
+    }
+    if (populated + value.overflow_count !== value.total_count) {
+      throw new Error("histogram population does not match total_count")
+    }
+    histogram.totalCount = value.total_count
+    histogram.overflowCount = value.overflow_count
+    return histogram
   }
 }

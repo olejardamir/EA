@@ -12,6 +12,14 @@ function mockCtx(overrides: Partial<{ eventStream: EventStream; nchan2SubUrl: st
     publisher: {
       start() {}, stop() {},
       snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+      async publishPrefill(_matchId: string, count: number) {
+        return {
+          published: count,
+          firstSeq: 4,
+          lastSeq: 3 + count,
+          frozenState: null,
+        }
+      },
     } as unknown as MatchEventPublisher,
     eventStream: overrides.eventStream ?? { async connect() { return {} as Subscription } },
     metrics: {
@@ -120,10 +128,8 @@ describe("NchanRestartScenario", () => {
       JSON.stringify({ canonical_seq: 3, ts: Date.now() }),
     ]
     // §3.11: Replay must include events AFTER pre-restart lastSeq (3) to satisfy seq > lastSeq1
-    const replayEvents = [
-      JSON.stringify({ canonical_seq: 4, ts: Date.now() }),
-      JSON.stringify({ canonical_seq: 5, ts: Date.now() }),
-    ]
+    const replayEvents = Array.from({ length: 8 }, (_, index) =>
+      JSON.stringify({ canonical_seq: 4 + index, ts: Date.now() }))
     let connectCount = 0
     const stream: EventStream = {
       async connect(_url: string, _lastEventId?: string): Promise<Subscription> {
@@ -155,5 +161,8 @@ describe("NchanRestartScenario", () => {
     const result = await scenario.execute(ctx)
     assert.ok(result.passed)
     assert.ok(result.detail.includes("cross-node"))
+    assert.equal(ctx._restartReplay?.cross_node?.expected_count, 8)
+    assert.equal(ctx._restartReplay?.cross_node?.received_required_count, 8)
+    assert.equal(ctx._restartReplay?.cross_node?.missing_required, 0)
   })
 })
