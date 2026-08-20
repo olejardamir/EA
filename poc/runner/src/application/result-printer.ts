@@ -120,7 +120,7 @@ export function printSummary(
   if (metrics.phase_publish_rates.length > 0) {
     console.log("PHASE PUBLISH RATES")
     for (const pr of metrics.phase_publish_rates) {
-      console.log(`  ${pr.phase.padEnd(12)} ${pr.eventsPerSec} evt/s  hot-match: ${pr.hotMatchPct}%`)
+      console.log(`  ${pr.phase.padEnd(12)} match=${(pr.matchEventsPerSec ?? 0).toFixed(1)} lobby=${(pr.lobbyEventsPerSec ?? 0).toFixed(1)} total=${(pr.totalEventsPerSec ?? pr.eventsPerSec).toFixed(1)} evt/s  hot-match: ${pr.hotMatchPct}%`)
     }
     console.log("")
   }
@@ -210,7 +210,22 @@ export function emitMachineReadableResult(
     scenario_active_concurrency: {
       lobby_subscribers: metrics.lobby_subscribers,
       match_001_subscribers: metrics.match_001_subscribers,
-      total_active_subscribers: (metrics.lobby_subscribers || 0) + (metrics.match_001_subscribers || 0),
+      match_002_subscribers: metrics.match_002_subscribers ?? 0,
+      match_003_subscribers: metrics.match_003_subscribers ?? 0,
+      match_004_subscribers: metrics.match_004_subscribers ?? 0,
+      match_005_subscribers: metrics.match_005_subscribers ?? 0,
+      match_006_subscribers: metrics.match_006_subscribers ?? 0,
+      match_007_subscribers: metrics.match_007_subscribers ?? 0,
+      match_008_subscribers: metrics.match_008_subscribers ?? 0,
+      total_active_subscribers: (metrics.lobby_subscribers || 0)
+        + (metrics.match_001_subscribers || 0)
+        + (metrics.match_002_subscribers || 0)
+        + (metrics.match_003_subscribers || 0)
+        + (metrics.match_004_subscribers || 0)
+        + (metrics.match_005_subscribers || 0)
+        + (metrics.match_006_subscribers || 0)
+        + (metrics.match_007_subscribers || 0)
+        + (metrics.match_008_subscribers || 0),
     },
     scenario_results: verdictResult.checks.map((c) => ({
       name: c.name,
@@ -358,13 +373,11 @@ export function emitMachineReadableResult(
     phase_publish_rates: metrics.phase_publish_rates,
     // §4.18: Workload rate metrics with separate match/lobby/total rates
     workload_rate_metrics: {
-      total_events_per_sec: metrics.events_published > 0 && metrics.phase_publish_rates.length > 0
-        ? metrics.phase_publish_rates.reduce((sum, pr) => sum + pr.eventsPerSec, 0) / metrics.phase_publish_rates.length
-        : 0,
-      match_events_per_sec: metrics.phase_publish_rates.length > 0
-        ? metrics.phase_publish_rates.filter(pr => !pr.phase.toLowerCase().includes('lobby')).reduce((sum, pr) => sum + pr.eventsPerSec, 0) / Math.max(1, metrics.phase_publish_rates.filter(pr => !pr.phase.toLowerCase().includes('lobby')).length)
-        : 0,
-      lobby_events_per_sec: 0,
+      total_events_per_sec: metrics.total_events_per_sec,
+      match_events_per_sec: metrics.match_events_per_sec,
+      lobby_events_per_sec: metrics.lobby_events_per_sec,
+      match_events_published: metrics.match_events_published,
+      lobby_events_published: metrics.lobby_events_published,
       phase_rates: metrics.phase_publish_rates,
     },
     // §4.18: Scheduler lag metrics (separate from surge health)
@@ -398,7 +411,22 @@ export function emitMachineReadableResult(
     viewer_concentration: {
       lobby_subscribers: metrics.lobby_subscribers,
       match_001_subscribers: metrics.match_001_subscribers,
-      total_active_subscribers: (metrics.lobby_subscribers || 0) + (metrics.match_001_subscribers || 0),
+      match_002_subscribers: metrics.match_002_subscribers ?? 0,
+      match_003_subscribers: metrics.match_003_subscribers ?? 0,
+      match_004_subscribers: metrics.match_004_subscribers ?? 0,
+      match_005_subscribers: metrics.match_005_subscribers ?? 0,
+      match_006_subscribers: metrics.match_006_subscribers ?? 0,
+      match_007_subscribers: metrics.match_007_subscribers ?? 0,
+      match_008_subscribers: metrics.match_008_subscribers ?? 0,
+      total_active_subscribers: (metrics.lobby_subscribers || 0)
+        + (metrics.match_001_subscribers || 0)
+        + (metrics.match_002_subscribers || 0)
+        + (metrics.match_003_subscribers || 0)
+        + (metrics.match_004_subscribers || 0)
+        + (metrics.match_005_subscribers || 0)
+        + (metrics.match_006_subscribers || 0)
+        + (metrics.match_007_subscribers || 0)
+        + (metrics.match_008_subscribers || 0),
     },
     validity: {
       timing_valid: metrics.timing_valid,

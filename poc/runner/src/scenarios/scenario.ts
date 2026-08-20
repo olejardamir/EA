@@ -11,6 +11,9 @@ export interface PhaseSnapshot {
   eventsPublished: number
   byMatch: Map<string, number>
   durationMs: number
+  // §3.7: Separate match/lobby counts for workload-rate breakdown
+  matchPublished: number
+  lobbyPublished: number
 }
 
 export interface ScenarioContext {

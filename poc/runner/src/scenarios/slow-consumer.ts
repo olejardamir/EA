@@ -296,7 +296,10 @@ export class SlowConsumerScenario implements Scenario {
     // §4.8: Pass/fail rule — frozen interpretation:
     // PASS: healthy degradation <= threshold AND bounded behavior demonstrated
     // INCONCLUSIVE: no server-side backpressure reached (test absorbed by kernel buffers)
-    const passed = degradationOk && boundedOk
+    // §3.6: PASS only when server-side backpressure was demonstrated AND bounded behavior holds
+    // When no backpressure evidence exists (kernel absorbed everything), passed=false so detail
+    // accurately reflects the test did not prove the property
+    const passed = degradationOk && boundedOk && evidenceBackpressure
 
     this.slowMetrics = {
       slow_clients: slowCount,

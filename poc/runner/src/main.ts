@@ -26,6 +26,9 @@ import { execSync } from "node:child_process"
 import type { ScenarioContext } from "./scenarios/scenario.js"
 
 function getGitCommitSha(): string | null {
+  // §3.15: Check environment variable first (set via build ARG or Compose)
+  const envSha = process.env.GIT_COMMIT_SHA
+  if (envSha && envSha.length >= 7) return envSha
   try {
     return execSync("git rev-parse HEAD", { encoding: "utf-8", timeout: 2000 }).trim()
   } catch {
@@ -243,6 +246,10 @@ async function main(): Promise<void> {
     // §AB: Start continuous event-loop delay monitor before measured phases
     resourceMonitor.startEventLoopMonitor()
 
+    // §3.9: Capture cgroup baseline at run start — cgroup counters are cumulative over
+    // container lifetime; per-run deltas = end_snapshot - start_snapshot.
+    const cgroupBaseline = resourceMonitor.snapshot()
+
     // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
     metrics.beginPhase("warmup")
     const warmup = new WarmupScenario(pool)
@@ -251,7 +258,7 @@ async function main(): Promise<void> {
     log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
     // §4.6: Record phase snapshot for publish rate measurement
     const warmupSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000, matchPublished: warmupSnap.matchPublished, lobbyPublished: warmupSnap.lobbyPublished })
 
     // Phase 2: Steady — publisher already running from warm-up
     metrics.beginPhase("steady")
@@ -261,7 +268,7 @@ async function main(): Promise<void> {
     log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
     // §4.6: Record phase snapshot
     const steadySnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000, matchPublished: steadySnap.matchPublished, lobbyPublished: steadySnap.lobbyPublished })
 
     // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
     metrics.beginPhase("surge")
@@ -271,7 +278,7 @@ async function main(): Promise<void> {
     log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
     // §4.6: Record phase snapshot
     const surgeSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0 })
+    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0, matchPublished: surgeSnap.matchPublished, lobbyPublished: surgeSnap.lobbyPublished })
 
     // Phase 4: Post-surge stabilization
     metrics.beginPhase("post-surge")
@@ -290,7 +297,7 @@ async function main(): Promise<void> {
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const lateJoinSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration })
+    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration, matchPublished: lateJoinSnap.matchPublished, lobbyPublished: lateJoinSnap.lobbyPublished })
 
     // Phase 6: Burst at peak
     metrics.beginPhase("burst")
@@ -300,7 +307,7 @@ async function main(): Promise<void> {
     log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
     // §4.6: Record phase snapshot
     const burstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000, matchPublished: burstSnap.matchPublished, lobbyPublished: burstSnap.lobbyPublished })
 
     // Phase 7: Post-burst steady
     metrics.beginPhase("post-burst")
@@ -313,7 +320,7 @@ async function main(): Promise<void> {
     log("Post-burst steady complete")
     // §4.6: Record phase snapshot
     const postBurstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000, matchPublished: postBurstSnap.matchPublished, lobbyPublished: postBurstSnap.lobbyPublished })
 
     // Phase 8: Reconnect while publishing
     metrics.beginPhase("reconnect")
@@ -325,7 +332,7 @@ async function main(): Promise<void> {
     log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const reconnectSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration })
+    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, matchPublished: reconnectSnap.matchPublished, lobbyPublished: reconnectSnap.lobbyPublished })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
     metrics.beginPhase("slow-consumer")
@@ -337,7 +344,7 @@ async function main(): Promise<void> {
     log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const slowSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration })
+    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, matchPublished: slowSnap.matchPublished, lobbyPublished: slowSnap.lobbyPublished })
 
     // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
     metrics.beginPhase("nchan-restart")
@@ -349,7 +356,7 @@ async function main(): Promise<void> {
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const restartSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration })
+    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, matchPublished: restartSnap.matchPublished, lobbyPublished: restartSnap.lobbyPublished })
 
     // Collect metrics
     log("\n--- COLLECTING METRICS ---")
@@ -366,24 +373,34 @@ async function main(): Promise<void> {
     aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
     aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
-    // §AC: Wire cgroup v2 runtime signals
-    aggregated.cpu_usage_usec = resourceSnap.cpu_usage_usec
-    aggregated.cpu_throttled_count = resourceSnap.cpu_throttled_count
-    aggregated.cpu_throttled_usec = resourceSnap.cpu_throttled_usec
-    aggregated.memory_oom_events = resourceSnap.memory_oom_events
-    aggregated.memory_oom_kill_events = resourceSnap.memory_oom_kill_events
+    // §AC: Wire cgroup v2 runtime signals — deltas from run-start baseline
+    aggregated.cpu_usage_usec = (resourceSnap.cpu_usage_usec ?? 0) - (cgroupBaseline.cpu_usage_usec ?? 0)
+    aggregated.cpu_throttled_count = (resourceSnap.cpu_throttled_count ?? 0) - (cgroupBaseline.cpu_throttled_count ?? 0)
+    aggregated.cpu_throttled_usec = (resourceSnap.cpu_throttled_usec ?? 0) - (cgroupBaseline.cpu_throttled_usec ?? 0)
+    aggregated.memory_oom_events = (resourceSnap.memory_oom_events ?? 0) - (cgroupBaseline.memory_oom_events ?? 0)
+    aggregated.memory_oom_kill_events = (resourceSnap.memory_oom_kill_events ?? 0) - (cgroupBaseline.memory_oom_kill_events ?? 0)
     aggregated.memory_current_bytes = resourceSnap.memory_current_bytes
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
-    // §4.9: Wire Nchan container resource metrics
-    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec
-    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count
-    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec
+    // §4.9: Wire Nchan container resource metrics — deltas for cumulative counters
+    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec !== null && cgroupBaseline.nchan_cpu_usage_usec !== null
+      ? resourceSnap.nchan_cpu_usage_usec - cgroupBaseline.nchan_cpu_usage_usec
+      : resourceSnap.nchan_cpu_usage_usec
+    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count !== null && cgroupBaseline.nchan_cpu_throttled_count !== null
+      ? resourceSnap.nchan_cpu_throttled_count - cgroupBaseline.nchan_cpu_throttled_count
+      : resourceSnap.nchan_cpu_throttled_count
+    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec !== null && cgroupBaseline.nchan_cpu_throttled_usec !== null
+      ? resourceSnap.nchan_cpu_throttled_usec - cgroupBaseline.nchan_cpu_throttled_usec
+      : resourceSnap.nchan_cpu_throttled_usec
     aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
     aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
-    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events
-    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
+    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events !== null && cgroupBaseline.nchan_memory_oom_events !== null
+      ? resourceSnap.nchan_memory_oom_events - cgroupBaseline.nchan_memory_oom_events
+      : resourceSnap.nchan_memory_oom_events
+    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events !== null && cgroupBaseline.nchan_memory_oom_kill_events !== null
+      ? resourceSnap.nchan_memory_oom_kill_events - cgroupBaseline.nchan_memory_oom_kill_events
+      : resourceSnap.nchan_memory_oom_kill_events
     // §4.9: Redis connected-client peak
     aggregated.redis_connected_clients_peak = resourceSnap.redis_connected_clients_peak
     // §3.8: Nchan/Redis CPU percent peaks
@@ -403,12 +420,20 @@ async function main(): Promise<void> {
     aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
     aggregated.lobby_subscribers = pool.getSubscriberCount("lobby")
     aggregated.match_001_subscribers = pool.getSubscriberCount("match-001")
+    aggregated.match_002_subscribers = pool.getSubscriberCount("match-002")
+    aggregated.match_003_subscribers = pool.getSubscriberCount("match-003")
+    aggregated.match_004_subscribers = pool.getSubscriberCount("match-004")
+    aggregated.match_005_subscribers = pool.getSubscriberCount("match-005")
+    aggregated.match_006_subscribers = pool.getSubscriberCount("match-006")
+    aggregated.match_007_subscribers = pool.getSubscriberCount("match-007")
+    aggregated.match_008_subscribers = pool.getSubscriberCount("match-008")
     // §R: Wire active connections peak from metrics recorder
     aggregated.active_connections_peak = metrics.snapshot().active_connections_peak ?? 0
 
-    // §V: Log hot-match viewer concentration for evidence
+    // §V: Log viewer concentration for evidence — all 8 matches
+    const matchViewerCounts = MATCH_IDS.map(id => `${id}=${pool.getSubscriberCount(id)}`)
     const totalSubscribers = MATCH_IDS.reduce((sum, id) => sum + pool.getSubscriberCount(id), 0) + pool.getSubscriberCount("lobby")
-    log(`§V viewer-concentration: match-001=${aggregated.match_001_subscribers}, lobby=${aggregated.lobby_subscribers}, total=${totalSubscribers}`)
+    log(`§V viewer-concentration: lobby=${aggregated.lobby_subscribers}, ${matchViewerCounts.join(", ")}, total=${totalSubscribers}`)
 
     // §4.7: Wire slow-consumer metrics from scenario
     aggregated.slow_consumer_metrics = slowConsumer.slowMetrics

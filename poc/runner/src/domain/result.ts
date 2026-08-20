@@ -66,7 +66,30 @@ export interface AggregatedMetrics {
   run_profile: "smoke" | "evidence"
   lobby_subscribers: number
   match_001_subscribers: number
-  phase_publish_rates: Array<{ phase: string; eventsPerSec: number; hotMatchPct: number }>
+  match_002_subscribers: number
+  match_003_subscribers: number
+  match_004_subscribers: number
+  match_005_subscribers: number
+  match_006_subscribers: number
+  match_007_subscribers: number
+  match_008_subscribers: number
+  phase_publish_rates: Array<{
+    phase: string
+    eventsPerSec: number
+    hotMatchPct: number
+    // §3.7: Workload-rate breakdown per phase
+    matchEventsPerSec: number
+    lobbyEventsPerSec: number
+    totalEventsPerSec: number
+    matchEventsPublished: number
+    lobbyEventsPublished: number
+  }>
+  // §3.7: Aggregate workload-rate totals
+  match_events_published: number
+  lobby_events_published: number
+  match_events_per_sec: number
+  lobby_events_per_sec: number
+  total_events_per_sec: number
   // §AC: cgroup v2 runtime signals — null when unsupported/unavailable
   cpu_usage_usec: number | null             // cpu.stat usage_usec — total CPU time in microseconds
   cpu_throttled_count: number | null      // §BK: nr_throttled — must be 0 for ACCEPT

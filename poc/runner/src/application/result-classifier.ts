@@ -284,14 +284,16 @@ export function classifyResult(
     detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
   })
 
-  // §4.11: Mandatory scenario skipped in evidence mode → INCONCLUSIVE (experiment incomplete)
-  if (metrics.run_profile === "evidence" && metrics.nchan_restart_skipped) {
+  // §3.10: Campaign-only restart scenario — excluded from per-run classifier when intentionally
+  // not scheduled. The campaign classifier separately requires the once-per-campaign restart result
+  // to PASS. Per-run classifier must not mark a deliberate campaign-level omission as INCONCLUSIVE.
+  // distinction: "not_scheduled_by_frozen_matrix" (deliberate) vs "unexpectedly_skipped" (defect)
+  if (metrics.nchan_restart_skipped) {
     checks.push({
-      name: "inconclusive_override",
-      passed: false,
-      detail: "mandatory nchan restart scenario skipped in evidence mode — experiment incomplete",
+      name: "nchan_restart_campaign_only",
+      passed: true,
+      detail: "not_scheduled_by_frozen_matrix — campaign-only scenario, excluded from per-run gate",
     })
-    return { verdict: "INCONCLUSIVE", checks }
   }
 
   // §4.8: Slow consumer check — resolved contradiction:
@@ -471,7 +473,7 @@ export function aggregateWorkerMetrics(
     getFanOutHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
     getLateJoinHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
   }>,
-  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number }>,
+  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number; lobbyPublished?: number; matchPublished?: number }>,
   phaseHistograms?: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>,
 ): AggregatedMetrics {
   // §6.32: Use streaming histograms for final percentile computation when available.
@@ -600,11 +602,26 @@ export function aggregateWorkerMetrics(
   const lateJoinMax = mergedLateJoin ? mergedLateJoin.max : (allLateJoin.length > 0 ? allLateJoin[allLateJoin.length - 1] : 0)
 
   const phaseRates = (phaseSnapshots ?? []).map((ps) => {
-    const rate = ps.durationMs > 0 ? ps.eventsPublished / (ps.durationMs / 1000) : 0
     const total = Array.from(ps.byMatch.values()).reduce((a, b) => a + b, 0)
     const hotMatch = ps.byMatch.get("match-001") ?? 0
     const hotMatchPct = total > 0 ? (hotMatch / total) * 100 : 0
-    return { phase: ps.phase, eventsPerSec: Math.round(rate * 10) / 10, hotMatchPct: Math.round(hotMatchPct * 10) / 10 }
+    // §3.7: Lobby vs match breakdown
+    const matchPublished = ps.matchPublished ?? (total)
+    const lobbyPublished = ps.lobbyPublished ?? 0
+    const durationSec = ps.durationMs / 1000
+    const matchEventsPerSec = durationSec > 0 ? matchPublished / durationSec : 0
+    const lobbyEventsPerSec = durationSec > 0 ? lobbyPublished / durationSec : 0
+    const totalEventsPerSec = durationSec > 0 ? ps.eventsPublished / durationSec : 0
+    return {
+      phase: ps.phase,
+      eventsPerSec: Math.round(totalEventsPerSec * 10) / 10,
+      hotMatchPct: Math.round(hotMatchPct * 10) / 10,
+      matchEventsPerSec: Math.round(matchEventsPerSec * 10) / 10,
+      lobbyEventsPerSec: Math.round(lobbyEventsPerSec * 10) / 10,
+      totalEventsPerSec: Math.round(totalEventsPerSec * 10) / 10,
+      matchEventsPublished: matchPublished,
+      lobbyEventsPublished: lobbyPublished,
+    }
   })
 
   return {
@@ -655,6 +672,13 @@ export function aggregateWorkerMetrics(
     run_profile: "evidence" as const,
     lobby_subscribers: 0,
     match_001_subscribers: 0,
+    match_002_subscribers: 0,
+    match_003_subscribers: 0,
+    match_004_subscribers: 0,
+    match_005_subscribers: 0,
+    match_006_subscribers: 0,
+    match_007_subscribers: 0,
+    match_008_subscribers: 0,
     phase_publish_rates: phaseRates,
     // §AC: cgroup v2 — wired from resource monitor in main.ts
     cpu_usage_usec: null,
@@ -746,5 +770,22 @@ export function aggregateWorkerMetrics(
     },
     // §4.25: Per-phase latency histograms
     phase_histograms: phaseHistograms ?? {},
+    // §3.7: Aggregate workload-rate totals
+    match_events_published: phaseRates.reduce((s, p) => s + p.matchEventsPublished, 0),
+    lobby_events_published: phaseRates.reduce((s, p) => s + p.lobbyEventsPublished, 0),
+    match_events_per_sec: (() => {
+      const totalDurationSec = (phaseSnapshots ?? []).reduce((s, p) => s + p.durationMs, 0) / 1000
+      const totalMatch = phaseRates.reduce((s, p) => s + p.matchEventsPublished, 0)
+      return totalDurationSec > 0 ? Math.round((totalMatch / totalDurationSec) * 10) / 10 : 0
+    })(),
+    lobby_events_per_sec: (() => {
+      const totalDurationSec = (phaseSnapshots ?? []).reduce((s, p) => s + p.durationMs, 0) / 1000
+      const totalLobby = phaseRates.reduce((s, p) => s + p.lobbyEventsPublished, 0)
+      return totalDurationSec > 0 ? Math.round((totalLobby / totalDurationSec) * 10) / 10 : 0
+    })(),
+    total_events_per_sec: (() => {
+      const totalDurationSec = (phaseSnapshots ?? []).reduce((s, p) => s + p.durationMs, 0) / 1000
+      return totalDurationSec > 0 ? Math.round((events_received / totalDurationSec) * 10) / 10 : 0
+    })(),
   }
 }

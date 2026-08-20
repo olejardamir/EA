@@ -19,7 +19,7 @@ import { NchanRestartScenario } from "../scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./result-classifier.js"
 import { runTopologyPreflight } from "../adapters/topology-preflight.js"
 import type { ScenarioContext } from "../scenarios/scenario.js"
-import type { AggregatedMetrics, VerdictResult } from "../domain/result.js"
+import type { AggregatedMetrics, VerdictResult, PhaseHistogramResult } from "../domain/result.js"
 import type { ExperimentConfig } from "../config/experiment-config.js"
 import fs from "node:fs"
 import crypto from "node:crypto"
@@ -209,11 +209,19 @@ export async function runSingleExperiment(
       sleep,
     }
 
+    // §3.9: Capture cgroup baseline at run start — cgroup counters are cumulative over
+    // container lifetime; per-run deltas = end_snapshot - start_snapshot.
+    const cgroupBaseline = resourceMonitor.snapshot()
+
     logger(`=== Run ${runIndex} starting (seed=${seed}) ===`)
 
     loopMonitor = setInterval(() => {
       resourceMonitor.measureCpu()
       metrics.setBacklog(publisher.pendingPublishes)
+      const lagSamples = publisher.drainSchedulerLagSamples()
+      for (const ms of lagSamples) {
+        metrics.recordSchedulerLag(ms)
+      }
     }, 100)
 
     resourceMonitor.startEventLoopMonitor()
@@ -224,80 +232,98 @@ export async function runSingleExperiment(
     }
 
     // Phase 1: Warmup
+    metrics.beginPhase("warmup")
     const warmup = new WarmupScenario(pool)
     const warmupResult = await warmup.execute(ctx)
+    metrics.endPhase()
     logger(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
     const warmupSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000, lobbyPublished: warmupSnap.lobbyPublished, matchPublished: warmupSnap.matchPublished })
 
     checkTimeout()
 
     // Phase 2: Steady
+    metrics.beginPhase("steady")
     const steady = new SteadyScenario(pool)
     const steadyResult = await steady.execute(ctx)
+    metrics.endPhase()
     logger(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
     const steadySnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000, lobbyPublished: steadySnap.lobbyPublished, matchPublished: steadySnap.matchPublished })
 
     checkTimeout()
 
     // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
+    metrics.beginPhase("surge")
     const connectionSurge = new ConnectionSurgeScenario(pool)
     const surgeResult = await connectionSurge.execute(ctx)
+    metrics.endPhase()
     logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
     const surgeSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0 })
+    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0, lobbyPublished: surgeSnap.lobbyPublished, matchPublished: surgeSnap.matchPublished })
 
     checkTimeout()
 
     // Phase 4: Post-surge stabilization
+    metrics.beginPhase("post-surge")
     await sleep(config.cooldownSeconds * 1000)
+    metrics.endPhase()
 
     // Phase 5: Late-join under peak load
+    metrics.beginPhase("late-join")
     const lateJoinStart = ctx.clock.now()
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
     const lateJoinDuration = ctx.clock.now() - lateJoinStart
+    metrics.endPhase()
     logger(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
     const lateJoinSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration })
+    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration, lobbyPublished: lateJoinSnap.lobbyPublished, matchPublished: lateJoinSnap.matchPublished })
 
     checkTimeout()
 
     // Phase 6: Burst at peak
+    metrics.beginPhase("burst")
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
+    metrics.endPhase()
     logger(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
     const burstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000, lobbyPublished: burstSnap.lobbyPublished, matchPublished: burstSnap.matchPublished })
 
     checkTimeout()
 
     // Phase 7: Post-burst steady
+    metrics.beginPhase("post-burst")
     await publisher.drain()
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
+    metrics.endPhase()
     const postBurstSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
+    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000, lobbyPublished: postBurstSnap.lobbyPublished, matchPublished: postBurstSnap.matchPublished })
 
     // Phase 8: Reconnect while publishing
+    metrics.beginPhase("reconnect")
     const reconnectStart = ctx.clock.now()
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
     const reconnectDuration = ctx.clock.now() - reconnectStart
+    metrics.endPhase()
     logger(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
     const reconnectSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration })
+    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, lobbyPublished: reconnectSnap.lobbyPublished, matchPublished: reconnectSnap.matchPublished })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
+    metrics.beginPhase("slow-consumer")
     const slowConsumerStart = ctx.clock.now()
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     const slowConsumerDuration = ctx.clock.now() - slowConsumerStart
+    metrics.endPhase()
     logger(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
     const slowSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration })
+    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, lobbyPublished: slowSnap.lobbyPublished, matchPublished: slowSnap.matchPublished })
 
     // Phase 10: Nchan restart — §6.37 step 9: once-per-campaign scenario
     // Only execute on the first run; subsequent runs reuse the first run's result.
@@ -313,7 +339,7 @@ export async function runSingleExperiment(
     const restartDuration = ctx.clock.now() - restartStart
     logger(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
     const restartSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration })
+    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, lobbyPublished: restartSnap.lobbyPublished, matchPublished: restartSnap.matchPublished })
 
     // Collect metrics
     resourceMonitor.stopEventLoopMonitor()
@@ -331,24 +357,42 @@ export async function runSingleExperiment(
     aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
     aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
-    aggregated.cpu_usage_usec = resourceSnap.cpu_usage_usec
-    aggregated.cpu_throttled_count = resourceSnap.cpu_throttled_count
-    aggregated.cpu_throttled_usec = resourceSnap.cpu_throttled_usec
-    aggregated.memory_oom_events = resourceSnap.memory_oom_events
-    aggregated.memory_oom_kill_events = resourceSnap.memory_oom_kill_events
+    // §3.9: Per-run cgroup deltas — cgroup counters are cumulative over container lifetime;
+    // subtract the baseline captured at run start to get the per-run delta.
+    aggregated.cpu_usage_usec = (resourceSnap.cpu_usage_usec ?? 0) - (cgroupBaseline.cpu_usage_usec ?? 0)
+    aggregated.cpu_throttled_count = (resourceSnap.cpu_throttled_count ?? 0) - (cgroupBaseline.cpu_throttled_count ?? 0)
+    aggregated.cpu_throttled_usec = (resourceSnap.cpu_throttled_usec ?? 0) - (cgroupBaseline.cpu_throttled_usec ?? 0)
+    aggregated.memory_oom_events = (resourceSnap.memory_oom_events ?? 0) - (cgroupBaseline.memory_oom_events ?? 0)
+    aggregated.memory_oom_kill_events = (resourceSnap.memory_oom_kill_events ?? 0) - (cgroupBaseline.memory_oom_kill_events ?? 0)
     aggregated.memory_current_bytes = resourceSnap.memory_current_bytes
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
-    // §4.9: Wire Nchan container resource metrics
-    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec
-    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count
-    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec
+    // §4.9: Wire Nchan container resource metrics — deltas for cumulative counters
+    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec !== null && cgroupBaseline.nchan_cpu_usage_usec !== null
+      ? resourceSnap.nchan_cpu_usage_usec - cgroupBaseline.nchan_cpu_usage_usec
+      : resourceSnap.nchan_cpu_usage_usec
+    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count !== null && cgroupBaseline.nchan_cpu_throttled_count !== null
+      ? resourceSnap.nchan_cpu_throttled_count - cgroupBaseline.nchan_cpu_throttled_count
+      : resourceSnap.nchan_cpu_throttled_count
+    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec !== null && cgroupBaseline.nchan_cpu_throttled_usec !== null
+      ? resourceSnap.nchan_cpu_throttled_usec - cgroupBaseline.nchan_cpu_throttled_usec
+      : resourceSnap.nchan_cpu_throttled_usec
     aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
     aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
-    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events
-    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
+    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events !== null && cgroupBaseline.nchan_memory_oom_events !== null
+      ? resourceSnap.nchan_memory_oom_events - cgroupBaseline.nchan_memory_oom_events
+      : resourceSnap.nchan_memory_oom_events
+    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events !== null && cgroupBaseline.nchan_memory_oom_kill_events !== null
+      ? resourceSnap.nchan_memory_oom_kill_events - cgroupBaseline.nchan_memory_oom_kill_events
+      : resourceSnap.nchan_memory_oom_kill_events
     aggregated.redis_connected_clients_peak = resourceSnap.redis_connected_clients_peak
+    // §3.8/§3.16: Nchan/Redis CPU percent peaks — evidence suite parity
+    aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
+    aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
+    // §3.16: Phase histograms — evidence suite parity with single-run path
+    const phaseHists = metrics.snapshotPhaseHistograms()
+    aggregated.phase_histograms = phaseHists
     // §4.2: Topology capacity
     const topologyPreflight = runTopologyPreflight(config.targetConnections)
     aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
@@ -360,8 +404,24 @@ export async function runSingleExperiment(
     aggregated.connections_target = config.targetConnections
     aggregated.run_profile = config.runProfile
     aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
+
+    // §3.16: Build identity — evidence suite parity
+    aggregated.build_identity = {
+      git_commit_sha: process.env.GIT_COMMIT_SHA ?? null,
+      nginx_version: "1.27.4",
+      nchan_version: "1.3.8",
+      node_version: process.version,
+      redis_version: "7.2",
+    }
     aggregated.lobby_subscribers = pool.getSubscriberCount("lobby")
     aggregated.match_001_subscribers = pool.getSubscriberCount("match-001")
+    aggregated.match_002_subscribers = pool.getSubscriberCount("match-002")
+    aggregated.match_003_subscribers = pool.getSubscriberCount("match-003")
+    aggregated.match_004_subscribers = pool.getSubscriberCount("match-004")
+    aggregated.match_005_subscribers = pool.getSubscriberCount("match-005")
+    aggregated.match_006_subscribers = pool.getSubscriberCount("match-006")
+    aggregated.match_007_subscribers = pool.getSubscriberCount("match-007")
+    aggregated.match_008_subscribers = pool.getSubscriberCount("match-008")
 
     const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
     aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
@@ -564,9 +624,16 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.scheduler_lag_max = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_max))
   aggregate.active_population_peak = Math.max(...runs.map((r) => r.aggregated.active_population_peak))
   aggregate.surge_timing_error_ms = Math.max(...runs.map((r) => r.aggregated.surge_timing_error_ms))
-  // §3.23: Nchan/Redis CPU percent peaks use max across runs (filter nulls — null means unavailable → INCONCLUSIVE)
-  aggregate.nchan_cpu_percent_peak = Math.max(0, ...runs.map((r) => r.aggregated.nchan_cpu_percent_peak ?? 0))
-  aggregate.redis_cpu_percent_peak = Math.max(0, ...runs.map((r) => r.aggregated.redis_cpu_percent_peak ?? 0))
+  // §3.9/§3.16: Nchan/Redis CPU percent peaks — null in ANY run means unavailable → campaign INCONCLUSIVE
+  // Do NOT convert null to 0; preserve null so classifier can detect mandatory metric absence.
+  const anyNchanCpuNull = runs.some((r) => r.aggregated.nchan_cpu_percent_peak === null)
+  const anyRedisCpuNull = runs.some((r) => r.aggregated.redis_cpu_percent_peak === null)
+  aggregate.nchan_cpu_percent_peak = anyNchanCpuNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.nchan_cpu_percent_peak as number))
+  aggregate.redis_cpu_percent_peak = anyRedisCpuNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.redis_cpu_percent_peak as number))
   // §3.23: Latency invalid/overflow counts sum across runs
   aggregate.latency_invalid_count = runs.reduce((s, r) => s + r.aggregated.latency_invalid_count, 0)
   aggregate.latency_overflow_count = runs.reduce((s, r) => s + r.aggregated.latency_overflow_count, 0)

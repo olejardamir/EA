@@ -50,6 +50,13 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     run_profile: "evidence" as const,
     lobby_subscribers: 200,
     match_001_subscribers: 800,
+    match_002_subscribers: 0,
+    match_003_subscribers: 0,
+    match_004_subscribers: 0,
+    match_005_subscribers: 0,
+    match_006_subscribers: 0,
+    match_007_subscribers: 0,
+    match_008_subscribers: 0,
     phase_publish_rates: [],
     cpu_throttled_count: 0,
     cpu_throttled_usec: 0,
@@ -113,6 +120,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     active_population_end: 0,
     active_population_peak: 0,
     build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
+    phase_histograms: {},
     ...overrides,
   }
 }
@@ -313,14 +321,19 @@ describe("classifyResult", () => {
     assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("backpressure"))
   })
 
-  it("§4.11 INCONCLUSIVE when mandatory restart scenario skipped in evidence mode", () => {
+  it("§3.10 Campaign-only restart skip does not invalidate per-run classifier", () => {
     const result = classifyResult(baseMetrics({
       run_profile: "evidence",
       nchan_restart_skipped: true,
       nchan_restart_history_replay_correct: false,
     }), true, true)
-    assert.equal(result.verdict, "INCONCLUSIVE")
-    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("skipped"))
+    // §3.10: Intentional campaign-level skip is NOT INCONCLUSIVE
+    // It should pass per-run classifier and be handled by campaign classifier separately
+    assert.notEqual(result.verdict, "INCONCLUSIVE")
+    const restartCheck = result.checks.find((c) => c.name === "nchan_restart_campaign_only")
+    assert.ok(restartCheck, "should have nchan_restart_campaign_only check")
+    assert.ok(restartCheck!.passed)
+    assert.ok(restartCheck!.detail.includes("not_scheduled_by_frozen_matrix"))
   })
 
   it("returns INCONCLUSIVE when timing_valid is false", () => {

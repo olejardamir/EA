@@ -64,6 +64,13 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     run_profile: "smoke" as const,
     lobby_subscribers: 2,
     match_001_subscribers: 12,
+    match_002_subscribers: 0,
+    match_003_subscribers: 0,
+    match_004_subscribers: 0,
+    match_005_subscribers: 0,
+    match_006_subscribers: 0,
+    match_007_subscribers: 0,
+    match_008_subscribers: 0,
     phase_publish_rates: [],
     cpu_usage_usec: null,
     cpu_throttled_count: null,
@@ -127,6 +134,7 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     active_population_end: 0,
     active_population_peak: 0,
     build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
+    phase_histograms: {},
     ...overrides,
   }
 }

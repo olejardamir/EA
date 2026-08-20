@@ -63,6 +63,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementSchemaValidationErrors: () => inc("schema_validation_errors"),
     incrementMissingTransportId: () => inc("missing_transport_id"),
     recordSchedulerLag: () => {},
+    beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -168,6 +169,13 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     run_profile: "evidence" as const,
     lobby_subscribers: 200,
     match_001_subscribers: 800,
+    match_002_subscribers: 0,
+    match_003_subscribers: 0,
+    match_004_subscribers: 0,
+    match_005_subscribers: 0,
+    match_006_subscribers: 0,
+    match_007_subscribers: 0,
+    match_008_subscribers: 0,
     phase_publish_rates: [],
     cpu_throttled_count: 0,
     cpu_throttled_usec: 0,
@@ -231,6 +239,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     active_population_end: 0,
     active_population_peak: 0,
     build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
+    phase_histograms: {},
     ...overrides,
   }
 }

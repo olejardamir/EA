@@ -1,6 +1,5 @@
 import type { Scenario, ScenarioContext } from "./scenario.js"
 import type { ConnectionPool } from "../application/connection-pool.js"
-import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 
 export class ConnectionSurgeScenario implements Scenario {
   name = "connection-surge"
@@ -38,10 +37,6 @@ export class ConnectionSurgeScenario implements Scenario {
     const duplicatesBefore = snapBefore.duplicates
     const outOfOrderBefore = snapBefore.out_of_order
     const eventsReceivedBefore = snapBefore.events_received
-
-    // §3.4: Dedicated surge-phase histogram for fan-out latency
-    const surgeFanOutHist = new StreamingHistogram()
-    const fanOutBefore = snapBefore.fan_out_latencies_ms.length
 
     // §4.5: Use monotonic clock for absolute deadline enforcement
     const surgeStartTime = performance.now()
@@ -144,12 +139,11 @@ export class ConnectionSurgeScenario implements Scenario {
     const surgeOoo = snap.out_of_order - outOfOrderBefore
     const surgeEvents = snap.events_received - eventsReceivedBefore
 
-    // §3.4: Populate dedicated surge-phase histogram from global snapshot
-    const allFanOutDuring = snap.fan_out_latencies_ms.slice(fanOutBefore)
-    for (const ms of allFanOutDuring) {
-      surgeFanOutHist.record(ms)
-    }
-    const surgeFanOutP95 = surgeFanOutHist.p95()
+    // §3.6: Populate dedicated surge-phase histogram from phase histogram machinery
+    // (not from rolling raw-sample slice which can be truncated)
+    const phaseHists = ctx.metrics.snapshotPhaseHistograms()
+    const surgePhaseHist = phaseHists["surge"]
+    const surgeFanOutP95 = surgePhaseHist?.fanOut?.p95 ?? 0
 
     // §4.5: Calculate scheduler lag percentiles
     if (schedulerLags.length > 0) {
@@ -189,15 +183,41 @@ export class ConnectionSurgeScenario implements Scenario {
     ctx.log(`§3.4 derived required_ramp=${requiredRampRate.toFixed(2)}/s actual_avg_established=${establishedPerSec.toFixed(2)}/s`)
     ctx.log(`§4.5 timing: elapsed=${surgeElapsed}ms error=${timingErrorMs}ms attempt_peak=${attemptRatePeak.toFixed(1)} est_peak=${establishmentRatePeak.toFixed(1)} lag_p95=${schedulerLagP95}ms lag_max=${schedulerLagMax}ms`)
 
-    // §3.4: Generator saturation — derived from required ramp rate, not ad hoc threshold
-    // The generator is saturated if it cannot sustain the required rate for the duration
-    const generatorSaturated = establishmentRatePeak < requiredRampRate * 0.5
+    // §3.6: Generator saturation — sustained average rate over full surge, not peak-rate
+    // The actual requirement is sustained additions over 120 seconds.
+    // Tolerance: average rate must be >= 80% of required ramp rate.
+    const sustainedEstablishedPerSec = surgeElapsed > 0 ? surgeEstablished / (surgeElapsed / 1000) : 0
+    const sustainedRateThreshold = requiredRampRate * 0.8
+    const generatorSaturated = sustainedEstablishedPerSec < sustainedRateThreshold
     if (generatorSaturated) {
-      ctx.log(`§3.4 INCONCLUSIVE: generator saturation (peak_rate=${establishmentRatePeak.toFixed(1)}/s < required=${(requiredRampRate * 0.5).toFixed(1)}/s)`)
+      ctx.log(`§3.6 INCONCLUSIVE: generator saturation (sustained_rate=${sustainedEstablishedPerSec.toFixed(1)}/s < threshold=${sustainedRateThreshold.toFixed(1)}/s)`)
+      // Set surgeHealth so classifier sees the deficit and returns INCONCLUSIVE
+      ctx._surgeHealth = {
+        fan_out_p95_ms: surgeFanOutP95,
+        missing_sequences: surgeMissing,
+        duplicates: surgeDupes,
+        out_of_order: surgeOoo,
+        events_received: surgeEvents,
+        surge_target_additions: surgeCount,
+        surge_attempted: surgeAttempted,
+        surge_established: surgeEstablished,
+        surge_failures: surgeCount - surgeEstablished,
+        surge_start_time: surgeStartTime,
+        surge_end_time: surgeEndTime,
+        surge_elapsed_ms: surgeElapsed,
+        surge_timing_error_ms: timingErrorMs,
+        attempt_rate_peak: attemptRatePeak,
+        establishment_rate_peak: establishmentRatePeak,
+        scheduler_lag_p95: schedulerLagP95,
+        scheduler_lag_max: schedulerLagMax,
+        active_population_start: baseCount,
+        active_population_end: this.pool.size,
+        active_population_peak: this.pool.size,
+      }
       return {
         name: this.name,
         passed: false,
-        detail: `INCONCLUSIVE generator saturated: surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms attempt_peak=${attemptRatePeak.toFixed(1)}/s est_peak=${establishmentRatePeak.toFixed(1)}/s required_ramp=${requiredRampRate.toFixed(2)}/s`,
+        detail: `INCONCLUSIVE generator saturated: surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms sustained_rate=${sustainedEstablishedPerSec.toFixed(1)}/s threshold=${sustainedRateThreshold.toFixed(1)}/s required_ramp=${requiredRampRate.toFixed(2)}/s`,
       }
     }
 

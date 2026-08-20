@@ -47,19 +47,32 @@ function readNoFileLimits(): { soft: number | null; hard: number | null } {
   }
 }
 
-// §4.24: Read CPU quota from cgroup v2
+// §4.24: Read CPU quota from cgroup v2 — cpu.max is a separate file from cpu.stat
 function readCpuQuota(): number | null {
+  // §3.3: cpu.max is at /sys/fs/cgroup/cpu.max (NOT inside cpu.stat)
+  // Format: "$MAX $PERIOD" or "max $PERIOD" (unlimited)
   try {
-    const stat = readFileSync("/sys/fs/cgroup/cpu.stat", "utf-8")
-    const maxLine = stat.split("\n").find((l) => l.startsWith("cpu.max"))
-    if (!maxLine) return null
-    const parts = maxLine.split(/\s+/)
-    const quota = parseInt(parts[1], 10)
-    if (parts[1] === "max" || isNaN(quota)) return null
-    const period = parseInt(parts[2], 10) || 100000
+    const max = readFileSync("/sys/fs/cgroup/cpu.max", "utf-8").trim()
+    const parts = max.split(/\s+/)
+    if (parts[0] === "max") return null // unlimited
+    const quota = parseInt(parts[0], 10)
+    const period = parseInt(parts[1], 10) || 100000
+    if (isNaN(quota)) return null
     return Math.floor(quota / period)
   } catch {
-    return null
+    // Fallback: try cpu.stat cpu.max line (some cgroup v1/v2 hybrid mounts)
+    try {
+      const stat = readFileSync("/sys/fs/cgroup/cpu.stat", "utf-8")
+      const maxLine = stat.split("\n").find((l) => l.startsWith("cpu.max"))
+      if (!maxLine) return null
+      const parts = maxLine.split(/\s+/)
+      const quota = parseInt(parts[1], 10)
+      if (parts[1] === "max" || isNaN(quota)) return null
+      const period = parseInt(parts[2], 10) || 100000
+      return Math.floor(quota / period)
+    } catch {
+      return null
+    }
   }
 }
 
@@ -89,7 +102,7 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
   const sourceIps = 1
 
   // §4.2: Destination tuples = source IPs × ephemeral ports
-  const destTupleCapacity = sourceIps * (ephemeralCount ?? 28232)
+  const destTupleCapacity = sourceIps * (ephemeralCount ?? 0)
 
   // §4.24: Nginx capacity = workers × connections_per_worker
   const nginxMaxSseCapacity = nginxWorkers * nginxWorkerConns
@@ -115,6 +128,10 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
   }
 
   const capacitySufficient = (() => {
+    if (ephemeralCount === null) {
+      warnings.push("Cannot parse /proc/sys/net/ipv4/ip_local_port_range — capacity cannot be verified")
+      return false
+    }
     if (fdSoft !== null && fdSoft < requiredFds) {
       warnings.push(`FD soft limit ${fdSoft} < required ${requiredFds} (target + non-viewer overhead)`)
       return false
@@ -128,7 +145,7 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
       return false
     }
     if (destTupleCapacity < targetConnections) {
-      warnings.push(`Destination tuple capacity ${destTupleCapacity} (source_ips=${sourceIps} × ephemeral=${ephemeralCount ?? 28232}) < target ${targetConnections} — structurally insufficient for 100k`)
+      warnings.push(`Destination tuple capacity ${destTupleCapacity} (source_ips=${sourceIps} × ephemeral=${ephemeralCount}) < target ${targetConnections} — structurally insufficient for 100k`)
       return false
     }
     if (subscribersPerNode * nchanNodes < targetConnections) {

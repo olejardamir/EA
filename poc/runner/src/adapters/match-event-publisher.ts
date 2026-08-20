@@ -23,6 +23,11 @@ export class MatchEventPublisher {
   private _eventsPublished = 0
   private _totalPublished = 0
   private _eventsPublishedByMatch: Map<string, number> = new Map()
+  // §3.7: Separate lobby vs match event tracking for workload-rate breakdown
+  private _lobbyPublished = 0
+  private _matchPublished = 0
+  private _matchAttempts = 0
+  private _lobbyAttempts = 0
   // §BL: Track in-flight publish promises — backlog = number of unresolved tasks
   private _pendingPublishes = 0
   // §3.5: Publisher scheduler lag tracking
@@ -75,17 +80,31 @@ export class MatchEventPublisher {
     return this._eventsPublishedByMatch
   }
 
+  // §3.7: Lobby vs match event counts for workload-rate breakdown
+  get lobbyPublished(): number { return this._lobbyPublished }
+  get matchPublished(): number { return this._matchPublished }
+  get matchAttempts(): number { return this._matchAttempts }
+  get lobbyAttempts(): number { return this._lobbyAttempts }
+
   get matchIds(): string[] {
     return [...MATCH_IDS]
   }
 
-  snapshotAndReset(): { eventsPublished: number; byMatch: Map<string, number> } {
+  snapshotAndReset(): { eventsPublished: number; byMatch: Map<string, number>; lobbyPublished: number; matchPublished: number; matchAttempts: number; lobbyAttempts: number } {
     const snapshot = {
       eventsPublished: this._eventsPublished,
       byMatch: new Map(this._eventsPublishedByMatch),
+      lobbyPublished: this._lobbyPublished,
+      matchPublished: this._matchPublished,
+      matchAttempts: this._matchAttempts,
+      lobbyAttempts: this._lobbyAttempts,
     }
     this._eventsPublished = 0
     this._eventsPublishedByMatch.clear()
+    this._lobbyPublished = 0
+    this._matchPublished = 0
+    this._matchAttempts = 0
+    this._lobbyAttempts = 0
     return snapshot
   }
 
@@ -148,6 +167,7 @@ export class MatchEventPublisher {
       }
 
       this._pendingPublishes++
+      this._matchAttempts++
       this.config.publisher.publish(matchId, body, eventType).then((ok) => {
         this._pendingPublishes--
         if (ok) {
@@ -168,6 +188,7 @@ export class MatchEventPublisher {
           this.config.headTracker.updateHeadState(matchId, state.seq, state.score, clockNum)
           this._eventsPublished++
           this._totalPublished++
+          this._matchPublished++
           const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
           this._eventsPublishedByMatch.set(matchId, prev + 1)
           const expected = this.config.getSubscriberCount?.(matchId) ?? 0
@@ -193,11 +214,13 @@ export class MatchEventPublisher {
       const lobby = createLobbyPayload(lobbyStates)
       const body = JSON.stringify(lobby)
       this._pendingPublishes++
+      this._lobbyAttempts++
       this.config.publisher.publish("lobby", body, "lobby").then((ok) => {
         this._pendingPublishes--
         if (ok) {
           this._eventsPublished++
           this._totalPublished++
+          this._lobbyPublished++
           const expected = this.config.getSubscriberCount?.("lobby") ?? 0
           this.config.onPublish?.("lobby", expected)
         }
@@ -233,8 +256,88 @@ export class MatchEventPublisher {
     return idx >= 0 ? this.matchStates[idx].seq : 0
   }
 
-  // §4.1/§4.20: Direct publish for prefill events — bypasses normal event processing
-  publishRaw(channel: string, body: string, eventType: string): Promise<boolean> {
-    return this.config.publisher.publish(channel, body, eventType)
+  // §3.1: Canonical prefill — publishes events through the same per-match serialization,
+  // candidate-state, accepted-commit, and head-tracker logic as normal publishing.
+  // Returns the frozen state snapshot after all prefill events are committed.
+  async publishPrefill(
+    matchId: string,
+    count: number,
+  ): Promise<{
+    published: number
+    firstSeq: number
+    lastSeq: number
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null
+  }> {
+    const idx = MATCH_IDS.indexOf(matchId)
+    if (idx < 0) return { published: 0, firstSeq: 0, lastSeq: 0, frozenState: null }
+
+    let published = 0
+    let firstSeq = -1
+    let lastSeq = -1
+
+    for (let i = 0; i < count; i++) {
+      // §3.1: Wait for per-match busy lock — same serialization as normal publish
+      while (this._matchBusy.get(matchId)) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      this._matchBusy.set(matchId, true)
+
+      try {
+        const state = this.matchStates[idx]
+        // §AS: Clone candidate, advance, publish, commit only on acceptance
+        const candidate: MatchState = {
+          seq: state.seq,
+          score: { ...state.score },
+          clock: { ...state.clock },
+          last_event_type: state.last_event_type,
+        }
+        advanceMatchState(candidate, "corner", this.config.random)
+
+        const transmitTimestamp = new Date().toISOString()
+        const event = createEventPayload(matchId, candidate.seq, "corner", candidate.score, candidate.clock, transmitTimestamp)
+        const body = JSON.stringify(event)
+
+        this._pendingPublishes++
+        const ok = await this.config.publisher.publish(matchId, body, "corner")
+        this._pendingPublishes--
+
+        if (ok) {
+          // §3.5: Scheduler lag for prefill
+          const acceptanceTime = new Date().toISOString()
+          const transmitMs = new Date(transmitTimestamp).getTime()
+          const acceptMs = new Date(acceptanceTime).getTime()
+          this._schedulerLagSamples.push(acceptMs - transmitMs)
+
+          // §AS: Commit state only after acceptance
+          state.seq = candidate.seq
+          state.score = candidate.score
+          state.clock = candidate.clock
+          state.last_event_type = candidate.last_event_type
+
+          // §4.1: Update head tracker with full state
+          const clockNum = { period: state.clock.period === "2H" ? 2 : 1, elapsed: state.clock.elapsed_seconds }
+          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, clockNum)
+
+          this._eventsPublished++
+          this._totalPublished++
+          const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
+          this._eventsPublishedByMatch.set(matchId, prev + 1)
+          const expected = this.config.getSubscriberCount?.(matchId) ?? 0
+          this.config.onPublish?.(matchId, expected)
+
+          if (firstSeq === -1) firstSeq = candidate.seq
+          lastSeq = candidate.seq
+          published++
+        }
+      } catch {
+        // §AS: On exception, committed state unchanged
+      } finally {
+        this._matchBusy.set(matchId, false)
+      }
+    }
+
+    // §3.1: Freeze the committed state snapshot after all prefill events
+    const frozenState = this.config.headTracker.getHeadState(matchId)
+    return { published, firstSeq, lastSeq, frozenState }
   }
 }

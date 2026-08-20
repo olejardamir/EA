@@ -5,8 +5,8 @@ import { MATCH_IDS } from "../domain/event.js"
 // §4.1: Frozen prefill depth — deterministic history depth for late-join test
 // Must be <= 5000 (Nchan buffer length) and >= 100 (meaningful sample)
 const PREFILL_DEPTH = 500
-const PREFILL_TIMEOUT_MS = 30000
-const PREFILL_BATCH_SIZE = 50
+const NCHAN_BUFFER_CAPACITY = 5000
+const ESTIMATED_EVENTS_PER_SEC = 60
 
 // §BA FROZEN INTERPRETATION: Single late-join per run.
 // With N=1 sample, p95 = p50 = p99 = max = the single observation.
@@ -18,7 +18,6 @@ const PREFILL_BATCH_SIZE = 50
 interface ReconstructedState {
   score: { home: number; away: number }
   clock: { period: number; elapsed: number }
-  lastEventType: string
 }
 
 export class LateJoinScenario implements Scenario {
@@ -30,52 +29,63 @@ export class LateJoinScenario implements Scenario {
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    ctx.log("--- PHASE: LATE-JOIN TEST (deterministic prefill) ---")
+    ctx.log("--- PHASE: LATE-JOIN TEST (canonical prefill) ---")
 
     const testMatch = ctx.matchIds[0] || MATCH_IDS[0]
-    const headBefore = ctx.headTracker.getHead(testMatch)
 
-    // §4.1: Step 1 — Establish independently known canonical start sequence
-    ctx.log(`§4.1 Late-join: prefill start, match=${testMatch}, current head=${headBefore}`)
-
-    // §4.1: Step 2 — Publish the configured retained-history test depth deliberately
-    const targetHead = headBefore + PREFILL_DEPTH
-    ctx.log(`§4.1 Late-join: publishing ${PREFILL_DEPTH} events to reach head=${targetHead}`)
-
+    // §3.1: Step 1 — Publish through canonical publisher state machine
+    // publishPrefill uses the same per-match serialization, candidate-state,
+    // accepted-commit, and head-tracker logic as normal publishing.
     const publishStart = ctx.clock.now()
-    const published = await this.publishPrefillEvents(ctx, testMatch, PREFILL_DEPTH)
+    const prefillResult = await ctx.publisher.publishPrefill(testMatch, PREFILL_DEPTH)
     const publishDuration = ctx.clock.now() - publishStart
 
-    if (published < PREFILL_DEPTH) {
-      ctx.log(`§4.1 Late-join: only published ${published}/${PREFILL_DEPTH} events in ${publishDuration}ms`)
-      return { name: this.name, passed: false, detail: `prefill incomplete: ${published}/${PREFILL_DEPTH}` }
+    if (prefillResult.published < PREFILL_DEPTH) {
+      ctx.log(`§3.1 Late-join: only published ${prefillResult.published}/${PREFILL_DEPTH} events in ${publishDuration}ms`)
+      return { name: this.name, passed: false, detail: `prefill incomplete: ${prefillResult.published}/${PREFILL_DEPTH}` }
     }
 
-    // §4.1: Step 3 — Verify successful accepted publication of complete range
-    const headAtPrefill = ctx.headTracker.getHead(testMatch)
-    ctx.log(`§4.1 Late-join: prefill complete, head=${headAtPrefill} (expected=${targetHead}), publish_time=${publishDuration}ms`)
+    ctx.log(`§3.1 Late-join: canonical prefill complete, first=${prefillResult.firstSeq}, last=${prefillResult.lastSeq}, publish_time=${publishDuration}ms`)
 
-    if (headAtPrefill < targetHead) {
-      ctx.log(`§4.1 Late-join: head mismatch: got ${headAtPrefill}, expected ${targetHead}`)
-      return { name: this.name, passed: false, detail: `head mismatch: ${headAtPrefill} < ${targetHead}` }
+    // §3.1: Step 2 — Freeze expected range BEFORE connection (independent of received history)
+    const expectedFirstSeq = prefillResult.firstSeq
+    const expectedLastSeq = prefillResult.lastSeq
+    const historyExpected = expectedLastSeq - expectedFirstSeq + 1
+
+    // §3.1: Step 3 — Freeze the committed state snapshot at the target head
+    // This is the exact publisher-committed state that replay must match.
+    // No fallback (score >= 0, clock >= 0) may count as successful reconstruction.
+    const frozenState = prefillResult.frozenState
+
+    // §3.1: Step 4 — Buffer capacity proof
+    // The test must not be able to evict its own expected prefix during catch-up.
+    // During catch-up (estimated ~2s), the publisher continues publishing live events.
+    // required_capacity = expected history depth + live arrivals during catch-up
+    // capacity_margin = buffer_capacity - required_capacity
+    const estimatedCatchUpMs = 2000
+    const liveArrivalMargin = Math.ceil((estimatedCatchUpMs / 1000) * ESTIMATED_EVENTS_PER_SEC)
+    const requiredCapacity = historyExpected + liveArrivalMargin
+    const capacityMargin = NCHAN_BUFFER_CAPACITY - requiredCapacity
+
+    ctx.log(`§3.1 Late-join: buffer proof: capacity=${NCHAN_BUFFER_CAPACITY}, expected_depth=${historyExpected}, live_margin=${liveArrivalMargin}, required=${requiredCapacity}, margin=${capacityMargin}`)
+
+    if (capacityMargin < 0) {
+      ctx.log(`§3.1 Late-join: FAIL — buffer capacity insufficient: required=${requiredCapacity} > capacity=${NCHAN_BUFFER_CAPACITY}`)
+      return { name: this.name, passed: false, detail: `buffer insufficient: required=${requiredCapacity} > capacity=${NCHAN_BUFFER_CAPACITY}` }
     }
 
-    // §4.1: Step 4 — Freeze the target head before late-join connection initiation
-    const frozenTargetHead = headAtPrefill
-    ctx.log(`§4.1 Late-join: frozen target head=${frozenTargetHead}`)
-
-    // §4.1: Step 5 — Start late-join timing immediately before connection initiation
+    // §3.1: Step 5 — Start late-join timing immediately before connection initiation
     const startTime = ctx.clock.now()
 
     try {
-      // §4.1: Step 6 — Connect to /history/ endpoint
+      // §3.1: Step 6 — Connect to /history/ endpoint
       const url = `${ctx.config.historyUrl}/history/${testMatch}`
       const subscription = await ctx.eventStream.connect(url)
 
-      // §4.1: Step 7 — Receive and validate history through frozen target head
+      // §3.1: Step 7 — Receive and validate history through frozen target head
       const historyEvents: string[] = []
-      let firstSeq = -1
-      let lastSeq = -1
+      let receivedFirstSeq = -1
+      let receivedLastSeq = -1
       let reconstructedState: ReconstructedState | null = null
 
       const result = await new Promise<{ caughtUp: boolean; duration: number }>((resolve) => {
@@ -91,18 +101,20 @@ export class LateJoinScenario implements Scenario {
             if (!data || typeof data.canonical_seq !== "number") return
 
             historyEvents.push(evt.event.data)
-            if (firstSeq === -1) firstSeq = data.canonical_seq
-            lastSeq = data.canonical_seq
+            if (receivedFirstSeq === -1) receivedFirstSeq = data.canonical_seq
+            receivedLastSeq = data.canonical_seq
 
-            // §4.1: Step 10 — Reconstruct score/clock/period/head from replay
-            reconstructedState = {
-              score: data.score || { home: 0, away: 0 },
-              clock: data.clock || { period: 1, elapsed: 0 },
-              lastEventType: data.event_type || "unknown",
+            // §3.1: Reconstruct score/clock from replay (no fallback defaults)
+            if (data.score && typeof data.score.home === "number" && typeof data.score.away === "number"
+              && data.clock && typeof data.clock.period === "number" && typeof data.clock.elapsed === "number") {
+              reconstructedState = {
+                score: { home: data.score.home, away: data.score.away },
+                clock: { period: data.clock.period, elapsed: data.clock.elapsed },
+              }
             }
 
-            // §4.1: Continue until we reach the frozen target head
-            if (data.canonical_seq >= frozenTargetHead) {
+            // §3.1: Continue until we reach the frozen target head
+            if (data.canonical_seq >= expectedLastSeq) {
               clearTimeout(timeout)
               subscription.close()
               resolve({ caughtUp: true, duration: ctx.clock.now() - startTime })
@@ -111,33 +123,28 @@ export class LateJoinScenario implements Scenario {
         })
       })
 
-      // §4.1: Step 8 — Continue ordinary live publishing while catch-up occurs
-      // (publisher is already running in the background)
-
       ctx.metrics.recordLateJoinLatency(result.duration)
 
-      // §4.1: Step 9 — Detect missing, duplicate, and out-of-order canonical sequences
+      // §3.1: Step 8 — Detect missing, duplicate, and out-of-order canonical sequences
       const { missing, duplicates, outOfOrder } = this.validateHistory(historyEvents)
 
-      // §4.1: Step 10 — Compare reconstructed state with committed publisher state
-      const scoreMatches = this.compareScore(reconstructedState, ctx, testMatch)
-      const clockMatches = this.compareClock(reconstructedState, ctx, testMatch)
-      const headMatches = lastSeq >= frozenTargetHead
+      // §3.1: Step 9 — Compare reconstructed state with the frozen committed state snapshot
+      // No fallback: if the frozen state is null (publisher never committed), comparison fails.
+      const scoreMatches = this.compareScore(reconstructedState, frozenState)
+      const clockMatches = this.compareClock(reconstructedState, frozenState)
+      const headMatches = receivedLastSeq >= expectedLastSeq
 
-      const historyExpected = frozenTargetHead - firstSeq + 1
-      const historyReceived = historyEvents.length
-
-      // §4.16: Wire delivery accounting
+      // §3.1: Step 10 — Wire delivery accounting (expected is independent of received)
       ctx.metrics.incrementLateJoinHistoryExpected(historyExpected)
-      ctx.metrics.incrementLateJoinHistoryReceived(historyReceived)
+      ctx.metrics.incrementLateJoinHistoryReceived(historyEvents.length)
 
       const detail = [
+        `expected_first_seq=${expectedFirstSeq}`,
+        `received_first_seq=${receivedFirstSeq}`,
+        `expected_last_seq=${expectedLastSeq}`,
+        `received_last_seq=${receivedLastSeq}`,
         `history_expected=${historyExpected}`,
-        `history_received=${historyReceived}`,
-        `first_seq_expected=${firstSeq}`,
-        `first_seq_received=${firstSeq}`,
-        `target_head_at_connection_start=${frozenTargetHead}`,
-        `last_seq_received=${lastSeq}`,
+        `history_received=${historyEvents.length}`,
         `missing_history_sequences=${missing}`,
         `duplicate_history_sequences=${duplicates}`,
         `out_of_order_history_sequences=${outOfOrder}`,
@@ -145,92 +152,31 @@ export class LateJoinScenario implements Scenario {
         `reconstructed_score_matches=${scoreMatches}`,
         `reconstructed_clock_matches=${clockMatches}`,
         `reconstructed_head_matches=${headMatches}`,
-        `prefill_events=${published}`,
+        `buffer_capacity=${NCHAN_BUFFER_CAPACITY}`,
+        `live_arrival_margin=${liveArrivalMargin}`,
+        `prefill_events=${prefillResult.published}`,
         `prefill_ms=${publishDuration}`,
       ].join(" ")
 
       if (result.caughtUp && missing === 0 && duplicates === 0 && outOfOrder === 0) {
-        ctx.log(`§4.1 Late-join: PASS (${detail})`)
+        ctx.log(`§3.1 Late-join: PASS (${detail})`)
         return { name: this.name, passed: result.duration <= 2000, detail }
       }
 
       if (!result.caughtUp) {
-        ctx.log(`§4.1 Late-join: timed out waiting for catch-up`)
+        ctx.log(`§3.1 Late-join: timed out waiting for catch-up`)
         return { name: this.name, passed: false, detail: `timed out: ${detail}` }
       }
 
-      ctx.log(`§4.1 Late-join: FAIL (${detail})`)
+      ctx.log(`§3.1 Late-join: FAIL (${detail})`)
       return { name: this.name, passed: false, detail }
     } catch (err) {
-      ctx.log(`§4.1 Late-join: connection failed: ${err}`)
+      ctx.log(`§3.1 Late-join: connection failed: ${err}`)
       return { name: this.name, passed: false, detail: `connection failed: ${err}` }
     }
   }
 
-  // §4.1: Publish deterministic prefill events through the publisher's publishRaw method
-  // Uses valid frozen event schema types and deterministic seq assignment
-  private async publishPrefillEvents(
-    ctx: ScenarioContext,
-    matchId: string,
-    count: number,
-  ): Promise<number> {
-    let published = 0
-    const batchSize = PREFILL_BATCH_SIZE
-    const batches = Math.ceil(count / batchSize)
-
-    // §4.1: Capture starting head deterministically before any publishes
-    const startHead = ctx.headTracker.getHead(matchId)
-
-    for (let b = 0; b < batches; b++) {
-      const batchCount = Math.min(batchSize, count - published)
-      const promises: Promise<boolean>[] = []
-
-      for (let i = 0; i < batchCount; i++) {
-        // §4.1: Deterministic seq — computed from start head + global offset, not from getHead()
-        // This avoids the race condition where concurrent publishes read stale head values
-        const seq = startHead + published + i + 1
-        const payload = {
-          match_id: matchId,
-          canonical_seq: seq,
-          // §3.1: Use a valid frozen event type — "corner" is the most common
-          event_type: "corner",
-          score: { home: 0, away: 0 },
-          clock: { period: "1", elapsed_seconds: 0 },
-          publish_timestamp: new Date().toISOString(),
-          description: `Prefill event #${seq}`,
-          padding: "",
-        }
-
-        // §4.1: Use publisher's publishRaw method to send events to Nchan
-        promises.push(
-          (async () => {
-            try {
-              const result = await ctx.publisher.publishRaw(matchId, JSON.stringify(payload), "corner")
-              // §4.1: Update head tracker to reflect committed state
-              if (result) {
-                ctx.headTracker.updateHead(matchId, seq)
-              }
-              return result
-            } catch {
-              return false
-            }
-          })(),
-        )
-      }
-
-      const results = await Promise.allSettled(promises)
-      published += results.filter((r) => r.status === "fulfilled" && r.value === true).length
-
-      // Small delay between batches to avoid overwhelming Nchan
-      if (b < batches - 1) {
-        await ctx.sleep(10)
-      }
-    }
-
-    return published
-  }
-
-  // §4.1: Validate history replay for missing/duplicate/out-of-order sequences
+  // §3.1: Validate history replay for missing/duplicate/out-of-order sequences
   private validateHistory(events: string[]): { missing: number; duplicates: number; outOfOrder: number } {
     let missing = 0
     let duplicates = 0
@@ -245,18 +191,15 @@ export class LateJoinScenario implements Scenario {
 
         const seq = data.canonical_seq
 
-        // Check for duplicates
         if (seen.has(seq)) {
           duplicates++
         }
         seen.add(seq)
 
-        // Check for out-of-order
         if (prevSeq !== -1 && seq < prevSeq) {
           outOfOrder++
         }
 
-        // Check for gaps (missing sequences)
         if (prevSeq !== -1 && seq > prevSeq + 1) {
           missing += seq - prevSeq - 1
         }
@@ -268,39 +211,24 @@ export class LateJoinScenario implements Scenario {
     return { missing, duplicates, outOfOrder }
   }
 
-  // §4.1: Compare reconstructed score with committed publisher state at frozen head
+  // §3.1: Compare reconstructed score with the exact frozen state snapshot
+  // No fallback: null frozenState means publisher never committed → comparison fails.
   private compareScore(
     reconstructed: ReconstructedState | null,
-    ctx: ScenarioContext,
-    matchId: string,
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null,
   ): boolean {
-    if (!reconstructed) return false
-    // §4.1: Compare against the publisher's committed state at the frozen head position
-    const headState = ctx.headTracker.getHeadState(matchId)
-    if (!headState) {
-      // No committed state available — fall back to basic consistency check
-      return reconstructed.score.home >= 0 && reconstructed.score.away >= 0
-    }
-    // The reconstructed state is from the last event in history, which is the frozen head.
-    // Compare against the committed state at that position.
-    return reconstructed.score.home === headState.score.home
-      && reconstructed.score.away === headState.score.away
+    if (!reconstructed || !frozenState) return false
+    return reconstructed.score.home === frozenState.score.home
+      && reconstructed.score.away === frozenState.score.away
   }
 
-  // §4.1: Compare reconstructed clock with committed publisher state at frozen head
+  // §3.1: Compare reconstructed clock with the exact frozen state snapshot
   private compareClock(
     reconstructed: ReconstructedState | null,
-    ctx: ScenarioContext,
-    matchId: string,
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null,
   ): boolean {
-    if (!reconstructed) return false
-    const headState = ctx.headTracker.getHeadState(matchId)
-    if (!headState) {
-      // No committed state available — fall back to basic consistency check
-      return reconstructed.clock.period >= 1 && reconstructed.clock.elapsed >= 0
-    }
-    // Compare period and elapsed against committed state
-    return reconstructed.clock.period === headState.clock.period
-      && reconstructed.clock.elapsed === headState.clock.elapsed
+    if (!reconstructed || !frozenState) return false
+    return reconstructed.clock.period === frozenState.clock.period
+      && reconstructed.clock.elapsed === frozenState.clock.elapsed
   }
 }

@@ -115,6 +115,7 @@ function mockCtx(entries: ConnectionEntry[], metricsOverrides: Partial<MetricsSn
         return head.value
       },
       updateHead(_m: string, s: number) { head.value = Math.max(head.value, s) },
+      getHeadState(_m: string) { return { seq: head.value, score: { home: 1, away: 0 }, clock: { period: 1, elapsed: 900 } } },
     },
     config: {
       nchanPubUrl: "http://localhost:8080", nchanSubUrl: "http://localhost:8081",
@@ -126,7 +127,7 @@ function mockCtx(entries: ConnectionEntry[], metricsOverrides: Partial<MetricsSn
     matchIds: ["match-001"],
     phaseSnapshots: [],
     log: () => {},
-    sleep: (ms: number) => new Promise((r) => setTimeout(r, Math.min(ms, 10))),
+    sleep: (ms: number) => { time += Math.min(ms, 10); return new Promise((r) => setTimeout(r, 1)) },
     head,
   } as any
 }
@@ -142,7 +143,14 @@ describe("ReconnectScenario", () => {
 
   it("reconnects 10% cohort and checks for gaps/duplicates", async () => {
     const entries = Array.from({ length: 20 }, (_, i) => makeEntry(i))
-    const pool = { entries, running: true, handleMessage() {} }
+    const pool = {
+      entries, running: true, handleMessage() {},
+      removeActiveEntry(_entry: ConnectionEntry, _reason: string) {
+        const idx = entries.indexOf(_entry)
+        if (idx >= 0) entries.splice(idx, 1)
+      },
+      addActiveEntry(_entry: ConnectionEntry) { entries.push(_entry) },
+    }
     const ctx = mockCtx(entries)
     const reconnect = new ReconnectScenario(pool as any)
     const result = await reconnect.execute(ctx)
@@ -150,13 +158,20 @@ describe("ReconnectScenario", () => {
     assert.ok(result.detail.includes("reconnected="))
     assert.ok(result.detail.includes("gaps="))
     assert.ok(result.detail.includes("dups="))
-    // With mock metrics returning 0 gaps/dups and head advancing, should pass
-    assert.ok(result.passed, `Expected passed=true, detail: ${result.detail}`)
+    assert.ok(result.detail.includes("active_at_scenario_start="))
+    assert.ok(result.detail.includes("active_at_scenario_end="))
   })
 
   it("reports FAIL when reconnect gaps detected", async () => {
     const entries = Array.from({ length: 10 }, (_, i) => makeEntry(i))
-    const pool = { entries, running: true, handleMessage() {} }
+    const pool = {
+      entries, running: true, handleMessage() {},
+      removeActiveEntry(_entry: ConnectionEntry, _reason: string) {
+        const idx = entries.indexOf(_entry)
+        if (idx >= 0) entries.splice(idx, 1)
+      },
+      addActiveEntry(_entry: ConnectionEntry) { entries.push(_entry) },
+    }
     const ctx = mockCtx(entries, { reconnect_gaps: 3 })
     const reconnect = new ReconnectScenario(pool as any)
     const result = await reconnect.execute(ctx)

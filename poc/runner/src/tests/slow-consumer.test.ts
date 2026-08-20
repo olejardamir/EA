@@ -144,10 +144,13 @@ describe("SlowConsumerScenario", () => {
     const ctx = mockCtx(entries, 0.05)
     const scenario = new SlowConsumerScenario(pool as any)
     const result = await scenario.execute(ctx)
-    assert.ok(result.passed)
+    // §3.6: Without server-side backpressure evidence (mock has no disconnects/null memory),
+    // passed=false is correct — the test did not prove the backpressure property
+    assert.ok(!result.passed)
     assert.ok(result.detail.includes("slow_throttled"))
     assert.ok(result.detail.includes("degradation"))
     assert.ok(result.detail.includes("threshold=5%"))
+    assert.ok(result.detail.includes("backpressure=NO"))
   })
 
   it("respects slowConsumerFraction config", async () => {
@@ -156,7 +159,8 @@ describe("SlowConsumerScenario", () => {
     const ctx = mockCtx(entries, 0.1)
     const scenario = new SlowConsumerScenario(pool as any)
     const result = await scenario.execute(ctx)
-    assert.ok(result.passed)
+    // §3.6: No backpressure evidence in mock → passed=false
+    assert.ok(!result.passed)
     assert.ok(result.detail.includes("slow_throttled=10/100"))
   })
 
@@ -166,7 +170,8 @@ describe("SlowConsumerScenario", () => {
     const ctx = mockCtx(entries, 0.05)
     const scenario = new SlowConsumerScenario(pool as any)
     const result = await scenario.execute(ctx)
-    assert.ok(result.passed)
+    // §3.6: Zero degradation is healthy, but no backpressure evidence → passed=false
+    assert.ok(!result.passed)
     assert.ok(result.detail.includes("degradation=0.0%"))
   })
 })

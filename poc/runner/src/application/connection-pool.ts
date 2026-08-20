@@ -65,6 +65,30 @@ export class ConnectionPool {
     this.metrics.setActiveConnections(this.connections.length)
   }
 
+  // §3.4: Explicitly remove an active entry from pool with a reason label.
+  // Used by ReconnectScenario to immediately remove cohort from active counts on close.
+  // Removes from pool, decrements per-channel subscribers, updates active current metric,
+  // records deliberate disconnect reason, and preserves saved reconnect state for resume.
+  removeActiveEntry(entry: ConnectionEntry, reason: string): void {
+    const idx = this.connections.indexOf(entry)
+    if (idx >= 0) {
+      this.connections.splice(idx, 1)
+      const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+      this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
+      this.metrics.setActiveConnections(this.connections.length)
+    }
+    this.metrics.incrementDeliberateDisconnects()
+    void reason // reason is logged by caller, attribution counted here
+  }
+
+  // §3.4: Re-add an entry to the active pool (e.g., after reconnect is established)
+  addActiveEntry(entry: ConnectionEntry): void {
+    this.connections.push(entry)
+    const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+    this.subscribersByChannel.set(entry.matchId, count + 1)
+    this.metrics.setActiveConnections(this.connections.length)
+  }
+
   clear(): void {
     this.connections = []
   }
@@ -101,10 +125,11 @@ export class ConnectionPool {
     const seq = data.canonical_seq
     this.metrics.incrementEventsReceived()
 
-    // §4.16: Live delivery accounting — each event received by a connection in steady mode
-    // is one expected delivery and one actual delivery for that subscriber
+    // §3.13: Live delivery accounting — received comes from actual frames received here.
+    // Expected live deliveries are incremented by the publisher at accepted-publish time
+    // using the currently eligible subscriber count (via onPublish callback). They must NOT
+    // be incremented on receive, as that makes the delivery ratio tautological.
     if (entry.mode === "steady") {
-      this.metrics.incrementLiveExpectedDeliveries(1)
       this.metrics.incrementLiveReceivedDeliveries(1)
     }
 

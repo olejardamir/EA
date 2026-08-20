@@ -220,6 +220,10 @@ export class CgroupResourceMonitor implements ResourceMonitor {
         }
         if (metrics.cpu_usage_usec !== null) {
           // §3.8: Compute Nchan CPU percent from cumulative cpu_usage_usec delta
+          // §3.9 CPU NORMALIZATION: All CPU percent values are "percentage of one CPU core".
+          // 100% = one core fully utilized. To get fraction of assigned CPUs, divide by
+          // the cgroup quota (readCpuQuota() in topology-preflight.ts). For example,
+          // if Nchan has 4 CPUs assigned and reports 200%, that's 50% of assigned capacity.
           const wallTime = Date.now()
           if (this.prevNchanCpuUsageUsec !== null) {
             const cpuDelta = metrics.cpu_usage_usec - this.prevNchanCpuUsageUsec
@@ -337,6 +341,8 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   }
 
   measureCpu(): void {
+    // §3.9 CPU NORMALIZATION: Runner CPU percent = (cpuDelta_us / 1000 / wallDelta_ms) * 100
+    // Result is "percentage of one CPU core". Same normalization as Nchan/Redis.
     const cpuTimes = process.cpuUsage()
     const totalCpu = cpuTimes.user + cpuTimes.system
     const wallTime = Date.now()

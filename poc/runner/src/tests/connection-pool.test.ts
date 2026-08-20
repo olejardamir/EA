@@ -48,6 +48,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementSchemaValidationErrors() {},
     incrementMissingTransportId() {},
     recordSchedulerLag() {},
+    beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],

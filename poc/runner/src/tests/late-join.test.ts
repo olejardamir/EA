@@ -13,7 +13,10 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
     publisher: overrides.publisher ?? {
       start() {}, stop() {},
       snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-      publishRaw: async () => true,
+      async publishPrefill(_ch: string, count: number) {
+        head += count
+        return { published: count, firstSeq: head - count + 1, lastSeq: head, frozenState: { seq: head, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+      },
     } as unknown as MatchEventPublisher,
     eventStream: overrides.eventStream ?? { async connect() { return {} as Subscription } },
     metrics: {
@@ -112,7 +115,7 @@ function createHistorySubscription(handlerRef: { current: ((evt: SubscriptionEve
 }
 
 describe("LateJoinScenario", () => {
-  it("publishes deterministic prefill events and validates history replay", async () => {
+  it("publishes canonical prefill events and validates history replay", async () => {
     let publishCount = 0
     const handlerRef: { current: ((evt: SubscriptionEvent) => void) | null } = { current: null }
     let capturedUrl = ""
@@ -120,13 +123,18 @@ describe("LateJoinScenario", () => {
       headTracker: {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
-        updateHeadState() {},
-        getHeadState() { return null },
+        updateHeadState(_m: string, s: number, _sc: any, _ck: any) { publishCount = Math.max(publishCount, s) },
+        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } : null },
       },
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
+        async publishPrefill(_ch: string, count: number) {
+          publishCount += count
+          const firstSeq = publishCount - count + 1
+          const lastSeq = publishCount
+          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+        },
       } as any,
       eventStream: {
         async connect(url: string) {
@@ -155,8 +163,8 @@ describe("LateJoinScenario", () => {
               match_id: "match-001",
               canonical_seq: seq,
               event_type: "goal",
-              score: { home: 1, away: 0 },
-              clock: { period: 1, elapsed: 30 },
+              score: { home: 0, away: 0 },
+              clock: { period: 1, elapsed: 0 },
               publish_timestamp: new Date().toISOString(),
             }),
           },
@@ -167,21 +175,26 @@ describe("LateJoinScenario", () => {
     const result = await execPromise
     assert.ok(result.passed, `Expected passed=true, got detail: ${result.detail}`)
     assert.ok(result.detail.includes("prefill_events=500"), `Expected prefill_events=500 in: ${result.detail}`)
-    assert.ok(result.detail.includes("history_expected="), `Expected history_expected in: ${result.detail}`)
+    assert.ok(result.detail.includes("history_expected=500"), `Expected history_expected=500 in: ${result.detail}`)
+    assert.ok(result.detail.includes("expected_first_seq=1"), `Expected expected_first_seq=1 in: ${result.detail}`)
+    assert.ok(result.detail.includes("expected_last_seq=500"), `Expected expected_last_seq=500 in: ${result.detail}`)
     assert.ok(capturedUrl.includes("/history/"), `Expected /history/ in URL: ${capturedUrl}`)
   })
 
   it("returns connection failed when history endpoint throws", async () => {
-    let publishCount = 0
     const ctx = mockCtx({
       headTracker: {
-        getHead() { return publishCount },
-        updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+        getHead() { return 0 },
+        updateHead() {},
+        updateHeadState() {},
+        getHeadState() { return null },
       },
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
+        async publishPrefill(_ch: string, count: number) {
+          return { published: count, firstSeq: 1, lastSeq: count, frozenState: { seq: count, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+        },
       } as any,
       eventStream: {
         async connect() { throw new Error("connection refused") },
@@ -200,13 +213,18 @@ describe("LateJoinScenario", () => {
       headTracker: {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
-        updateHeadState() {},
-        getHeadState() { return null },
+        updateHeadState(_m: string, s: number, _sc: any, _ck: any) { publishCount = Math.max(publishCount, s) },
+        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } : null },
       },
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
+        async publishPrefill(_ch: string, count: number) {
+          publishCount += count
+          const firstSeq = publishCount - count + 1
+          const lastSeq = publishCount
+          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+        },
       } as any,
       eventStream: {
         async connect() {
