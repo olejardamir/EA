@@ -115,8 +115,7 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
     resourceMonitor: {
       measureCpu() {},
       snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchan_memory_current_bytes: null, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, nchan_cpu_percent_peak: null, redis_cpu_percent_peak: null, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, cpu_max_period: null, memory_max_bytes: null, nchan_cpu_usage_usec: null, nchan_cpu_throttled_count: null, nchan_cpu_throttled_usec: null, nchan_memory_peak_bytes: null, nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null, redis_connected_clients_peak: null, nchan_cpu_max_quota: null, redis_cpu_max_quota: null } },
-      startEventLoopMonitor() {}, stopEventLoopMonitor() {}, dispose() {},
-    },
+      startEventLoopMonitor() {}, stopEventLoopMonitor() {}, dispose() {}, async ready() {}, async preflight() { return null } },
     headTracker: { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } },
     config: {
       nchanPubUrl: "http://localhost:8080", nchanSubUrl: "http://localhost:8081",

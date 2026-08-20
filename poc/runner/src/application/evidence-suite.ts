@@ -425,9 +425,11 @@ export async function runSingleExperiment(
     aggregated.run_profile = config.runProfile
     aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
 
-    // §3.16: Build identity — evidence suite parity
+    // §3.16/§3.11.A: Build identity — evidence suite parity
+    // §3.11.A: Reject non-hex values (e.g. "unknown") — only accept valid SHA-256/SHA-1 prefixes
+    const envSha = process.env.GIT_COMMIT_SHA
     aggregated.build_identity = {
-      git_commit_sha: process.env.GIT_COMMIT_SHA ?? null,
+      git_commit_sha: envSha && /^[0-9a-f]{7,40}$/i.test(envSha) ? envSha : null,
       nginx_version: "1.27.4",
       nchan_version: "1.3.8",
       node_version: process.version,

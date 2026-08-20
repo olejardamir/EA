@@ -146,6 +146,7 @@ function mockResourceMonitor(): ResourceMonitor {
     stopEventLoopMonitor() {},
     async preflight() { return null },
     dispose() {},
+    async ready() {},
   }
 }
 
