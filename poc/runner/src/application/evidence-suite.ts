@@ -731,6 +731,11 @@ export async function runEvidenceSuite(
   const aggregate = aggregateRuns(runs)
   const crossRun = computeCrossRunStats(runs)
 
+  // §3.12: Propagate clock validity from first run (all runs use same Docker host)
+  if (runs.length > 0 && runs[0].aggregated.clock_validity) {
+    aggregate.clock_validity = runs[0].aggregated.clock_validity
+  }
+
   // §6.37 step 8: Per-run-vs-pooled acceptance rule
   // Each individual run must pass all checks (not just the pooled average)
   const perRunVerdicts = runs.map((r) => ({
