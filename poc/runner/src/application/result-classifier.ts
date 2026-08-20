@@ -511,7 +511,7 @@ export function aggregateWorkerMetrics(
     getFanOutHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
     getLateJoinHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
   }>,
-  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number; lobbyPublished?: number; matchPublished?: number }>,
+  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number; lobbyPublished?: number; matchPublished?: number; matchAttempts?: number; lobbyAttempts?: number }>,
   phaseHistograms?: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>,
 ): AggregatedMetrics {
   // §6.32: Use streaming histograms for final percentile computation when available.

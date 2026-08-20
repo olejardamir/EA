@@ -13,6 +13,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     events_received: 5000000,
     missing_sequences: 0,
     duplicates: 0,
+    shard_identity: null,
     out_of_order: 0,
     fan_out_latency_p50_ms: 30,
     fan_out_latency_p95_ms: 80,

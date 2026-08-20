@@ -128,6 +128,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     connections_established: 10000,
     connection_failures: 0,
     connections_dropped: 0,
+    shard_identity: null,
     events_published: 500,
     events_received: 5000000,
     missing_sequences: 0,

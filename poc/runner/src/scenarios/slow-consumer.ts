@@ -56,11 +56,17 @@ function percentile(sorted: number[], p: number): number {
 // §4.7: Throttled subscription wrapper — consumes 1 event every SLOW_EVENT_INTERVAL_MS
 // Controls read-side pacing by pausing/resuming the underlying transport.
 // §3.6: Tracks timestamps of events arriving at the subscription for throttle proof.
-// The pause/resume model means Nchan delivers events only when the transport is resumed,
-// so offered = events delivered by transport, read = events forwarded to application.
-// In this model, both are incremented at the same boundary because the transport only
-// delivers when the client reads (TCP backpressure). The key proof is the inter-event
-// interval: if it's ~2s, the throttle is working.
+//
+// §3.8 ARCHITECTURAL NOTE: offered == consumed by construction with TCP backpressure.
+// When the transport is paused, Nchan buffers events in its memory. When resumed,
+// the socket delivers events and the onEvent callback fires immediately. There is no
+// intermediate buffer between transport delivery and application processing. Therefore:
+//   - slow_offered_event_count = events delivered by transport = events processed by app
+//   - slow_application_read_count = same count
+// The proof of throttling is NOT in a count differential (which is 0 by construction)
+// but in the TIMING: per-client inter-event intervals prove each client achieves ~2s pacing.
+// If the throttle is absorbed by kernel socket buffers (no meaningful server-side memory
+// growth), the test correctly returns INCONCLUSIVE via evidence_server_side_backpressure_reached.
 class ThrottledSubscription implements Subscription {
   private inner: Subscription
   private eventsReceived = 0

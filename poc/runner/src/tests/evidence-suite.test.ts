@@ -23,6 +23,7 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     connections_established: 100,
     connection_failures: 0,
     connections_dropped: 0,
+    shard_identity: null,
     events_published: 500,
     events_received: 50000,
     missing_sequences: 0,

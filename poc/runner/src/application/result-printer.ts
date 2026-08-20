@@ -65,6 +65,10 @@ export function printSummary(
     console.log(`  Slow clients:      ${sc.slow_clients}/${sc.slow_clients + sc.healthy_clients}`)
     console.log(`  Slow offered:      ${sc.slow_offered_event_count} events`)
     console.log(`  Slow consumed:     ${sc.slow_application_read_count} events`)
+    // §3.8: offered == consumed with TCP backpressure (see ThrottledSubscription architectural note)
+    // The proof is in per-client inter-event timing, not count differential.
+    console.log(`  Read rate:         ${sc.slow_achieved_read_rate_events_per_sec.toFixed(2)} events/s`)
+    console.log(`  Median interval:   ${sc.slow_median_event_interval_ms.toFixed(0)}ms (target: 2000ms)`)
     console.log(`  Backlog growth:    ${sc.slow_backlog_growth} events`)
     console.log(`  Backpressure:      ${sc.evidence_server_side_backpressure_reached ? "YES" : "NO"}`)
     console.log(`  Healthy p95 before:${sc.healthy_p95_before_ms}ms`)
@@ -309,6 +313,10 @@ export function emitMachineReadableResult(
         healthy_degradation_pct: metrics.slow_consumer_metrics.healthy_degradation_pct,
         // §3.8: Per-client median intervals — each client should achieve ~2s pacing independently
         per_client_median_event_interval_ms: metrics.slow_consumer_metrics.per_client_median_event_interval_ms,
+        // §3.8: Achieved read rate — proof of throttled consumption
+        slow_achieved_read_rate_events_per_sec: metrics.slow_consumer_metrics.slow_achieved_read_rate_events_per_sec,
+        slow_median_event_interval_ms: metrics.slow_consumer_metrics.slow_median_event_interval_ms,
+        slow_p95_event_interval_ms: metrics.slow_consumer_metrics.slow_p95_event_interval_ms,
         // §3.8: Memory boundedness trend
         nchan_memory_bounded: metrics.slow_consumer_metrics.nchan_memory_bounded,
         nchan_memory_growth_bytes: metrics.slow_consumer_metrics.nchan_memory_growth_bytes,
