@@ -1,4 +1,5 @@
 import type { AggregatedMetrics, VerdictResult } from "../domain/result.js"
+import { runTopologyPreflight, type TopologyPreflight } from "../adapters/topology-preflight.js"
 
 export function printSummary(
   metrics: AggregatedMetrics,
@@ -142,8 +143,12 @@ export function emitMachineReadableResult(
   eventsPublished: number,
   verdictResult: VerdictResult,
   config: { targetConnections: number; seed: number; runProfile: string; runMode?: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number; nchanPubUrl?: string; nchanSubUrl?: string; redisUrl?: string; nchanControlUrl?: string },
+  topologyPreflight?: TopologyPreflight,
 ): void {
   metrics.events_published = eventsPublished
+
+  // §4.2/§4.24: Run topology preflight if not provided
+  const preflight = topologyPreflight ?? runTopologyPreflight(config.targetConnections)
 
   const result = {
     contract_version: "v2.0.2",
@@ -171,6 +176,22 @@ export function emitMachineReadableResult(
       nchan_sub_url: config.nchanSubUrl,
       redis_url: config.redisUrl,
       nchan_control_url: config.nchanControlUrl || null,
+    },
+    // §4.2/§4.24: Topology and capacity preflight
+    host_limits: {
+      fd_soft_limit: preflight.fd_soft_limit,
+      fd_hard_limit: preflight.fd_hard_limit,
+      ephemeral_port_range: preflight.ephemeral_port_range,
+      ephemeral_port_count: preflight.ephemeral_port_count,
+    },
+    generator_topology: {
+      source_ip_count: preflight.source_ip_count,
+      destination_tuple_capacity: preflight.destination_tuple_capacity,
+      nginx_worker_processes: preflight.nginx_worker_processes,
+      nginx_worker_connections: preflight.nginx_worker_connections,
+      nginx_max_sse_capacity: preflight.nginx_max_sse_capacity,
+      capacity_sufficient: preflight.capacity_sufficient,
+      warnings: preflight.warnings,
     },
     scenario_results: verdictResult.checks.map((c) => ({
       name: c.name,
@@ -283,6 +304,9 @@ export function emitMachineReadableResult(
       sse_parse_errors: metrics.sse_parse_errors,
       json_parse_errors: metrics.json_parse_errors,
       invalid_timestamp_count: metrics.invalid_timestamp_count,
+      // §4.19: Schema validation error accounting
+      schema_validation_errors: metrics.schema_validation_errors,
+      missing_transport_id: metrics.missing_transport_id,
     },
     surge_health: {
       fan_out_p95_ms: metrics.surge_fan_out_p95_ms,
@@ -319,6 +343,21 @@ export function emitMachineReadableResult(
       reasons: verdictResult.checks
         .filter((c) => c.name.startsWith("inconclusive_override") && !c.passed)
         .map((c) => c.detail),
+    },
+    // §4.15/§4.18: Clock validity — RTT-based estimate (same-host containers share wall clock)
+    clock_validity: {
+      method: "HTTP_RTT_estimate",
+      note: "Same-host containers share kernel clock; RTT/2 is max skew estimate",
+      max_skew_estimate_ms: null,
+    },
+    // §4.18: Claim provenance — distinguish POC measurement from production inference
+    claim_provenance: {
+      measured_at_scale: config.targetConnections,
+      direct_accept_eligible: config.targetConnections >= 100000,
+      production_inference_only: config.targetConnections < 100000,
+      note: config.targetConnections >= 100000
+        ? "Direct local measurement at 100k target"
+        : "Lower-scale result — production inference only, not direct 100k proof",
     },
     // §4.18: Frozen viewer model
     viewer_model: {

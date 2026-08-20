@@ -87,6 +87,9 @@ export interface AggregatedMetrics {
   sse_parse_errors: number
   json_parse_errors: number
   invalid_timestamp_count: number
+  // §4.19: Schema validation error accounting
+  schema_validation_errors: number
+  missing_transport_id: number
   // §BH: surge existing-viewer health — deltas during surge phase
   surge_fan_out_p95_ms: number
   surge_missing_sequences: number

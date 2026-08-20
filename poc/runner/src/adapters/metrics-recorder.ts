@@ -37,6 +37,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private sseParseErrors = 0
   private jsonParseErrors = 0
   private invalidTimestampCount = 0
+  // §4.19: Schema validation error accounting
+  private schemaValidationErrors = 0
+  private missingTransportId = 0
   // §4.16: Separate live vs replay delivery accounting
   private liveExpectedDeliveries = 0
   private liveReceivedDeliveries = 0
@@ -98,6 +101,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementSseParseErrors(): void { this.sseParseErrors++ }
   incrementJsonParseErrors(): void { this.jsonParseErrors++ }
   incrementInvalidTimestampCount(): void { this.invalidTimestampCount++ }
+  // §4.19: Schema validation error accounting
+  incrementSchemaValidationErrors(): void { this.schemaValidationErrors++ }
+  incrementMissingTransportId(): void { this.missingTransportId++ }
 
   // §4.16: Live vs replay delivery accounting
   incrementLiveExpectedDeliveries(count = 1): void { this.liveExpectedDeliveries += count }
@@ -148,6 +154,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       sse_parse_errors: this.sseParseErrors,
       json_parse_errors: this.jsonParseErrors,
       invalid_timestamp_count: this.invalidTimestampCount,
+      // §4.19: Schema validation error accounting
+      schema_validation_errors: this.schemaValidationErrors,
+      missing_transport_id: this.missingTransportId,
       // §4.16: Live vs replay delivery accounting
       live_expected_deliveries: this.liveExpectedDeliveries,
       live_received_deliveries: this.liveReceivedDeliveries,

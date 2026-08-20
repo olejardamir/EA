@@ -20,6 +20,7 @@ import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
 import { printSummary, emitMachineReadableResult } from "./application/result-printer.js"
 import { runEvidenceSuite } from "./application/evidence-suite.js"
+import { runTopologyPreflight } from "./adapters/topology-preflight.js"
 import crypto from "node:crypto"
 import type { ScenarioContext } from "./scenarios/scenario.js"
 
@@ -160,6 +161,13 @@ async function main(): Promise<void> {
     log(`Profile: ${config.runProfile}`)
     log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
 
+    // §4.2/§4.24: Run topology and capacity preflight
+    const topologyPreflight = runTopologyPreflight(config.targetConnections)
+    log(`§4.2 topology preflight: FD_soft=${topologyPreflight.fd_soft_limit}, ephemeral_ports=${topologyPreflight.ephemeral_port_count}, nginx_capacity=${topologyPreflight.nginx_max_sse_capacity}, sufficient=${topologyPreflight.capacity_sufficient}`)
+    if (topologyPreflight.warnings.length > 0) {
+      for (const w of topologyPreflight.warnings) log(`  WARNING: ${w}`)
+    }
+
     loopMonitor = setInterval(() => {
       resourceMonitor.measureCpu()
       // §BL: Sample publisher backlog (in-flight publish promises) every 100ms
@@ -173,16 +181,25 @@ async function main(): Promise<void> {
     const warmup = new WarmupScenario(pool)
     const warmupResult = await warmup.execute(ctx)
     log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
+    // §4.6: Record phase snapshot for publish rate measurement
+    const warmupSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
 
     // Phase 2: Steady — publisher already running from warm-up
     const steady = new SteadyScenario(pool)
     const steadyResult = await steady.execute(ctx)
     log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
+    // §4.6: Record phase snapshot
+    const steadySnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
 
     // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
     const connectionSurge = new ConnectionSurgeScenario(pool)
     const surgeResult = await connectionSurge.execute(ctx)
     log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+    // §4.6: Record phase snapshot
+    const surgeSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0 })
 
     // Phase 4: Post-surge stabilization
     log(`--- PHASE: POST-SURGE STABILIZATION (${config.cooldownSeconds}s) ---`)
@@ -193,11 +210,17 @@ async function main(): Promise<void> {
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
+    // §4.6: Record phase snapshot
+    const lateJoinSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: 0 })
 
     // Phase 6: Burst at peak
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
     log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
+    // §4.6: Record phase snapshot
+    const burstSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
 
     // Phase 7: Post-burst steady
     log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
@@ -206,21 +229,33 @@ async function main(): Promise<void> {
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
     log("Post-burst steady complete")
+    // §4.6: Record phase snapshot
+    const postBurstSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
 
     // Phase 8: Reconnect while publishing
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
     log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
+    // §4.6: Record phase snapshot
+    const reconnectSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: 0 })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
+    // §4.6: Record phase snapshot
+    const slowSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: 0 })
 
     // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
     const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
+    // §4.6: Record phase snapshot
+    const restartSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: 0 })
 
     // Collect metrics
     log("\n--- COLLECTING METRICS ---")
@@ -329,7 +364,7 @@ async function main(): Promise<void> {
       nchanSubUrl: config.nchanSubUrl,
       redisUrl: config.redisUrl,
       nchanControlUrl: config.nchanControlUrl,
-    })
+    }, topologyPreflight)
 
     log("=== POC Runner Complete ===")
   } finally {

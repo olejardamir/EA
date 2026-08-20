@@ -41,6 +41,8 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
         incrementServerInitiatedDisconnects() {},
         incrementNetworkFailures() {},
         incrementShutdownCleanup() {},
+        incrementSchemaValidationErrors() {},
+        incrementMissingTransportId() {},
         snapshot(): MetricsSnapshot {
           snapshotCount++
           // First snapshot (pre-burst) returns 5 latencies, second (post-burst) returns 15
@@ -63,6 +65,7 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
             restart_replay_expected: 0, restart_replay_received: 0,
             deliberate_disconnects: 0, unexpected_client_disconnects: 0,
             server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
+            schema_validation_errors: 0, missing_transport_id: 0,
           }
         },
       }
@@ -155,6 +158,8 @@ describe("BurstScenario", () => {
         incrementServerInitiatedDisconnects() {},
         incrementNetworkFailures() {},
         incrementShutdownCleanup() {},
+        incrementSchemaValidationErrors() {},
+        incrementMissingTransportId() {},
         snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -171,6 +176,7 @@ describe("BurstScenario", () => {
           restart_replay_expected: 0, restart_replay_received: 0,
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
+          schema_validation_errors: 0, missing_transport_id: 0,
         }
       },
     } as any

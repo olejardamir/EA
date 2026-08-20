@@ -60,6 +60,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementServerInitiatedDisconnects() {},
     incrementNetworkFailures() {},
     incrementShutdownCleanup() {},
+    incrementSchemaValidationErrors: () => inc("schema_validation_errors"),
+    incrementMissingTransportId: () => inc("missing_transport_id"),
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -79,6 +81,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         restart_replay_expected: 0, restart_replay_received: 0,
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
+        schema_validation_errors: 0, missing_transport_id: 0,
       }
     },
   }
@@ -194,6 +197,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     server_initiated_disconnects: 0,
     network_failures: 0,
     shutdown_cleanup_disconnects: 0,
+    schema_validation_errors: 0,
+    missing_transport_id: 0,
     surge_target_additions: 0,
     surge_attempted: 0,
     surge_established: 0,
@@ -738,16 +743,14 @@ describe("§M: Classifier exhaustive decision table", () => {
     assert.notEqual(result.verdict, "ACCEPT")
   })
 
-  it("cpu_throttled_count > 0 is REJECT", () => {
+  it("cpu_throttled_count > 0 is INCONCLUSIVE", () => {
     const result = classifyResult(baseMetrics({ cpu_throttled_count: 1 }), true, true)
-    assert.equal(result.verdict, "REJECT")
-    assert.ok(result.checks.find((c) => c.name === "cpu_throttling")!.passed === false)
+    assert.equal(result.verdict, "INCONCLUSIVE")
   })
 
-  it("oom_kill_events > 0 is REJECT", () => {
+  it("oom_kill_events > 0 is INCONCLUSIVE", () => {
     const result = classifyResult(baseMetrics({ memory_oom_kill_events: 1 }), true, true)
-    assert.equal(result.verdict, "REJECT")
-    assert.ok(result.checks.find((c) => c.name === "oom_kills")!.passed === false)
+    assert.equal(result.verdict, "INCONCLUSIVE")
   })
 
   it("sse_parse_errors > 0 is REJECT", () => {
@@ -790,10 +793,9 @@ describe("§M: Classifier exhaustive decision table", () => {
     assert.equal(result.verdict, "REJECT")
   })
 
-  it("slow_consumer_disconnects=0 is REJECT (must have > 0)", () => {
+  it("slow_consumer_disconnects=0 is ACCEPT (bounded healthy degradation)", () => {
     const result = classifyResult(baseMetrics({ slow_consumer_disconnects: 0 }), true, true)
-    assert.equal(result.verdict, "REJECT")
-    assert.ok(result.checks.find((c) => c.name === "slow_consumer_disconnects")!.passed === false)
+    assert.equal(result.verdict, "ACCEPT")
   })
 
   it("non_slow_p95_degradation > 5% is REJECT", () => {

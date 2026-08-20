@@ -51,6 +51,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementServerInitiatedDisconnects() {},
     incrementNetworkFailures() {},
     incrementShutdownCleanup() {},
+    incrementSchemaValidationErrors() {},
+    incrementMissingTransportId() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -70,6 +72,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         restart_replay_expected: 0, restart_replay_received: 0,
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
+        schema_validation_errors: 0, missing_transport_id: 0,
       }
     },
   }

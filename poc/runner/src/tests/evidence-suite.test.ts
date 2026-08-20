@@ -98,6 +98,8 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     server_initiated_disconnects: 0,
     network_failures: 0,
     shutdown_cleanup_disconnects: 0,
+    schema_validation_errors: 0,
+    missing_transport_id: 0,
     surge_target_additions: 0,
     surge_attempted: 0,
     surge_established: 0,

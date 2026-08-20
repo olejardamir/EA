@@ -55,6 +55,15 @@ export class ConnectionPool {
     this.connections.push(entry)
   }
 
+  // §4.3: Remove a dead connection from active pool and decrement counts
+  private removeEntry(entry: ConnectionEntry): void {
+    const idx = this.connections.indexOf(entry)
+    if (idx >= 0) this.connections.splice(idx, 1)
+    const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+    this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
+    this.metrics.setActiveConnections(this.connections.length)
+  }
+
   clear(): void {
     this.connections = []
   }
@@ -188,6 +197,7 @@ export class ConnectionPool {
         if (evt.type === "message") {
           this.handleMessage(entry, evt.event.data)
         } else if (evt.type === "error") {
+          // §4.3: Terminal stream error — remove from active pool immediately
           // §4.17: Disconnect attribution — classify error by cause
           const msg = evt.error?.message ?? ""
           if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
@@ -195,6 +205,7 @@ export class ConnectionPool {
           } else {
             this.metrics.incrementServerInitiatedDisconnects()
           }
+          this.removeEntry(entry)
         }
       })
 

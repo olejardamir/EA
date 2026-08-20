@@ -99,6 +99,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
+    schema_validation_errors: 0,
+    missing_transport_id: 0,
     ...overrides,
   }
 }

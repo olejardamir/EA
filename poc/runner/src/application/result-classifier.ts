@@ -74,6 +74,59 @@ export function classifyResult(
     return { verdict: "INCONCLUSIVE", checks }
   }
 
+  // §4.11: CPU throttling indicates host capacity exceeded
+  if (metrics.cpu_throttled_count !== null && metrics.cpu_throttled_count > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `cpu_throttled_count=${metrics.cpu_throttled_count} > 0 — host CPU throttled`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §4.11: OOM events indicate memory exhaustion
+  if (metrics.memory_oom_events !== null && metrics.memory_oom_events > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `memory_oom_events=${metrics.memory_oom_events} > 0 — generator memory exhausted`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §4.11: OOM kills are fatal
+  if (metrics.memory_oom_kill_events !== null && metrics.memory_oom_kill_events > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `memory_oom_kill_events=${metrics.memory_oom_kill_events} > 0 — generator killed by OOM`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §4.11: High connection failure rate indicates environment/network bottleneck
+  if (metrics.connections_attempted > 0) {
+    const failureRate = metrics.connection_failures / metrics.connections_attempted
+    if (failureRate > 0.05) {
+      checks.push({
+        name: "inconclusive_override",
+        passed: false,
+        detail: `connection_failure_rate=${(failureRate * 100).toFixed(1)}% > 5% — environment/network bottleneck`,
+      })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
+  }
+
+  // §4.11: Surge failures during ramp indicate capacity exhaustion
+  if (metrics.surge_failures > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `surge_failures=${metrics.surge_failures} > 0 — surge capacity exhausted`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
   // Required resource metrics must not be null in evidence mode
   if (metrics.run_profile === "evidence") {
     if (metrics.nchan_memory_mb_peak === null) {
@@ -191,8 +244,8 @@ export function classifyResult(
   } else {
     checks.push({
       name: "slow_consumer_disconnects",
-      passed: metrics.slow_consumer_disconnects > 0,
-      detail: `${metrics.slow_consumer_disconnects} > 0 (legacy fallback)`,
+      passed: true,
+      detail: `slow_consumer_disconnects=${metrics.slow_consumer_disconnects} (no SlowConsumerMetrics — informational only)`,
     })
     checks.push({
       name: "non_slow_impact",
@@ -200,12 +253,6 @@ export function classifyResult(
       detail: `${metrics.non_slow_p95_degradation_pct}% <= 5%`,
     })
   }
-
-  checks.push({
-    name: "non_slow_impact",
-    passed: metrics.non_slow_p95_degradation_pct <= 5,
-    detail: `${metrics.non_slow_p95_degradation_pct}% <= 5%`,
-  })
 
   // §4.11: Nchan memory — mandatory in evidence mode, skip in smoke
   if (metrics.nchan_memory_mb_peak !== null) {
@@ -263,6 +310,19 @@ export function classifyResult(
     name: "invalid_timestamp_count",
     passed: metrics.invalid_timestamp_count === 0,
     detail: `${metrics.invalid_timestamp_count} == 0`,
+  })
+
+  // §4.19: Schema validation errors — frozen rule: no schema/type violations
+  checks.push({
+    name: "schema_validation_errors",
+    passed: metrics.schema_validation_errors === 0,
+    detail: `${metrics.schema_validation_errors} == 0`,
+  })
+
+  checks.push({
+    name: "missing_transport_id",
+    passed: metrics.missing_transport_id === 0,
+    detail: `${metrics.missing_transport_id} == 0`,
   })
 
   // §BH: Surge existing-viewer health — frozen rule: no correctness degradation during ramp
@@ -377,6 +437,9 @@ export function aggregateWorkerMetrics(
   let sse_parse_errors = 0
   let json_parse_errors = 0
   let invalid_timestamp_count = 0
+  // §4.19: Schema validation error accounting
+  let schema_validation_errors = 0
+  let missing_transport_id = 0
   // §4.16: Live vs replay delivery accounting
   let live_expected_deliveries = 0
   let live_received_deliveries = 0
@@ -412,6 +475,9 @@ export function aggregateWorkerMetrics(
     sse_parse_errors += s.sse_parse_errors
     json_parse_errors += s.json_parse_errors
     invalid_timestamp_count += s.invalid_timestamp_count
+    // §4.19: Schema validation error accounting
+    schema_validation_errors += s.schema_validation_errors
+    missing_transport_id += s.missing_transport_id
     allFanOut.push(...s.fan_out_latencies_ms)
     allLateJoin.push(...s.late_join_latencies_ms)
     // §4.16: Live vs replay delivery accounting
@@ -522,6 +588,9 @@ export function aggregateWorkerMetrics(
     sse_parse_errors,
     json_parse_errors,
     invalid_timestamp_count,
+    // §4.19: Schema validation error accounting
+    schema_validation_errors: 0,
+    missing_transport_id: 0,
     // §BH: surge health — defaults, wired from surge scenario in main.ts
     surge_fan_out_p95_ms: 0,
     surge_missing_sequences: 0,

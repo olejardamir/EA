@@ -23,6 +23,9 @@ export interface MetricsRecorder {
   incrementSseParseErrors(): void
   incrementJsonParseErrors(): void
   incrementInvalidTimestampCount(): void
+  // §4.19: Schema validation error accounting
+  incrementSchemaValidationErrors(): void
+  incrementMissingTransportId(): void
   // §4.16: Live vs replay delivery accounting
   incrementLiveExpectedDeliveries(count?: number): void
   incrementLiveReceivedDeliveries(count?: number): void
@@ -68,6 +71,9 @@ export interface MetricsSnapshot {
   sse_parse_errors: number
   json_parse_errors: number
   invalid_timestamp_count: number
+  // §4.19: Schema validation error accounting
+  schema_validation_errors: number
+  missing_transport_id: number
   // §4.16: Live vs replay delivery accounting
   live_expected_deliveries: number
   live_received_deliveries: number
