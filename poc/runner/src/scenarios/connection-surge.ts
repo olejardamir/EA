@@ -66,13 +66,15 @@ export class ConnectionSurgeScenario implements Scenario {
       const remaining = surgeCount - (batch * batchSize)
       const count = Math.min(batchSize, remaining)
 
-      if (count <= 0) break
-
       const targetTime = surgeStartTime + (batch + 1) * batchIntervalMs
       const actualStartTime = performance.now()
 
-      ctx.log(`Surge batch ${batch + 1}/24: requesting ${count} connections (pool size: ${this.pool.size})`)
-      await this.pool.connectAll(ctx.eventStream, count, this.pool.size, undefined, ctx.config.lobbyFraction)
+      if (count > 0) {
+        ctx.log(`Surge batch ${batch + 1}/24: requesting ${count} connections (pool size: ${this.pool.size})`)
+        await this.pool.connectAll(ctx.eventStream, count, this.pool.size, undefined, ctx.config.lobbyFraction)
+      } else {
+        ctx.log(`Surge batch ${batch + 1}/24: all connections allocated, waiting for deadline`)
+      }
 
       const actualEndTime = performance.now()
       const batchElapsed = actualEndTime - actualStartTime
@@ -114,7 +116,7 @@ export class ConnectionSurgeScenario implements Scenario {
       // Wait until next batch interval using monotonic target
       const nextBatchTargetTime = surgeStartTime + batch * batchIntervalMs
       const waitUntil = Math.max(0, nextBatchTargetTime - performance.now())
-      if (waitUntil > 0 && batch < 24) {
+      if (waitUntil > 0) {
         await ctx.sleep(waitUntil)
       }
     }

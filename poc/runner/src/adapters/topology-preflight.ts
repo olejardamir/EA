@@ -41,6 +41,8 @@ function readSysctl(key: string): string | null {
 }
 
 function readNoFileLimits(): { soft: number | null; hard: number | null } {
+  // §3.3.B: Reads runner process limits. In Docker, runner and nginx share the same cgroup
+  // and therefore the same RLIMIT. This is the correct FD limit for the container.
   try {
     const limits = readFileSync("/proc/self/limits", "utf-8")
     const line = limits.split("\n").find((l) => l.includes("Max open files"))
@@ -89,7 +91,7 @@ function readCpuQuota(): number | null {
 // Conservative: 60 for internal sockets/state + 20 for Redis/control + 20 headroom.
 const NON_VIEWER_FDS = 100
 
-export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4, nginxWorkerConns = 32768, nchanNodes = 2): TopologyPreflight {
+export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4, nginxWorkerConns = 32768, nchanNodes = 1): TopologyPreflight {
   const warnings: string[] = []
 
   const { soft: fdSoft, hard: fdHard } = readNoFileLimits()
@@ -108,27 +110,32 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
 
   // §3.2: Source IP count from multi-shard topology
   // Each Docker bridge-networked runner container gets a distinct source IP.
-  // SHARD_COUNT env var indicates the number of parallel runner shards.
-  const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
+  // SHARD_TOTAL is canonical; SHARD_COUNT is legacy fallback.
+  const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1
   const sourceIps = shardCount
 
   // §4.2: Destination tuples = source IPs × ephemeral ports
   const destTupleCapacity = sourceIps * (ephemeralCount ?? 0)
 
   // §4.24: Nginx capacity = workers × connections_per_worker
-  const nginxMaxSseCapacity = nginxWorkers * nginxWorkerConns
+  // §3.3.C: Subtract non-viewer FDs (Redis, control, event loop, etc.) from usable SSE capacity
+  const nginxMaxSseCapacity = nginxWorkers * nginxWorkerConns - NON_VIEWER_FDS
 
   // §4.24: Non-viewer FD headroom
   const nonViewerFds = NON_VIEWER_FDS
   const requiredFds = targetConnections + nonViewerFds
 
-  // §4.24: Assigned subscribers per Nchan node (even split)
-  const subscribersPerNode = Math.ceil(targetConnections / nchanNodes)
+  // §3.4.D: Live 100k subscriber load is directed to nchan-primary only.
+  // nchan-2 is a replacement/recovery node, not a second capacity node.
+  // Capacity must be proven against the primary node receiving all subscriber connections.
+  const subscribersPerNode = targetConnections
 
   // §4.24: CPU quota from cgroup
   const cpuQuota = readCpuQuota()
   const cpuCount = os.cpus().length
 
+  // §3.4.A: CPU quota check applies to the runner container (which hosts nginx workers via Docker).
+  // The Nchan control server runs in a separate container with its own CPU quota.
   if (cpuQuota !== null && cpuQuota < nginxWorkers) {
     warnings.push(`CPU quota ${cpuQuota} cores < nginx worker_processes ${nginxWorkers} — may starve workers`)
   }

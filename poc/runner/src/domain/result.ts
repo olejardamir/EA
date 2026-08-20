@@ -116,6 +116,7 @@ export interface AggregatedMetrics {
   memory_current_bytes: number | null     // current memory usage in bytes
   memory_peak_bytes: number | null        // peak memory usage in bytes
   cpu_max_quota: number | null            // CPU quota in usec per period (null = unlimited)
+  cpu_max_period: number | null           // §3.8: cpu.max period in microseconds
   memory_max_bytes: number | null         // memory limit in bytes (null = unlimited)
   // §BL: generator backlog — max pending publish tasks during run
   generator_backlog_peak: number
@@ -170,6 +171,11 @@ export interface AggregatedMetrics {
   reconnect_replay_received: number
   restart_replay_expected: number
   restart_replay_received: number
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  literal_restart_expected: number
+  literal_restart_received: number
+  cross_node_expected: number
+  cross_node_received: number
   // §4.7: Slow-consumer metrics — populated by SlowConsumerScenario
   slow_consumer_metrics: SlowConsumerMetrics | null
   // §4.17: Disconnect attribution — each terminal event attributed exactly once

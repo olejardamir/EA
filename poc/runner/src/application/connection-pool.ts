@@ -57,12 +57,17 @@ export class ConnectionPool {
   }
 
   // §4.3: Remove a dead connection from active pool and decrement counts
+  // §3.10.A: Exact-once guard — only decrement if entry is still in the pool
   private removeEntry(entry: ConnectionEntry): void {
     const idx = this.connections.indexOf(entry)
-    if (idx >= 0) this.connections.splice(idx, 1)
-    const count = this.subscribersByChannel.get(entry.matchId) ?? 0
-    this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
-    this.metrics.setActiveConnections(this.connections.length)
+    if (idx >= 0) {
+      this.connections.splice(idx, 1)
+      const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+      this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
+      this.metrics.setActiveConnections(this.connections.length)
+      // §3.10.B: Increment connections_dropped for unexpected terminal errors
+      this.metrics.incrementConnectionsDropped()
+    }
   }
 
   // §3.4: Explicitly remove an active entry from pool with a reason label.
@@ -97,6 +102,7 @@ export class ConnectionPool {
 
   clear(): void {
     this.connections = []
+    this.subscribersByChannel.clear()
   }
 
   createTracker(): SequenceTracker {
@@ -243,6 +249,8 @@ export class ConnectionPool {
         } else if (evt.type === "error") {
           // §4.3: Terminal stream error — remove from active pool immediately
           // §4.17/§3.14: Disconnect attribution — classify error by cause
+          // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
+          // Do NOT increment connections_dropped here; removeEntry() does it exactly once.
           const msg = evt.error?.message ?? ""
           if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
             this.metrics.incrementNetworkFailures()

@@ -180,6 +180,9 @@ export class SlowConsumerScenario implements Scenario {
 
     ctx.log(`${slowCount} slow connections throttled to 1 event/2s, ${healthyConnections.length} healthy connections active`)
 
+    // §3.7: Track heads before slow phase for missed-live computation
+    const headsBeforeSlow = slowConnections.map(conn => ctx.headTracker.getHead(conn.matchId))
+
     // §3.6: Create a dedicated histogram for healthy connections during the slow phase.
     // Register a listener on each healthy connection that records latency into this histogram.
     const healthyDuringHist = new StreamingHistogram()
@@ -244,13 +247,72 @@ export class SlowConsumerScenario implements Scenario {
       totalOffered += wrapper.offeredCount
       totalRead += wrapper.achievedReadCount
       perClientTimestampsMs.push([...wrapper.eventTimestampsMs])
+    }
+
+    // §3.7: Compute per-client missed live using head deltas
+    const headsAfterSlow = slowConnections.map(conn => ctx.headTracker.getHead(conn.matchId))
+
+    // §3.7: Capture read counts before resume for replay tracking
+    const readBeforeResume = throttledWrappers.map(w => w.achievedReadCount)
+
+    // Resume all slow connections
+    for (const conn of slowConnections) {
       try { conn.subscription.resume() } catch {}
     }
 
     // §3.6: Nchan memory after recovery — after resuming all connections
     await ctx.sleep(2000) // Allow time for recovery
     const nchanMemRecovery = ctx.resourceMonitor.snapshot().nchan_memory_current_bytes
+
+    // §3.7: Capture replay counts after recovery
+    const readAfterReplay = throttledWrappers.map(w => w.achievedReadCount)
     ctx.log(`§3.6 nchan_memory_recovery=${nchanMemRecovery !== null ? `${(nchanMemRecovery / 1024 / 1024).toFixed(1)}MB` : "null"}`)
+
+    // §3.7: Build per-client detail records with missed-live and replay metrics
+    interface PerClientDetail {
+      index: number
+      missedLive: number
+      missedReplay: number
+      replayGap: number
+      totalMissed: number
+      detail: string
+    }
+    const perClientDetails: PerClientDetail[] = []
+    for (let i = 0; i < slowConnections.length; i++) {
+      const publishedDuringSlow = headsAfterSlow[i] - headsBeforeSlow[i]
+      const missedLive = Math.max(0, publishedDuringSlow - throttledWrappers[i].achievedReadCount)
+      const replayReceived = Math.max(0, readAfterReplay[i] - readBeforeResume[i])
+      const missedReplay = Math.max(0, missedLive - replayReceived)
+      const replayGap = missedReplay
+      const totalMissed = missedLive
+      perClientDetails.push({
+        index: i,
+        missedLive,
+        missedReplay,
+        replayGap,
+        totalMissed,
+        detail: `client_${i}:missed_live=${missedLive}:missed_replay=${missedReplay}:replay_gap=${replayGap}`,
+      })
+    }
+
+    // §3.7: Aggregate missed-live and replay metrics
+    const missedLive = perClientDetails.reduce((s, pc) => s + pc.missedLive, 0)
+    const missedReplay = perClientDetails.reduce((s, pc) => s + pc.missedReplay, 0)
+    const missedRequired = missedLive
+    const expectedTotalReplay = missedLive
+    const replayReceivedAfterReconnect = perClientDetails.reduce((s, pc) => s + Math.max(0, readAfterReplay[pc.index] - readBeforeResume[pc.index]), 0)
+    const replayCoverage = expectedTotalReplay > 0 ? replayReceivedAfterReconnect / expectedTotalReplay : 0
+
+    ctx.log(`§3.7 missed_live=${missedLive} missed_replay=${missedReplay} replay_coverage=${(replayCoverage * 100).toFixed(1)}%`)
+    ctx.log(`§3.7 per_client: [${perClientDetails.map(d => d.detail).join("; ")}]`)
+
+    // §3.7: Per-client gauge metrics
+    for (const pc of perClientDetails) {
+      ctx.metrics.gauge(`slow_client_${pc.index}_total_missed`, pc.totalMissed)
+      ctx.metrics.gauge(`slow_client_${pc.index}_missed_live`, pc.missedLive)
+      ctx.metrics.gauge(`slow_client_${pc.index}_missed_replay`, pc.missedReplay)
+      ctx.metrics.gauge(`slow_client_${pc.index}_replay_gap`, pc.replayGap)
+    }
 
     // §3.6: Compute achieved read rate from slow consumers
     const slowReadRate = slowPhaseElapsed > 0 ? totalRead / (slowPhaseElapsed / 1000) : 0
@@ -337,9 +399,12 @@ export class SlowConsumerScenario implements Scenario {
     // §4.8: Pass/fail rule — frozen interpretation:
     // PASS: healthy degradation <= threshold AND bounded behavior demonstrated AND backpressure proven
     // INCONCLUSIVE: no server-side backpressure reached (absorbed by kernel buffers) OR boundedness unknown
-    // §3.8: PASS only when all three conditions hold: backpressure proven, bounded memory, healthy degradation ok
+    // §3.7: PASS requires at least one client missed events and replay coverage >= 95%
     const boundedKnown = nchanMemoryBounded !== null
+    const anyClientMissed = perClientDetails.some(pc => pc.totalMissed > 0)
+    const replayCoverageOk = replayCoverage >= 0.95
     const passed = degradationOk && boundedOk && evidenceBackpressure && boundedKnown
+      && anyClientMissed && replayCoverageOk && perClientMediansAllAbove1s
 
     this.slowMetrics = {
       slow_clients: slowCount,
@@ -383,9 +448,15 @@ export class SlowConsumerScenario implements Scenario {
       `slow_read=${totalRead}`,
       `slow_backlog_growth=${backlogGrowth}`,
       `slow_read_rate=${slowReadRate.toFixed(2)}/s`,
+      `missed_required=${missedRequired} direction=live`,
+      `missed_live=${missedLive} direction=live`,
+      `missed_replay=${missedReplay} direction=replay`,
+      `replay_coverage=${(replayCoverage * 100).toFixed(1)}% direction=replay`,
+      `any_client_missed=${anyClientMissed}`,
       `median_event_interval=${medianInterval.toFixed(0)}ms`,
       `p95_event_interval=${p95Interval.toFixed(0)}ms`,
       `per_client_medians=[${perClientMedianIntervals.map((m) => m.toFixed(0)).join(",")}]ms`,
+      `per_client_all_above_1s=${perClientMediansAllAbove1s}`,
       `p95_before=${p95Before}ms`,
       `p95_with_slow=${p95During}ms`,
       `healthy_before_samples=${healthyBeforeHist.count}`,
@@ -399,6 +470,7 @@ export class SlowConsumerScenario implements Scenario {
       `nchan_mem_bounded=${nchanMemoryBounded === null ? "unknown" : nchanMemoryBounded ? "OK" : "FAIL"}`,
       `nchan_mem_samples=${nchanMemSamplesDuring.length}`,
       `bounded=${boundedOk ? "OK" : "FAIL"}`,
+      ...perClientDetails.map(d => d.detail),
     ].join(" ")
 
     ctx.log(`Slow consumer result: ${passed ? "PASS" : "FAIL"} (${detail})`)

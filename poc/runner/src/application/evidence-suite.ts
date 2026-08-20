@@ -213,6 +213,8 @@ export async function runSingleExperiment(
 
     // §3.9: Capture cgroup baseline at run start — cgroup counters are cumulative over
     // container lifetime; per-run deltas = end_snapshot - start_snapshot.
+    // §3.8.C: Wait for initial Nchan/Redis polls so baseline includes service metrics
+    await resourceMonitor.ready()
     const cgroupBaseline = resourceMonitor.snapshot()
 
     logger(`=== Run ${runIndex} starting (seed=${seed}) ===`)
@@ -369,6 +371,7 @@ export async function runSingleExperiment(
     aggregated.memory_current_bytes = resourceSnap.memory_current_bytes
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
+    aggregated.cpu_max_period = resourceSnap.cpu_max_period
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
     // §4.9: Wire Nchan container resource metrics — deltas for cumulative counters
     aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec !== null && cgroupBaseline.nchan_cpu_usage_usec !== null
@@ -392,13 +395,21 @@ export async function runSingleExperiment(
     // §3.8/§3.16: Nchan/Redis CPU percent peaks — evidence suite parity
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
-    // §3.9: Normalized CPU percent peaks — divide raw per-core % by core count
-    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / 100_000 : null
+    // §3.8: Normalized CPU percent peaks — each service uses its own CPU quota denominator
+    // Uses actual cpu.max period, not assumed 100000µs.
+    const cpuPeriod = resourceSnap.cpu_max_period ?? 100_000
+    const runnerCpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / cpuPeriod : null
+    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / cpuPeriod : null
+    const redisCpuLimitCores = resourceSnap.redis_cpu_percent_peak !== null
+      ? (resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / cpuPeriod : 2)
+      : null // §3.8: Redis frozen limit = 2 CPUs from compose (fallback when cgroup unavailable)
     const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
-    aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
+    aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, runnerCpuLimitCores)
     aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
-    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, cpuLimitCores)
-    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, cpuLimitCores)
+    // §3.8: Nchan CPU normalized by Nchan's own 4-CPU limit, NOT the runner's 8-CPU limit
+    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, nchanCpuLimitCores ?? 4)
+    // §3.8: Redis CPU normalized by Redis's own 2-CPU limit
+    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, redisCpuLimitCores)
     // §3.16: Phase histograms — evidence suite parity with single-run path
     const phaseHists = metrics.snapshotPhaseHistograms()
     aggregated.phase_histograms = phaseHists
@@ -506,11 +517,14 @@ export async function runSingleExperiment(
     const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
-    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight)
+    // §3.8.E: Campaign-level aggregate target for multi-shard 100k campaigns
+    const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1
+    const campaignConnectionsTarget = config.targetConnections * shardCount
 
-    // §3.2: Wire shard identity from environment
+    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight, campaignConnectionsTarget)
+
+    // §3.2: Wire shard identity from environment (SHARD_TOTAL is canonical, SHARD_COUNT is legacy)
     const shardId = parseInt(process.env.SHARD_ID ?? "0", 10) || 0
-    const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
     aggregated.shard_identity = {
       shard_id: shardId,
       shard_count: shardCount,
@@ -652,6 +666,11 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.reconnect_replay_received = runs.reduce((s, r) => s + r.aggregated.reconnect_replay_received, 0)
   aggregate.restart_replay_expected = runs.reduce((s, r) => s + r.aggregated.restart_replay_expected, 0)
   aggregate.restart_replay_received = runs.reduce((s, r) => s + r.aggregated.restart_replay_received, 0)
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  aggregate.literal_restart_expected = runs.reduce((s, r) => s + r.aggregated.literal_restart_expected, 0)
+  aggregate.literal_restart_received = runs.reduce((s, r) => s + r.aggregated.literal_restart_received, 0)
+  aggregate.cross_node_expected = runs.reduce((s, r) => s + r.aggregated.cross_node_expected, 0)
+  aggregate.cross_node_received = runs.reduce((s, r) => s + r.aggregated.cross_node_received, 0)
 
   // §BA: §6.32: For percentiles, pool streaming histograms and recompute
   aggregate.fan_out_latency_p95_ms = poolPercentileFromHistograms(runs, (r) => r.rawFanOutHistogram, 95)
@@ -689,6 +708,20 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.redis_cpu_percent_peak = anyRedisCpuNull
     ? null
     : Math.max(...runs.map((r) => r.aggregated.redis_cpu_percent_peak as number))
+  // §3.12.C: Nchan/Redis memory peaks must use max across runs, not inherit from first run via spread.
+  // null in ANY run means unavailable → campaign INCONCLUSIVE (same semantics as CPU peaks).
+  const anyNchanMemNull = runs.some((r) => r.aggregated.nchan_memory_mb_peak === null)
+  const anyRedisMemNull = runs.some((r) => r.aggregated.redis_memory_mb_peak === null)
+  aggregate.nchan_memory_mb_peak = anyNchanMemNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.nchan_memory_mb_peak as number))
+  aggregate.redis_memory_mb_peak = anyRedisMemNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.redis_memory_mb_peak as number))
+  const anyNchanMemPeakBytesNull = runs.some((r) => r.aggregated.nchan_memory_peak_bytes === null)
+  aggregate.nchan_memory_peak_bytes = anyNchanMemPeakBytesNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.nchan_memory_peak_bytes as number))
   // §3.9: Normalized CPU percent peaks — max across runs
   const anyResourceCpuNull = runs.some((r) => r.aggregated.resource_cpu_percent_peak === null)
   aggregate.resource_cpu_percent_peak = anyResourceCpuNull
@@ -703,6 +736,19 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.redis_resource_cpu_percent_peak = anyRedisResourceCpuNull
     ? null
     : Math.max(...runs.map((r) => r.aggregated.redis_resource_cpu_percent_peak as number))
+  // §3.12.C: Remaining resource peaks must use max across runs (not first-run inheritance via spread)
+  const anyMemPeakBytesNull = runs.some((r) => r.aggregated.memory_peak_bytes === null)
+  aggregate.memory_peak_bytes = anyMemPeakBytesNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.memory_peak_bytes as number))
+  const anyMemCurrentNull = runs.some((r) => r.aggregated.memory_current_bytes === null)
+  aggregate.memory_current_bytes = anyMemCurrentNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.memory_current_bytes as number))
+  const anyRedisClientsNull = runs.some((r) => r.aggregated.redis_connected_clients_peak === null)
+  aggregate.redis_connected_clients_peak = anyRedisClientsNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.redis_connected_clients_peak as number))
   // §3.23: Latency invalid/overflow counts sum across runs
   aggregate.latency_invalid_count = runs.reduce((s, r) => s + r.aggregated.latency_invalid_count, 0)
   aggregate.latency_overflow_count = runs.reduce((s, r) => s + r.aggregated.latency_overflow_count, 0)

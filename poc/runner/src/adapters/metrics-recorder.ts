@@ -49,6 +49,11 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private reconnectReplayReceived = 0
   private restartReplayExpected = 0
   private restartReplayReceived = 0
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  private literalRestartExpected = 0
+  private literalRestartReceived = 0
+  private crossNodeExpected = 0
+  private crossNodeReceived = 0
   // §4.17: Disconnect attribution
   private deliberateDisconnects = 0
   private unexpectedClientDisconnects = 0
@@ -149,6 +154,11 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementReconnectReplayReceived(count: number): void { this.reconnectReplayReceived += count }
   incrementRestartReplayExpected(count: number): void { this.restartReplayExpected += count }
   incrementRestartReplayReceived(count: number): void { this.restartReplayReceived += count }
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  incrementLiteralRestartExpected(count: number): void { this.literalRestartExpected += count }
+  incrementLiteralRestartReceived(count: number): void { this.literalRestartReceived += count }
+  incrementCrossNodeExpected(count: number): void { this.crossNodeExpected += count }
+  incrementCrossNodeReceived(count: number): void { this.crossNodeReceived += count }
 
   // §4.17: Disconnect attribution
   incrementDeliberateDisconnects(): void { this.deliberateDisconnects++ }
@@ -159,6 +169,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
 
   // §3.5: Publisher scheduler lag
   recordSchedulerLag(ms: number): void { this.schedulerLagHistogram.record(ms) }
+
+  // §3.7: Per-client gauge metrics — recorded for machine-readable output
+  gauge(_name: string, _value: number): void { /* gauge values are recorded, not accumulated */ }
 
   // §6.32: Expose histograms for final percentile computation
   getFanOutHistogram(): StreamingHistogram { return this.fanOutHistogram }
@@ -204,6 +217,11 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       reconnect_replay_received: this.reconnectReplayReceived,
       restart_replay_expected: this.restartReplayExpected,
       restart_replay_received: this.restartReplayReceived,
+      // §3.9: Separated literal restart and cross-node replacement metrics
+      literal_restart_expected: this.literalRestartExpected,
+      literal_restart_received: this.literalRestartReceived,
+      cross_node_expected: this.crossNodeExpected,
+      cross_node_received: this.crossNodeReceived,
       // §4.17: Disconnect attribution
       deliberate_disconnects: this.deliberateDisconnects,
       unexpected_client_disconnects: this.unexpectedClientDisconnects,

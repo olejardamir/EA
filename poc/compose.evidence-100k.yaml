@@ -99,8 +99,14 @@ services:
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      SHARD_INDEX: "0"
-      SHARD_COUNT: "4"
+      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
+      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
+      RUN_MODE: "single"
+      SHARD_ID: "0"
+      SHARD_TOTAL: "4"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      NCHAN_CPU_MAX_QUOTA: "400000"
+      REDIS_CPU_MAX_QUOTA: "200000"
     deploy:
       resources:
         limits:
@@ -135,8 +141,14 @@ services:
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      SHARD_INDEX: "1"
-      SHARD_COUNT: "4"
+      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
+      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
+      RUN_MODE: "single"
+      SHARD_ID: "1"
+      SHARD_TOTAL: "4"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      NCHAN_CPU_MAX_QUOTA: "400000"
+      REDIS_CPU_MAX_QUOTA: "200000"
     deploy:
       resources:
         limits:
@@ -171,8 +183,14 @@ services:
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      SHARD_INDEX: "2"
-      SHARD_COUNT: "4"
+      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
+      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
+      RUN_MODE: "single"
+      SHARD_ID: "2"
+      SHARD_TOTAL: "4"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      NCHAN_CPU_MAX_QUOTA: "400000"
+      REDIS_CPU_MAX_QUOTA: "200000"
     deploy:
       resources:
         limits:
@@ -207,8 +225,14 @@ services:
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      SHARD_INDEX: "3"
-      SHARD_COUNT: "4"
+      # §3.3: 100k shards run single experiments (global coordinator not yet implemented)
+      # Do NOT set RUN_MODE=evidence — that would run independent 3–8-run campaigns per shard
+      RUN_MODE: "single"
+      SHARD_ID: "3"
+      SHARD_TOTAL: "4"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:-unknown}"
+      NCHAN_CPU_MAX_QUOTA: "400000"
+      REDIS_CPU_MAX_QUOTA: "200000"
     deploy:
       resources:
         limits:

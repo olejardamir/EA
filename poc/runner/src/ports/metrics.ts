@@ -35,6 +35,11 @@ export interface MetricsRecorder {
   incrementReconnectReplayReceived(count: number): void
   incrementRestartReplayExpected(count: number): void
   incrementRestartReplayReceived(count: number): void
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  incrementLiteralRestartExpected(count: number): void
+  incrementLiteralRestartReceived(count: number): void
+  incrementCrossNodeExpected(count: number): void
+  incrementCrossNodeReceived(count: number): void
   // §4.17: Disconnect attribution
   incrementDeliberateDisconnects(): void
   incrementUnexpectedClientDisconnects(): void
@@ -43,6 +48,8 @@ export interface MetricsRecorder {
   incrementShutdownCleanup(): void
   // §3.5: Event-publisher scheduler lag
   recordSchedulerLag(ms: number): void
+  // §3.7: Per-client gauge metrics
+  gauge(name: string, value: number): void
   // §4.25: Per-phase histogram isolation
   beginPhase(name: string): void
   endPhase(): void
@@ -89,6 +96,11 @@ export interface MetricsSnapshot {
   reconnect_replay_received: number
   restart_replay_expected: number
   restart_replay_received: number
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  literal_restart_expected: number
+  literal_restart_received: number
+  cross_node_expected: number
+  cross_node_received: number
   // §4.17: Disconnect attribution
   deliberate_disconnects: number
   unexpected_client_disconnects: number

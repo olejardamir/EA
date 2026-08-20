@@ -12,6 +12,50 @@ function readCgroupFile(path: string): string | null {
   }
 }
 
+// §3.8A: Parse cgroup v2 cpu.max — handles "max" (unlimited) and numeric quota
+function readCpuMax(raw: string): { quota: number | null; period: number } {
+  const parts = raw.split(" ")
+  if (parts[0] === "max" || parts[0] === "MAX") {
+    return { quota: null, period: parseInt(parts[1], 10) || 100_000 }
+  }
+  const quota = parseInt(parts[0], 10)
+  const period = parseInt(parts[1], 10) || 100_000
+  if (isNaN(quota)) return { quota: null, period }
+  return { quota, period }
+}
+
+// §3.8C: Detect host CPU count — prefers container effective CPUs when limited by cgroup
+function detectHostCpus(): number {
+  try {
+    // §3.8: Prefer container effective CPUs when limited by cgroup
+    const raw = readCgroupFile("/sys/fs/cgroup/cpu.max")
+    if (raw) {
+      const cpuMax = readCpuMax(raw)
+      if (cpuMax.quota !== null && cpuMax.quota > 0) {
+        return Math.max(1, Math.round(cpuMax.quota / cpuMax.period))
+      }
+    }
+  } catch {}
+  // Fall back to /proc/cpuinfo host count
+  try {
+    const cpuinfo = fs.readFileSync("/proc/cpuinfo", "utf8")
+    const matches = cpuinfo.match(/^processor\s*:\s*\d+/gm)
+    if (matches && matches.length > 0) return matches.length
+  } catch {}
+  return 2
+}
+
+// §3.8F: Read thread count from cgroup.threads — guards against negative values
+function readThreadCount(): number | null {
+  try {
+    const raw = parseInt(fs.readFileSync("/sys/fs/cgroup/cgroup.threads", "utf8").trim(), 10)
+    if (isNaN(raw) || raw < 0) return 0
+    return raw
+  } catch {
+    return null
+  }
+}
+
 function redisInfo(redisUrl: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = new URL(redisUrl)
@@ -80,6 +124,7 @@ function fetchNchanMetrics(controlUrl: string): Promise<{
   cpu_throttled_usec: number | null
   memory_oom_events: number | null
   memory_oom_kill_events: number | null
+  cpu_max_quota: number | null  // §3.8: Nchan container cpu.max quota for normalization
 } | null> {
   return new Promise((resolve) => {
     try {
@@ -146,6 +191,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private nchanMemoryOomEvents: number | null = null
   private nchanMemoryOomKillEvents: number | null = null
   private redisConnectedClientsPeak: number | null = null
+  // §3.8: Per-service CPU quotas for normalization
+  private nchanCpuMaxQuota: number | null = null
+  private redisCpuMaxQuota: number | null = null
   // §3.8: Nchan CPU percent tracking
   private nchanCpuPercentPeak: number | null = null
   private prevNchanCpuUsageUsec: number | null = null
@@ -171,14 +219,29 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private cgroupMemoryOomEvents = 0
   private cgroupMemoryOomKillEvents = 0
   private cgroupCpuMaxQuota: number | null = null
+  private cgroupCpuMaxPeriod: number | null = null  // §3.8: cpu.max period (typically 100000µs)
   private cgroupMemoryMaxBytes: number | null = null
+  private cgroupThreadCount: number | null = null  // §3.8F: thread count from cgroup.threads
 
   private redisUrl?: string
   private nchanControlUrl?: string
+  // §3.8.C: Track initial poll completion so baseline snapshot waits for Nchan/Redis data
+  private _ready: Promise<void>
 
   constructor(redisUrl?: string, nchanControlUrl?: string) {
     this.redisUrl = redisUrl
     this.nchanControlUrl = nchanControlUrl
+    // §3.8.A: Per-service CPU quotas — read env vars as fallback when control server unavailable.
+    // Compose files pass NCHAN_CPU_MAX_QUOTA and REDIS_CPU_MAX_QUOTA.
+    const envNchanQuota = parseInt(process.env.NCHAN_CPU_MAX_QUOTA ?? "", 10)
+    if (!isNaN(envNchanQuota) && envNchanQuota > 0) this.nchanCpuMaxQuota = envNchanQuota
+    const envRedisQuota = parseInt(process.env.REDIS_CPU_MAX_QUOTA ?? "", 10)
+    if (!isNaN(envRedisQuota) && envRedisQuota > 0) this.redisCpuMaxQuota = envRedisQuota
+    // §3.8.C: Run initial polls and wait for them before the first snapshot.
+    const polls: Promise<void>[] = []
+    if (redisUrl) polls.push(this.pollRedisMemory(redisUrl))
+    if (nchanControlUrl) polls.push(this.pollNchanMetrics(nchanControlUrl))
+    this._ready = Promise.all(polls).then(() => {})
     if (redisUrl || nchanControlUrl) {
       this.pollTimer = setInterval(() => {
         if (this.redisUrl) this.pollRedisMemory(this.redisUrl)
@@ -275,6 +338,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
         if (metrics.memory_oom_kill_events !== null) {
           this.nchanMemoryOomKillEvents = metrics.memory_oom_kill_events
         }
+        if (metrics.cpu_max_quota !== null) {
+          this.nchanCpuMaxQuota = metrics.cpu_max_quota
+        }
       }
     } catch {
       // Nchan unavailable — leave metrics as-is
@@ -346,13 +412,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     // cpu.max — either "max 100000" (unlimited) or "50000 100000" (50ms per 100ms period)
     const cpuMax = readCgroupFile("/sys/fs/cgroup/cpu.max")
     if (cpuMax) {
-      const parts = cpuMax.split(" ")
-      if (parts[0] === "max") {
-        this.cgroupCpuMaxQuota = null // unlimited
-      } else {
-        const quota = parseInt(parts[0], 10)
-        if (!isNaN(quota)) this.cgroupCpuMaxQuota = quota
-      }
+      const parsed = readCpuMax(cpuMax)
+      this.cgroupCpuMaxQuota = parsed.quota
+      this.cgroupCpuMaxPeriod = parsed.period
     }
 
     // memory.max — single integer (bytes) or "max" (unlimited)
@@ -361,6 +423,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       const v = parseInt(memMax, 10)
       if (!isNaN(v)) this.cgroupMemoryMaxBytes = v
     }
+
+    // §3.8F: cgroup.threads — thread count (may not exist)
+    this.cgroupThreadCount = readThreadCount()
   }
 
   measureCpu(): void {
@@ -418,6 +483,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       memory_oom_events: this.cgroupMemoryOomEvents,
       memory_oom_kill_events: this.cgroupMemoryOomKillEvents,
       cpu_max_quota: this.cgroupCpuMaxQuota,
+      cpu_max_period: this.cgroupCpuMaxPeriod,
       memory_max_bytes: this.cgroupMemoryMaxBytes,
       // §4.9: Nchan container resource metrics
       nchan_cpu_usage_usec: this.nchanCpuUsageUsec,
@@ -432,6 +498,15 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       // §3.8: Nchan/Redis CPU percent peaks
       nchan_cpu_percent_peak: this.nchanCpuPercentPeak,
       redis_cpu_percent_peak: this.redisCpuPercentPeak,
+      // §3.8: Per-service CPU quotas for normalization
+      nchan_cpu_max_quota: this.nchanCpuMaxQuota,
+      redis_cpu_max_quota: this.redisCpuMaxQuota,
+      // §3.8E: CPU nanoseconds — derived from cpu_usage_usec
+      cpu_ns: this.cgroupCpuUsageUsec > 0
+        ? BigInt(this.cgroupCpuUsageUsec) * 1_000_000n
+        : null,
+      // §3.8F: Thread count from cgroup.threads
+      thread_count: this.cgroupThreadCount,
     }
   }
 
@@ -464,6 +539,11 @@ export class CgroupResourceMonitor implements ResourceMonitor {
         resolve(null)
       }
     })
+  }
+
+  // §3.8.C: Wait for initial Nchan/Redis polls to complete before baseline snapshot
+  ready(): Promise<void> {
+    return this._ready
   }
 
   dispose(): void {

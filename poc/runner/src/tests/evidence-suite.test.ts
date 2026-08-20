@@ -85,6 +85,7 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     memory_current_bytes: null,
     memory_peak_bytes: null,
     cpu_max_quota: null,
+    cpu_max_period: null,
     memory_max_bytes: null,
     generator_backlog_peak: 0,
     publisher_attempts: 100,
@@ -108,6 +109,10 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     reconnect_replay_received: 0,
     restart_replay_expected: 0,
     restart_replay_received: 0,
+    literal_restart_expected: 0,
+    literal_restart_received: 0,
+    cross_node_expected: 0,
+    cross_node_received: 0,
     slow_consumer_metrics: null,
     deliberate_disconnects: 0,
     unexpected_client_disconnects: 0,
@@ -548,6 +553,25 @@ describe("Evidence Suite §6.37", () => {
       // The raw samples have a different p95 than the pre-aggregated one
       const pooledP95 = run.rawFanOutHistogram.p95()
       assert.equal(pooledP95, 140) // different from aggregated p95 of 100
+    })
+  })
+
+  // §3.3: Config assertion — evidence profile → runMode == evidence, smoke → single
+  describe("§3.3: Run mode config assertions", () => {
+    it("RUN_MODE=evidence is set in compose.evidence.yaml", () => {
+      // Verify that the evidence compose file sets RUN_MODE=evidence
+      const yaml = fs.readFileSync(path.join(import.meta.dirname, "../../../compose.evidence.yaml"), "utf-8")
+      assert.ok(yaml.includes('RUN_MODE: "evidence"'), "compose.evidence.yaml must set RUN_MODE=evidence")
+    })
+
+    it("100k shards use RUN_MODE=single (no independent campaigns)", () => {
+      // §3.3: 100k shards must NOT run independent evidence campaigns
+      // until a global coordinator is implemented
+      const yaml = fs.readFileSync(path.join(import.meta.dirname, "../../../compose.evidence-100k.yaml"), "utf-8")
+      assert.ok(
+        yaml.includes('RUN_MODE: "single"'),
+        "compose.evidence-100k.yaml shards must use RUN_MODE=single (not evidence) until global coordinator exists"
+      )
     })
   })
 })

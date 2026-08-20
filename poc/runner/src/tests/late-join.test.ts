@@ -15,7 +15,7 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
       async publishPrefill(_ch: string, count: number) {
         head += count
-        return { published: count, firstSeq: head - count + 1, lastSeq: head, frozenState: { seq: head, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+        return { published: count, firstSeq: head - count + 1, lastSeq: head, frozenState: { seq: head, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } }
       },
     } as unknown as MatchEventPublisher,
     eventStream: overrides.eventStream ?? { async connect() { return {} as Subscription } },
@@ -28,6 +28,7 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       incrementConnectionsAttempted() {}, incrementConnectionsEstablished() {},
       incrementConnectionFailures() {}, incrementConnectionsDropped() {},
       setActiveConnections() {}, incrementLatencyInvalid() {}, incrementLatencyOverflow() {},
+      gauge() {},
       setBacklog() {}, incrementSseParseErrors() {}, incrementJsonParseErrors() {},
       incrementInvalidTimestampCount() {},
       incrementLiveExpectedDeliveries() {},
@@ -38,6 +39,10 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       incrementReconnectReplayReceived() {},
       incrementRestartReplayExpected() {},
       incrementRestartReplayReceived() {},
+      incrementLiteralRestartExpected() {},
+      incrementLiteralRestartReceived() {},
+      incrementCrossNodeExpected() {},
+      incrementCrossNodeReceived() {},
       incrementDeliberateDisconnects() {},
       incrementUnexpectedClientDisconnects() {},
       incrementServerInitiatedDisconnects() {},
@@ -61,6 +66,8 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
           late_join_history_expected: 0, late_join_history_received: 0,
           reconnect_replay_expected: 0, reconnect_replay_received: 0,
           restart_replay_expected: 0, restart_replay_received: 0,
+          literal_restart_expected: 0, literal_restart_received: 0,
+          cross_node_expected: 0, cross_node_received: 0,
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           schema_validation_errors: 0, missing_transport_id: 0,
@@ -124,7 +131,7 @@ describe("LateJoinScenario", () => {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
         updateHeadState(_m: string, s: number, _sc: any, _ck: any) { publishCount = Math.max(publishCount, s) },
-        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } : null },
+        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } : null },
       },
       publisher: {
         start() {}, stop() {},
@@ -133,7 +140,7 @@ describe("LateJoinScenario", () => {
           publishCount += count
           const firstSeq = publishCount - count + 1
           const lastSeq = publishCount
-          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } }
         },
       } as any,
       eventStream: {
@@ -164,7 +171,7 @@ describe("LateJoinScenario", () => {
               canonical_seq: seq,
               event_type: "goal",
               score: { home: 0, away: 0 },
-              clock: { period: 1, elapsed: 0 },
+              clock: { period: "1H", elapsed_seconds: 0 },
               publish_timestamp: new Date().toISOString(),
             }),
           },
@@ -193,7 +200,7 @@ describe("LateJoinScenario", () => {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
         async publishPrefill(_ch: string, count: number) {
-          return { published: count, firstSeq: 1, lastSeq: count, frozenState: { seq: count, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+          return { published: count, firstSeq: 1, lastSeq: count, frozenState: { seq: count, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } }
         },
       } as any,
       eventStream: {
@@ -214,7 +221,7 @@ describe("LateJoinScenario", () => {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
         updateHeadState(_m: string, s: number, _sc: any, _ck: any) { publishCount = Math.max(publishCount, s) },
-        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } : null },
+        getHeadState() { return publishCount > 0 ? { seq: publishCount, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } : null },
       },
       publisher: {
         start() {}, stop() {},
@@ -223,7 +230,7 @@ describe("LateJoinScenario", () => {
           publishCount += count
           const firstSeq = publishCount - count + 1
           const lastSeq = publishCount
-          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: 1, elapsed: 0 } } }
+          return { published: count, firstSeq, lastSeq, frozenState: { seq: lastSeq, score: { home: 0, away: 0 }, clock: { period: "1H", elapsed: 0 } } }
         },
       } as any,
       eventStream: {
@@ -252,7 +259,7 @@ describe("LateJoinScenario", () => {
               canonical_seq: seq,
               event_type: "goal",
               score: { home: 0, away: 0 },
-              clock: { period: 1, elapsed: 0 },
+              clock: { period: "1H", elapsed_seconds: 0 },
               publish_timestamp: new Date().toISOString(),
             }),
           },

@@ -14,10 +14,13 @@ const ESTIMATED_EVENTS_PER_SEC = 60
 // The evidence-suite orchestrator (§6.37) may run multiple late-join cohorts
 // across repeated runs to build a meaningful sample population.
 
-// §4.1: Reconstructed state from history replay
+// §4.1/§3.1.A: Reconstructed state from history replay
+// Uses the frozen application event schema: clock.period is a string ("1H"/"2H"),
+// clock.elapsed_seconds is a number. The head tracker stores numeric period (1/2) but
+// replay comparison must use the raw event schema.
 interface ReconstructedState {
   score: { home: number; away: number }
-  clock: { period: number; elapsed: number }
+  clock: { period: string; elapsed_seconds: number }
 }
 
 export class LateJoinScenario implements Scenario {
@@ -104,12 +107,14 @@ export class LateJoinScenario implements Scenario {
             if (receivedFirstSeq === -1) receivedFirstSeq = data.canonical_seq
             receivedLastSeq = data.canonical_seq
 
-            // §3.1: Reconstruct score/clock from replay (no fallback defaults)
+            // §3.1.A: Reconstruct score/clock from replay using the actual event schema.
+            // clock.period is a string ("1H"/"2H"), clock.elapsed_seconds is a number.
+            // No fallback defaults — null means reconstruction failed.
             if (data.score && typeof data.score.home === "number" && typeof data.score.away === "number"
-              && data.clock && typeof data.clock.period === "number" && typeof data.clock.elapsed === "number") {
+              && data.clock && typeof data.clock.period === "string" && typeof data.clock.elapsed_seconds === "number") {
               reconstructedState = {
                 score: { home: data.score.home, away: data.score.away },
-                clock: { period: data.clock.period, elapsed: data.clock.elapsed },
+                clock: { period: data.clock.period, elapsed_seconds: data.clock.elapsed_seconds },
               }
             }
 
@@ -128,13 +133,20 @@ export class LateJoinScenario implements Scenario {
       // §3.1: Step 8 — Detect missing, duplicate, and out-of-order canonical sequences
       const { missing, duplicates, outOfOrder } = this.validateHistory(historyEvents)
 
-      // §3.1: Step 9 — Compare reconstructed state with the frozen committed state snapshot
+      // §3.1: Step 9 — Detect missing prefix: received first must match expected first
+      const missingPrefix = receivedFirstSeq !== expectedFirstSeq
+      const missingPrefixCount = missingPrefix ? expectedFirstSeq - Math.min(receivedFirstSeq, expectedFirstSeq) : 0
+
+      // §3.1: Step 10 — Compare reconstructed state with the frozen committed state snapshot
       // No fallback: if the frozen state is null (publisher never committed), comparison fails.
       const scoreMatches = this.compareScore(reconstructedState, frozenState)
       const clockMatches = this.compareClock(reconstructedState, frozenState)
       const headMatches = receivedLastSeq >= expectedLastSeq
 
-      // §3.1: Step 10 — Wire delivery accounting (expected is independent of received)
+      // §3.1.C: Missing replay prefix detection — received first seq must match expected first seq
+      const prefixMatches = receivedFirstSeq === expectedFirstSeq
+
+      // §3.1: Step 11 — Wire delivery accounting (expected is independent of received)
       ctx.metrics.incrementLateJoinHistoryExpected(historyExpected)
       ctx.metrics.incrementLateJoinHistoryReceived(historyEvents.length)
 
@@ -148,17 +160,30 @@ export class LateJoinScenario implements Scenario {
         `missing_history_sequences=${missing}`,
         `duplicate_history_sequences=${duplicates}`,
         `out_of_order_history_sequences=${outOfOrder}`,
+        `missing_prefix=${missingPrefix}`,
+        `prefix_matches=${prefixMatches}`,
         `catch_up_ms=${result.duration}`,
         `reconstructed_score_matches=${scoreMatches}`,
         `reconstructed_clock_matches=${clockMatches}`,
         `reconstructed_head_matches=${headMatches}`,
+        `count_matches=${historyEvents.length === historyExpected}`,
         `buffer_capacity=${NCHAN_BUFFER_CAPACITY}`,
         `live_arrival_margin=${liveArrivalMargin}`,
         `prefill_events=${prefillResult.published}`,
         `prefill_ms=${publishDuration}`,
       ].join(" ")
 
-      if (result.caughtUp && missing === 0 && duplicates === 0 && outOfOrder === 0) {
+      // §3.1.B-F: PASS requires ALL of:
+      // - caughtUp within timeout
+      // - no missing/duplicate/out-of-order sequences
+      // - no missing prefix (received_first == expected_first)
+      // - expected count == received count
+      // - reconstruction all matches (score, clock, head)
+      // - catch_up_ms <= 2000
+      const countMatches = historyEvents.length === historyExpected
+
+      if (result.caughtUp && missing === 0 && duplicates === 0 && outOfOrder === 0
+        && scoreMatches && clockMatches && headMatches && prefixMatches && countMatches) {
         ctx.log(`§3.1 Late-join: PASS (${detail})`)
         return { name: this.name, passed: result.duration <= 2000, detail }
       }
@@ -213,22 +238,26 @@ export class LateJoinScenario implements Scenario {
 
   // §3.1: Compare reconstructed score with the exact frozen state snapshot
   // No fallback: null frozenState means publisher never committed → comparison fails.
+  // The frozen state from head tracker uses { period: string; elapsed: number }.
+  // The reconstructed state from events uses { period: string; elapsed_seconds: number }.
   private compareScore(
     reconstructed: ReconstructedState | null,
-    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null,
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null,
   ): boolean {
     if (!reconstructed || !frozenState) return false
     return reconstructed.score.home === frozenState.score.home
       && reconstructed.score.away === frozenState.score.away
   }
 
-  // §3.1: Compare reconstructed clock with the exact frozen state snapshot
+  // §3.1.A: Compare reconstructed clock with the frozen state snapshot.
+  // Frozen state: { period: string ("1H"/"2H"), elapsed: number }
+  // Reconstructed: { period: string ("1H" or "2H"), elapsed_seconds: number }
   private compareClock(
     reconstructed: ReconstructedState | null,
-    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null,
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null,
   ): boolean {
     if (!reconstructed || !frozenState) return false
     return reconstructed.clock.period === frozenState.clock.period
-      && reconstructed.clock.elapsed === frozenState.clock.elapsed
+      && reconstructed.clock.elapsed_seconds === frozenState.clock.elapsed
   }
 }

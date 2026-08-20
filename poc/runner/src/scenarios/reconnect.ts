@@ -24,6 +24,9 @@ export class ReconnectScenario implements Scenario {
     const cohortSize = Math.max(1, Math.floor(all.length * 0.1))
     const cohort = all.slice(0, cohortSize)
 
+    // §3.5.F: Capture active population BEFORE removing cohort — true pre-disconnect population
+    const activeBeforeDisconnect = this.pool.size
+
     // §3.4/§3.5: Save state BEFORE disconnect — frozen at disconnect boundary
     const saved = cohort.map((entry) => ({
       entry,
@@ -35,6 +38,7 @@ export class ReconnectScenario implements Scenario {
 
     ctx.log(`Reconnect cohort: ${cohortSize}/${all.length} connections`)
     ctx.log(`Pre-disconnect heads: ${saved.map((s) => `${s.entry.matchId}=${s.headBefore}`).join(", ")}`)
+    ctx.log(`active_before_disconnect=${activeBeforeDisconnect}`)
 
     // §3.4: Remove cohort from active pool BEFORE closing streams
     for (const s of saved) {
@@ -43,16 +47,18 @@ export class ReconnectScenario implements Scenario {
     }
     ctx.log(`Disconnected ${cohortSize} connections and removed from active pool`)
 
-    // §3.5: Freeze target head at disconnect boundary — independent of subsequent events
-    const targetHeadAtDisconnect = new Map<string, number>()
-    for (const s of saved) {
-      targetHeadAtDisconnect.set(s.entry.matchId, ctx.headTracker.getHead(s.entry.matchId))
-    }
+    const activeDuringDisconnect = this.pool.size
+    ctx.log(`active_during_disconnect=${activeDuringDisconnect}`)
 
-    const activeAtScenarioStart = this.pool.size
-    ctx.log(`active_at_scenario_start=${activeAtScenarioStart}`)
-
+    // §3.5.A: Wait for the disconnected publication window — publisher continues during this time
     await ctx.sleep(2000)
+
+    // §3.5.A: Freeze target head AFTER the disconnected publication window
+    // This includes the events that are the main point of the reconnect test
+    const targetHeadAtReconnectStart = new Map<string, number>()
+    for (const s of saved) {
+      targetHeadAtReconnectStart.set(s.entry.matchId, ctx.headTracker.getHead(s.entry.matchId))
+    }
 
     const eventsDuringDisconnect = saved.map((s) => {
       const headAfter = ctx.headTracker.getHead(s.entry.matchId)
@@ -62,8 +68,9 @@ export class ReconnectScenario implements Scenario {
     ctx.log(`Events published during disconnect window: ${eventsDuringDisconnect}`)
 
     // §3.5: Per-client frozen expected replay — independent of received data
+    // Expected = events between saved cursor and head at reconnect start (after disconnected window)
     const perClientExpected = saved.map((s) => {
-      const targetHead = targetHeadAtDisconnect.get(s.entry.matchId) ?? s.headBefore
+      const targetHead = targetHeadAtReconnectStart.get(s.entry.matchId) ?? s.headBefore
       const expectedFirst = (s.trackerLastSeq ?? 0) + 1
       const expectedLast = targetHead
       const expectedCount = Math.max(0, expectedLast - expectedFirst + 1)
@@ -76,6 +83,8 @@ export class ReconnectScenario implements Scenario {
         expectedLast,
         expectedCount,
         caughtUpAt: 0 as number,
+        replayReceived: 0 as number,
+        firstReceivedSeq: null as number | null,
       }
     })
 
@@ -90,9 +99,26 @@ export class ReconnectScenario implements Scenario {
         s.entry.subscription = subscription
         s.entry.mode = "reconnect"
 
+        // §3.5.B: Track replay received per-client, stop counting at frozen target
+        let replayStopped = false
         subscription.onEvent((evt) => {
           if (!this.pool.running) return
           if (evt.type === "message") {
+            if (!replayStopped && pc) {
+              try {
+                const data = JSON.parse(evt.event.data)
+                if (typeof data.canonical_seq === "number") {
+                  const seq = data.canonical_seq as number
+                  if (pc.firstReceivedSeq === null) pc.firstReceivedSeq = seq
+                  // §3.5.B: Only count replay frames up to the frozen target
+                  if (seq <= pc.targetHead) {
+                    pc.replayReceived++
+                  } else {
+                    replayStopped = true
+                  }
+                }
+              } catch {}
+            }
             // §3.5: Pass transport ID through
             this.pool.handleMessage(s.entry, evt.event.data, evt.event.id)
           } else if (evt.type === "error") {
@@ -146,26 +172,50 @@ export class ReconnectScenario implements Scenario {
 
     // §3.5: Replay accounting from frozen expected, not received
     let totalExpectedReplay = 0
+    let totalReceivedReplay = 0
+    let allReconnectedCount = 0
+    let allReachedTarget = 0
+    let missingPrefixCount = 0
+
     for (const pc of perClientExpected) {
       totalExpectedReplay += pc.expectedCount
-    }
-
-    let cohortReplayReceived = 0
-    for (const ns of newSubscriptions) {
-      cohortReplayReceived += ns.entry.tracker.totalReceived - ns.saved.trackerReceivedBefore
+      totalReceivedReplay += pc.replayReceived
+      allReconnectedCount++
+      if (pc.replayReceived >= pc.expectedCount) allReachedTarget++
+      // §3.5.E: Missing prefix detection
+      if (pc.expectedFirst > 0 && pc.firstReceivedSeq !== null && pc.firstReceivedSeq !== pc.expectedFirst) {
+        missingPrefixCount++
+      }
     }
 
     ctx.metrics.incrementReconnectReplayExpected(totalExpectedReplay)
-    ctx.metrics.incrementReconnectReplayReceived(cohortReplayReceived)
+    ctx.metrics.incrementReconnectReplayReceived(totalReceivedReplay)
 
     const avgCatchUpMs = perClientExpected.reduce((s, p) => s + p.caughtUpAt, 0) / perClientExpected.length
     const maxTargetHead = Math.max(...perClientExpected.map((p) => p.targetHead))
 
     const snap = ctx.metrics.snapshot()
+
+    // §3.5.C-F: PASS requires ALL of:
+    // - no sequence tracker gaps/duplicates/order violations
+    // - events were published during disconnect window
+    // - all intended clients reconnected
+    // - all intended clients reached frozen target
+    // - expected replay count == received replay count (per frozen target range)
+    // - no missing prefix
+    const allClientsReconnected = allReconnectedCount === cohortSize
+    const allClientsCaughtUp = allReachedTarget === cohortSize
+    const replayCountMatch = totalReceivedReplay === totalExpectedReplay
+    const noMissingPrefix = missingPrefixCount === 0
+
     const passed = snap.reconnect_gaps === 0 &&
       snap.reconnect_duplicates === 0 &&
       snap.reconnect_order_violations === 0 &&
-      eventsDuringDisconnect > 0
+      eventsDuringDisconnect > 0 &&
+      allClientsReconnected &&
+      allClientsCaughtUp &&
+      replayCountMatch &&
+      noMissingPrefix
 
     const detail = [
       `gaps=${snap.reconnect_gaps}`,
@@ -173,20 +223,27 @@ export class ReconnectScenario implements Scenario {
       `ooo=${snap.reconnect_order_violations}`,
       `events_during_disconnect=${eventsDuringDisconnect}`,
       `reconnected=${newSubscriptions.length}/${cohortSize}`,
+      `all_reconnected=${allClientsReconnected}`,
+      `all_reached_target=${allClientsCaughtUp}`,
       `reconnect_expected=${totalExpectedReplay}`,
-      `reconnect_received=${cohortReplayReceived}`,
+      `reconnect_received=${totalReceivedReplay}`,
+      `replay_count_match=${replayCountMatch}`,
+      `missing_prefix_count=${missingPrefixCount}`,
       `reconnect_target_head=${maxTargetHead}`,
       `reconnect_caught_up_ms=${Math.round(avgCatchUpMs)}`,
-      `active_at_scenario_start=${activeAtScenarioStart}`,
+      `active_before_disconnect=${activeBeforeDisconnect}`,
+      `active_min_during_disconnect=${activeDuringDisconnect}`,
+      `active_after_reconnect=${activeAfterReconnect}`,
       `active_at_scenario_end=${activeAtScenarioEnd}`,
-      `active_peak=${Math.max(activeAtScenarioStart, activeAfterReconnect)}`,
+      `active_peak=${Math.max(activeBeforeDisconnect, activeAfterReconnect)}`,
     ].join(" ")
 
     ctx.log(`Reconnect result: ${passed ? "PASS" : "FAIL"} (${detail})`)
     // §3.15: Write active concurrency to context for machine-readable output
+    // §3.5.F: Use true pre-disconnect population for active_start
     ctx._reconnectHealth = {
-      active_start: activeAtScenarioStart,
-      active_peak: Math.max(activeAtScenarioStart, activeAfterReconnect),
+      active_start: activeBeforeDisconnect,
+      active_peak: Math.max(activeBeforeDisconnect, activeAfterReconnect),
       active_end: activeAtScenarioEnd,
     }
     return { name: this.name, passed, detail }

@@ -28,7 +28,8 @@ import type { ScenarioContext } from "./scenarios/scenario.js"
 function getGitCommitSha(): string | null {
   // §3.15: Check environment variable first (set via build ARG or Compose)
   const envSha = process.env.GIT_COMMIT_SHA
-  if (envSha && envSha.length >= 7) return envSha
+  // §3.11.A: Reject non-hex values (e.g. "unknown") — only accept valid SHA-256/SHA-1 prefixes
+  if (envSha && /^[0-9a-f]{7,40}$/i.test(envSha)) return envSha
   try {
     return execSync("git rev-parse HEAD", { encoding: "utf-8", timeout: 2000 }).trim()
   } catch {
@@ -250,6 +251,8 @@ async function main(): Promise<void> {
 
     // §3.9: Capture cgroup baseline at run start — cgroup counters are cumulative over
     // container lifetime; per-run deltas = end_snapshot - start_snapshot.
+    // §3.8.C: Wait for initial Nchan/Redis polls so baseline includes service metrics
+    await resourceMonitor.ready()
     const cgroupBaseline = resourceMonitor.snapshot()
 
     // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
@@ -386,7 +389,7 @@ async function main(): Promise<void> {
     aggregated.run_count = 1
     // §3.2: Shard identity — detected from environment variables
     const shardId = parseInt(process.env.SHARD_ID ?? "0", 10) || 0
-    const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
+    const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1
     aggregated.shard_identity = {
       shard_id: shardId,
       shard_count: shardCount,
@@ -436,8 +439,11 @@ async function main(): Promise<void> {
     const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
     aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
     aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
-    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, cpuLimitCores)
-    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, cpuLimitCores)
+    // §3.8.A: Per-service CPU normalization — use each service's own cgroup limit, not the runner's
+    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / 100_000 : cpuLimitCores
+    const redisCpuLimitCores = resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / 100_000 : cpuLimitCores
+    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, nchanCpuLimitCores)
+    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, redisCpuLimitCores)
     // §4.2: Topology capacity
     aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
     // §BL: Wire publisher backlog peak

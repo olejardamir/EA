@@ -327,6 +327,11 @@ export function emitMachineReadableResult(
       history_replay_correct: metrics.nchan_restart_history_replay_correct,
       missing_sequences: metrics.nchan_restart_missing_sequences,
       skipped: metrics.nchan_restart_skipped,
+      // §3.9: Separated literal restart and cross-node replacement ranges
+      literal_restart_expected: metrics.literal_restart_expected,
+      literal_restart_received: metrics.literal_restart_received,
+      cross_node_expected: metrics.cross_node_expected,
+      cross_node_received: metrics.cross_node_received,
     },
     resource_metrics: {
       event_loop_delay_p99_ms: metrics.event_loop_delay_p99_ms,
@@ -344,17 +349,24 @@ export function emitMachineReadableResult(
       memory_current_bytes: metrics.memory_current_bytes,
       memory_peak_bytes: metrics.memory_peak_bytes,
       cpu_max_quota: metrics.cpu_max_quota,
+      cpu_max_period: metrics.cpu_max_period,
       memory_max_bytes: metrics.memory_max_bytes,
       // §4.9: Nchan container resource metrics
       nchan_cpu_usage_usec: metrics.nchan_cpu_usage_usec,
       nchan_cpu_throttled_count: metrics.nchan_cpu_throttled_count,
       nchan_cpu_throttled_usec: metrics.nchan_cpu_throttled_usec,
       nchan_memory_current_bytes: metrics.nchan_memory_current_bytes,
+      // §3.8.D: Note: memory.peak is container-lifetime, not per-run. Cannot be reset via control server.
       nchan_memory_peak_bytes: metrics.nchan_memory_peak_bytes,
       nchan_memory_oom_events: metrics.nchan_memory_oom_events,
       nchan_memory_oom_kill_events: metrics.nchan_memory_oom_kill_events,
       // §4.9: Redis connected-client peak
       redis_connected_clients_peak: metrics.redis_connected_clients_peak,
+      // §3.8.F: Normalized CPU percent (each service's own denominator)
+      resource_cpu_percent_peak: metrics.resource_cpu_percent_peak,
+      nchan_resource_cpu_percent_peak: metrics.nchan_resource_cpu_percent_peak,
+      redis_resource_cpu_percent_peak: metrics.redis_resource_cpu_percent_peak,
+      resource_cpu_baseline: metrics.resource_cpu_baseline,
     },
     publisher_metrics: {
       attempts: metrics.publisher_attempts,
@@ -491,20 +503,33 @@ export function emitMachineReadableResult(
     },
     // §4.25: Per-phase latency histograms — each phase has isolated fan-out and late-join percentiles
     phase_latency_histograms: metrics.phase_histograms,
-    // §4.15/§4.18: Clock validity — same-host containers share Linux kernel clock
-    // Not RTT-based. All containers on the same Docker host share monotonic and wall clocks.
-    clock_validity: {
-      method: "same-host-kernel-clock",
-      note: "Same-host containers share the Linux kernel clock. No RTT-based offset estimation needed. Verified by checking both Nchan nodes are reachable.",
-      max_skew_estimate_ms: 0,
-      nchan1_reachable: null,
-      nchan2_reachable: null,
+    // §4.15/§4.18: Clock validity — propagate the actual measured/proven clock-validity object.
+    // The evidence suite and single-run path both produce this from real Nchan reachability checks.
+    // Never substitute a hardcoded placeholder — always use the measured result.
+    clock_validity: metrics.clock_validity ?? {
+      clock_model: "unknown",
+      nodes_covered: [],
+      measurement_method: "unknown",
+      offset_or_guarantee: 0,
+      uncertainty_ms: 0,
+      threshold_ms: 0,
+      validity_result: "INCONCLUSIVE" as const,
+      nchan1_reachable: false,
+      nchan2_reachable: false,
     },
     // §4.18/§3.15: Claim provenance — distinguish POC measurement from production inference
     claim_provenance: {
       measured_at_scale: config.targetConnections,
-      // §3.15: Direct-accept requires actual active target reached + topology + generator + timing + measurements
-      direct_accept_eligible: config.targetConnections >= 100000
+      // §3.15: Direct-accept requires ALL:
+      // - configured 100k target
+      // - actual active peak >= configured target (must have physically reached it)
+      // - topology capacity sufficient
+      // - generator healthy (CPU < 90%, event-loop < 100ms)
+      // - timing valid
+      // - events actually published and received
+      // §3.8.E: Campaign-level target for multi-shard 100k campaigns
+      direct_accept_eligible: ((config.targetConnections * (parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1)) >= 100000)
+        && (metrics.active_connections_peak ?? 0) >= config.targetConnections
         && preflight.capacity_sufficient
         && metrics.generator_cpu_percent_peak < 90
         && metrics.generator_event_loop_p99_ms < 100
@@ -512,6 +537,7 @@ export function emitMachineReadableResult(
         && metrics.events_published > 0
         && metrics.events_received > 0,
       production_inference_only: config.targetConnections < 100000
+        || (metrics.active_connections_peak ?? 0) < config.targetConnections
         || !preflight.capacity_sufficient
         || metrics.generator_cpu_percent_peak >= 90
         || metrics.generator_event_loop_p99_ms >= 100

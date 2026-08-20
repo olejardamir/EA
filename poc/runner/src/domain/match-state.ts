@@ -35,13 +35,13 @@ export interface MatchHeadTracker {
   getHead(matchId: string): number
   updateHead(matchId: string, seq: number): void
   // §4.1: Track committed score/clock state at head position for late-join reconstruction verification
-  updateHeadState(matchId: string, seq: number, score: { home: number; away: number }, clock: { period: number; elapsed: number }): void
-  getHeadState(matchId: string): { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null
+  updateHeadState(matchId: string, seq: number, score: { home: number; away: number }, clock: { period: string; elapsed: number }): void
+  getHeadState(matchId: string): { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null
 }
 
 export function createMatchHeadTracker(): MatchHeadTracker {
   const heads = new Map<string, number>()
-  const states = new Map<string, { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } }>()
+  const states = new Map<string, { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } }>()
   return {
     getHead(matchId: string): number {
       return heads.get(matchId) ?? 0
@@ -50,14 +50,14 @@ export function createMatchHeadTracker(): MatchHeadTracker {
       const current = heads.get(matchId) ?? 0
       if (seq > current) heads.set(matchId, seq)
     },
-    updateHeadState(matchId: string, seq: number, score: { home: number; away: number }, clock: { period: number; elapsed: number }): void {
+    updateHeadState(matchId: string, seq: number, score: { home: number; away: number }, clock: { period: string; elapsed: number }): void {
       const current = heads.get(matchId) ?? 0
       if (seq > current) {
         heads.set(matchId, seq)
         states.set(matchId, { seq, score: { ...score }, clock: { ...clock } })
       }
     },
-    getHeadState(matchId: string): { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null {
+    getHeadState(matchId: string): { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null {
       return states.get(matchId) ?? null
     },
   }

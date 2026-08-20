@@ -179,7 +179,7 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | Ephemeral port range | topology-preflight.ts readSysctl | host_limits.ephemeral_port_count | PASS |
 | Nginx capacity (workers × conns) | topology-preflight.ts | generator_topology.nginx_max_sse_capacity | PASS |
 | Capacity sufficiency | topology-preflight.ts | generator_topology.capacity_sufficient | PASS |
-| §3.2: Multi-shard source IPs | topology-preflight.ts SHARD_COUNT env | generator_topology.source_ip_count | PASS |
+| §3.2: Multi-shard source IPs | topology-preflight.ts SHARD_TOTAL env (fallback SHARD_COUNT) | generator_topology.source_ip_count | PASS |
 | §3.2: Aggregate target capacity | topology-preflight.ts | generator_topology.aggregate_target_connections | PASS |
 | §3.2: Aggregate tuple capacity | topology-preflight.ts | generator_topology.aggregate_destination_tuple_capacity | PASS |
 | §3.3: CPU quota from cpu.max | topology-preflight.ts readCpuQuota | generator_topology.cpu_quota | PASS |
@@ -205,7 +205,7 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | scenario_active_concurrency | all 8 match + lobby + total | PASS |
 | reconnect_health | active_start, active_peak, active_end | PASS |
 | surge_active_population | start, end, peak | PASS |
-| workload_rate_metrics | match/lobby/total published, match/lobby/total per-sec | PASS |
+| workload_rate_metrics | match/lobby/total published, match/lobby/total per-sec, match/lobby attempted | PASS |
 
 ## §4.14 Literal restart execution
 
@@ -217,6 +217,9 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | Restart skipped in evidence mode → campaign-only (not INCONCLUSIVE for later runs) | nchan_restart_skipped + nchan_restart_campaign_only | result-classifier.test.ts §4.11 test | PASS |
 | Campaign classifier requires restart PASS | evidence-suite.ts campaign aggregate check | evidence-suite.test.ts | PASS |
 | Expected count from head tracker (not derived from received) | nchan-restart.ts headAtRestart | nchan-restart.test.ts | PASS |
+| Literal restart completion: seq > lastSeq (not >=, must receive post-restart event) | nchan-restart.ts literalRestartTest line 361 | nchan-restart.test.ts | PASS |
+| Cross-node completion: seq >= headAtReplacement (frozen expected range) | nchan-restart.ts crossNodeTest line 146 | nchan-restart.test.ts | PASS |
+| Expected replay count from head tracker, not from received replay count | nchan-restart.ts frozenExpectedCount/frozenExpectedCount1 | nchan-restart.test.ts | PASS |
 
 ## §4.6 Phase duration measurement
 
@@ -308,11 +311,15 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 |---|---|---|---|
 | match_events_published | match-event-publisher.ts | match_events_published | PASS |
 | lobby_events_published | match-event-publisher.ts | lobby_events_published | PASS |
+| match_events_attempted | match-event-publisher.ts → phaseSnapshots | match_events_attempted | PASS |
+| lobby_events_attempted | match-event-publisher.ts → phaseSnapshots | lobby_events_attempted | PASS |
 | match_events_per_sec | result-classifier.ts | match_events_per_sec | PASS |
 | lobby_events_per_sec | result-classifier.ts | lobby_events_per_sec | PASS |
 | total_events_per_sec | result-classifier.ts | total_events_per_sec | PASS |
 | phase_publish_rates[].matchEventsPerSec | result-classifier.ts | phase_publish_rates | PASS |
 | phase_publish_rates[].lobbyEventsPerSec | result-classifier.ts | phase_publish_rates | PASS |
+| phase_publish_rates[].matchEventsAttempted | result-classifier.ts | phase_publish_rates | PASS |
+| phase_publish_rates[].lobbyEventsAttempted | result-classifier.ts | phase_publish_rates | PASS |
 | scheduler_lag_p95 | main.ts (publisher samples) | scheduler_lag_p95 | PASS |
 | surge_scheduler_lag_p95 | main.ts (surge phase) | surge_scheduler_lag_p95 | PASS |
 
@@ -322,10 +329,14 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 |---|---|---|---|
 | per_client_median_event_interval_ms | slow-consumer.ts | slow_consumer_metrics.per_client_median_event_interval_ms | PASS |
 | per_client_event_timestamps_ms | slow-consumer.ts | slow_consumer_metrics.per_client_event_timestamps_ms | PASS |
+| slow_achieved_read_rate_events_per_sec | slow-consumer.ts | slow_consumer_metrics.slow_achieved_read_rate_events_per_sec | PASS |
+| slow_median_event_interval_ms | slow-consumer.ts | slow_consumer_metrics.slow_median_event_interval_ms | PASS |
+| slow_p95_event_interval_ms | slow-consumer.ts | slow_consumer_metrics.slow_p95_event_interval_ms | PASS |
 | nchan_memory_bounded (null → INCONCLUSIVE) | slow-consumer.ts, result-classifier.ts | slow_consumer_metrics.nchan_memory_bounded | PASS |
 | nchan_memory_growth_bytes | slow-consumer.ts | slow_consumer_metrics.nchan_memory_growth_bytes | PASS |
 | nchan_memory_growth_pct | slow-consumer.ts | slow_consumer_metrics.nchan_memory_growth_pct | PASS |
 | server-side backpressure requires disconnect OR meaningful memory growth | slow-consumer.ts | slow_consumer_metrics.evidence_server_side_backpressure_reached | PASS |
+| offered==consumed by construction (TCP backpressure architectural note) | slow-consumer.ts ThrottledSubscription | slow_offered_event_count == slow_application_read_count | PASS |
 
 ## §3.9 Mandatory resource metric null handling
 
@@ -357,6 +368,57 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | network_failures | connection-pool.ts | network_failures | PASS |
 | shutdown_cleanup_disconnects (one per disconnectAll) | connection-pool.ts | shutdown_cleanup_disconnects | PASS |
 | Reconnected stream terminal errors categorized | reconnect.ts | removeActiveEntry(category) | PASS |
+| connections_dropped exact-once (removeEntry handles increment) | connection-pool.ts connectOne error handler | connections_dropped | PASS |
+
+## §3.8.A Per-service CPU normalization
+
+| Metric | Source File | Field | Status |
+|---|---|---|---|
+| nchan_resource_cpu_percent_peak uses nchan_cpu_max_quota | main.ts normalizeCpuPercent | nchan_resource_cpu_percent_peak | PASS |
+| redis_resource_cpu_percent_peak uses redis_cpu_max_quota | main.ts normalizeCpuPercent | redis_resource_cpu_percent_peak | PASS |
+| resource_cpu_percent_peak uses runner cpu_max_quota | main.ts normalizeCpuPercent | resource_cpu_percent_peak | PASS |
+| NCHAN_CPU_MAX_QUOTA passed via compose files | compose.yaml, compose.evidence.yaml, compose.evidence-100k.yaml | nchanCpuMaxQuota | PASS |
+| REDIS_CPU_MAX_QUOTA passed via compose files | compose.yaml, compose.evidence.yaml, compose.evidence-100k.yaml | redisCpuMaxQuota | PASS |
+
+## §3.4.D Topology preflight primary-only subscriber capacity
+
+| Rule | Implementation | Field | Status |
+|---|---|---|---|
+| subscribers_per_nchan_node = targetConnections (primary-only) | topology-preflight.ts | subscribers_per_nchan_node | PASS |
+| nchanNodes default changed from 2 to 1 | topology-preflight.ts runTopologyPreflight | nchan_node_count | PASS |
+
+## §3.12.C Campaign aggregation: memory peaks use max across runs
+
+| Rule | Implementation | Field | Status |
+|---|---|---|---|
+| nchan_memory_mb_peak: max across runs (not first-run inheritance) | evidence-suite.ts aggregateRuns | nchan_memory_mb_peak | PASS |
+| redis_memory_mb_peak: max across runs (not first-run inheritance) | evidence-suite.ts aggregateRuns | redis_memory_mb_peak | PASS |
+| nchan_memory_peak_bytes: max across runs (null-safe) | evidence-suite.ts aggregateRuns | nchan_memory_peak_bytes | PASS |
+
+## §3.11.A GIT_COMMIT_SHA wired through all compose files
+
+| Rule | Implementation | Field | Status |
+|---|---|---|---|
+| compose.yaml passes GIT_COMMIT_SHA env to runner | compose.yaml | GIT_COMMIT_SHA | PASS |
+| compose.evidence.yaml passes GIT_COMMIT_SHA env to runner | compose.evidence.yaml | GIT_COMMIT_SHA | PASS |
+| compose.evidence-100k.yaml passes GIT_COMMIT_SHA to all 4 shards | compose.evidence-100k.yaml | GIT_COMMIT_SHA | PASS |
+
+## §3.2.G Multi-shard env var consistency
+
+| Rule | Implementation | Field | Status |
+|---|---|---|---|
+| compose.evidence-100k.yaml uses SHARD_ID (not SHARD_INDEX) | compose.evidence-100k.yaml | SHARD_ID | PASS |
+| compose.evidence-100k.yaml uses SHARD_TOTAL (not SHARD_COUNT) | compose.evidence-100k.yaml | SHARD_TOTAL | PASS |
+| main.ts reads SHARD_ID with fallback to SHARD_COUNT | main.ts | shard_identity | PASS |
+| evidence-suite.ts reads SHARD_TOTAL with fallback to SHARD_COUNT | evidence-suite.ts | shardCount | PASS |
+| topology-preflight.ts reads SHARD_TOTAL with fallback to SHARD_COUNT | topology-preflight.ts | shardCount | PASS |
+
+## §3.11.F Clock validity propagation
+
+| Rule | Implementation | Field | Status |
+|---|---|---|---|
+| Single-run path propagates actual measured clock_validity | main.ts → result-printer.ts | clock_validity | PASS |
+| Fallback uses typed fields (not ad-hoc method/note/max_skew) | result-printer.ts | clock_validity | PASS |
 
 ## §3.15 Machine-readable output fields
 

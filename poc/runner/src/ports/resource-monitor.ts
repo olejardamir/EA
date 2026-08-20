@@ -13,6 +13,7 @@ export interface ResourceSnapshot {
   memory_oom_events: number | null        // memory.events oom — number of OOM events
   memory_oom_kill_events: number | null   // memory.events oom_kill — number of OOM kills
   cpu_max_quota: number | null            // cpu.max — CPU quota in microseconds per period (or "max")
+  cpu_max_period: number | null           // §3.8: cpu.max period in microseconds (typically 100000)
   memory_max_bytes: number | null         // memory.max — memory limit in bytes (or "max")
   // §4.9: Nchan container resource metrics
   nchan_cpu_usage_usec: number | null
@@ -28,6 +29,13 @@ export interface ResourceSnapshot {
   nchan_cpu_percent_peak: number | null
   // §3.8: Redis CPU percent peak (derived from used_cpu_sys + used_cpu_user delta)
   redis_cpu_percent_peak: number | null
+  // §3.8: Per-service CPU quotas — each service needs its own denominator for normalization
+  nchan_cpu_max_quota: number | null  // Nchan container cpu.max quota (microseconds per period)
+  redis_cpu_max_quota: number | null  // Redis container cpu.max quota (microseconds per period)
+  // §3.8: CPU nanoseconds — derived from cpu_ms * 1_000_000
+  cpu_ns: bigint | null
+  // §3.8: Thread count from cgroup.threads (null if unavailable)
+  thread_count: number | null
 }
 
 export interface NginxPreflight {
@@ -38,6 +46,8 @@ export interface NginxPreflight {
   fd_hard_limit: number | null
   cpu_quota: number | null
   worker_connections_total: number | null
+  // §3.4.C: Usable SSE capacity after subtracting non-viewer FD overhead
+  usable_sse_capacity: number | null
   sufficient: boolean
   reason: string
 }
@@ -49,4 +59,6 @@ export interface ResourceMonitor {
   stopEventLoopMonitor(): void
   preflight(controlUrl: string): Promise<NginxPreflight | null>
   dispose(): void
+  // §3.8.C: Wait for initial Nchan/Redis polls to complete before taking baseline
+  ready(): Promise<void>
 }

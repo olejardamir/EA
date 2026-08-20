@@ -124,7 +124,10 @@ const server = http.createServer((req, res) => {
       }
     } catch {}
 
-    // Read FD limits from /proc/self/limits
+    // §3.4.B: FD limits — /proc/self/limits proves the control-server Node process limit,
+    // NOT the Nginx master/worker FD limit. Nginx workers inherit the container cgroup FD limit.
+    // The control server and Nginx share the same container cgroup, so the limit is the same,
+    // but the semantic proof is the cgroup limit, not the helper process limit.
     try {
       const limits = fs.readFileSync("/proc/self/limits", "utf-8")
       for (const line of limits.split("\n")) {
@@ -150,16 +153,26 @@ const server = http.createServer((req, res) => {
       result.worker_connections_total = result.worker_processes * result.worker_connections
     }
 
+    // §3.4.C: Raw workers × connections is not all usable SSE capacity.
+    // Account for: listener sockets, Redis connections, publisher/control traffic,
+    // Nginx internal FDs, other connection classes, operating headroom.
+    // Conservative: 1 listener + 1 Redis + 1 publisher + 1 control + 60 internal + 36 headroom = 100
+    const NON_VIEWER_FDS = 100
+    if (result.worker_connections_total) {
+      result.usable_sse_capacity = result.worker_connections_total - NON_VIEWER_FDS
+    }
+
     // Assess sufficiency
     const reasons = []
-    if (result.worker_connections_total && result.worker_connections_total < 100000) {
-      reasons.push(`worker_connections_total=${result.worker_connections_total} < 100000`)
+    const usableCapacity = result.usable_sse_capacity ?? result.worker_connections_total
+    if (usableCapacity && usableCapacity < 100000) {
+      reasons.push(`usable_sse_capacity=${usableCapacity} (total=${result.worker_connections_total} − overhead=${NON_VIEWER_FDS}) < 100000`)
     }
     if (result.fd_soft_limit && result.fd_soft_limit < 200000) {
       reasons.push(`fd_soft_limit=${result.fd_soft_limit} < 200000`)
     }
-    if (result.cpu_quota && result.cpu_quota < 2) {
-      reasons.push(`cpu_quota=${result.cpu_quota} < 2 (need >= 4 for DUT)`)
+    if (result.cpu_quota && result.cpu_quota < 4) {
+      reasons.push(`cpu_quota=${result.cpu_quota} < 4 (need >= 4 for DUT — frozen primary Nchan 4-CPU limit)`)
     }
 
     result.sufficient = reasons.length === 0

@@ -6,6 +6,7 @@ export function classifyResult(
   generatorHealthy: boolean,
   timingValid: boolean,
   topologyPreflight?: TopologyPreflight,
+  campaignConnectionsTarget?: number,
 ): VerdictResult {
   const checks: Array<{ name: string; passed: boolean; detail: string }> = []
 
@@ -158,7 +159,9 @@ export function classifyResult(
 
     // §3.9: Mandatory resource metric availability — do not silently accept missing CPU/throttle/OOM evidence
     // Only enforce at evidence scale (100k+) where resource evidence is structurally required
-    if (metrics.connections_target >= 100000) {
+    // §3.8.E: Use campaign-level aggregate target for multi-shard 100k campaigns
+    const effectiveTarget = campaignConnectionsTarget ?? metrics.connections_target
+    if (effectiveTarget >= 100000) {
       if (metrics.nchan_cpu_percent_peak === null) {
         checks.push({
           name: "inconclusive_override",
@@ -571,6 +574,11 @@ export function aggregateWorkerMetrics(
   let reconnect_replay_received = 0
   let restart_replay_expected = 0
   let restart_replay_received = 0
+  // §3.9: Separated literal restart and cross-node replacement metrics
+  let literal_restart_expected = 0
+  let literal_restart_received = 0
+  let cross_node_expected = 0
+  let cross_node_received = 0
   // §4.17: Disconnect attribution
   let deliberate_disconnects = 0
   let unexpected_client_disconnects = 0
@@ -620,6 +628,11 @@ export function aggregateWorkerMetrics(
     reconnect_replay_received += s.reconnect_replay_received
     restart_replay_expected += s.restart_replay_expected
     restart_replay_received += s.restart_replay_received
+    // §3.9: Separated literal restart and cross-node replacement metrics
+    literal_restart_expected += s.literal_restart_expected
+    literal_restart_received += s.literal_restart_received
+    cross_node_expected += s.cross_node_expected
+    cross_node_received += s.cross_node_received
     // §4.17: Disconnect attribution
     deliberate_disconnects += s.deliberate_disconnects
     unexpected_client_disconnects += s.unexpected_client_disconnects
@@ -745,6 +758,7 @@ export function aggregateWorkerMetrics(
     memory_current_bytes: null,
     memory_peak_bytes: null,
     cpu_max_quota: null,
+    cpu_max_period: null,
     memory_max_bytes: null,
     // §BL: wired from publisher in main.ts
     generator_backlog_peak: 0,
@@ -799,6 +813,11 @@ export function aggregateWorkerMetrics(
     reconnect_replay_received,
     restart_replay_expected,
     restart_replay_received,
+    // §3.9: Separated literal restart and cross-node replacement metrics
+    literal_restart_expected,
+    literal_restart_received,
+    cross_node_expected,
+    cross_node_received,
     // §4.7: Slow-consumer metrics — wired from SlowConsumerScenario in main.ts
     slow_consumer_metrics: null,
     // §4.17: Disconnect attribution

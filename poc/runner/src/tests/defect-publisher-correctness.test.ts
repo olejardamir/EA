@@ -429,7 +429,7 @@ describe("§6.24: Machine-readable JSON output", () => {
           match_008_subscribers: 0,
           phase_publish_rates: [], cpu_usage_usec: null, cpu_throttled_count: null,
           cpu_throttled_usec: null, memory_oom_events: null, memory_oom_kill_events: null,
-          memory_current_bytes: null, memory_peak_bytes: null, cpu_max_quota: null, memory_max_bytes: null,
+          memory_current_bytes: null, memory_peak_bytes: null, cpu_max_quota: null, cpu_max_period: null, memory_max_bytes: null,
           generator_backlog_peak: 0, publisher_attempts: 50, publisher_successes: 50,
           publisher_definite_failures: 0, publisher_ambiguous_failures: 0,
           sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,

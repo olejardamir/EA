@@ -184,8 +184,7 @@ export class MatchEventPublisher {
           state.last_event_type = candidate.last_event_type
           // §AS/§4.1: Only commit head tracker and counters after Nchan acceptance
           // §4.1: Update head state with score/clock for late-join reconstruction verification
-          const clockNum = { period: state.clock.period === "2H" ? 2 : 1, elapsed: state.clock.elapsed_seconds }
-          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, clockNum)
+          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, { period: state.clock.period, elapsed: state.clock.elapsed_seconds })
           this._eventsPublished++
           this._totalPublished++
           this._matchPublished++
@@ -256,9 +255,10 @@ export class MatchEventPublisher {
     return idx >= 0 ? this.matchStates[idx].seq : 0
   }
 
-  // §3.1: Canonical prefill — publishes events through the same per-match serialization,
-  // candidate-state, accepted-commit, and head-tracker logic as normal publishing.
-  // Returns the frozen state snapshot after all prefill events are committed.
+  // §3.1.G: Canonical prefill — atomic per-match serialized operation.
+  // Holds the per-match busy lock for the ENTIRE prefill range to prevent interleaving
+  // with normal publication. This makes the prefill range deterministic and independently
+  // frozen expected range/state provable.
   async publishPrefill(
     matchId: string,
     count: number,
@@ -266,74 +266,76 @@ export class MatchEventPublisher {
     published: number
     firstSeq: number
     lastSeq: number
-    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: number; elapsed: number } } | null
+    frozenState: { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null
   }> {
     const idx = MATCH_IDS.indexOf(matchId)
     if (idx < 0) return { published: 0, firstSeq: 0, lastSeq: 0, frozenState: null }
+
+    // §3.1.G: Wait for and hold the per-match busy lock for the entire prefill
+    while (this._matchBusy.get(matchId)) {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+    this._matchBusy.set(matchId, true)
 
     let published = 0
     let firstSeq = -1
     let lastSeq = -1
 
-    for (let i = 0; i < count; i++) {
-      // §3.1: Wait for per-match busy lock — same serialization as normal publish
-      while (this._matchBusy.get(matchId)) {
-        await new Promise((r) => setTimeout(r, 5))
-      }
-      this._matchBusy.set(matchId, true)
+    try {
+      for (let i = 0; i < count; i++) {
+        try {
+          const state = this.matchStates[idx]
+          // §AS: Clone candidate, advance, publish, commit only on acceptance
+          const candidate: MatchState = {
+            seq: state.seq,
+            score: { ...state.score },
+            clock: { ...state.clock },
+            last_event_type: state.last_event_type,
+          }
+          advanceMatchState(candidate, "corner", this.config.random)
 
-      try {
-        const state = this.matchStates[idx]
-        // §AS: Clone candidate, advance, publish, commit only on acceptance
-        const candidate: MatchState = {
-          seq: state.seq,
-          score: { ...state.score },
-          clock: { ...state.clock },
-          last_event_type: state.last_event_type,
+          const transmitTimestamp = new Date().toISOString()
+          const event = createEventPayload(matchId, candidate.seq, "corner", candidate.score, candidate.clock, transmitTimestamp)
+          const body = JSON.stringify(event)
+
+          this._pendingPublishes++
+          const ok = await this.config.publisher.publish(matchId, body, "corner")
+          this._pendingPublishes--
+
+          if (ok) {
+            // §3.5: Scheduler lag for prefill
+            const acceptanceTime = new Date().toISOString()
+            const transmitMs = new Date(transmitTimestamp).getTime()
+            const acceptMs = new Date(acceptanceTime).getTime()
+            this._schedulerLagSamples.push(acceptMs - transmitMs)
+
+            // §AS: Commit state only after acceptance
+            state.seq = candidate.seq
+            state.score = candidate.score
+            state.clock = candidate.clock
+            state.last_event_type = candidate.last_event_type
+
+            // §4.1: Update head tracker with full state
+            this.config.headTracker.updateHeadState(matchId, state.seq, state.score, { period: state.clock.period, elapsed: state.clock.elapsed_seconds })
+
+            this._eventsPublished++
+            this._totalPublished++
+            const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
+            this._eventsPublishedByMatch.set(matchId, prev + 1)
+            const expected = this.config.getSubscriberCount?.(matchId) ?? 0
+            this.config.onPublish?.(matchId, expected)
+
+            if (firstSeq === -1) firstSeq = candidate.seq
+            lastSeq = candidate.seq
+            published++
+          }
+        } catch {
+          // §AS: On exception, committed state unchanged
         }
-        advanceMatchState(candidate, "corner", this.config.random)
-
-        const transmitTimestamp = new Date().toISOString()
-        const event = createEventPayload(matchId, candidate.seq, "corner", candidate.score, candidate.clock, transmitTimestamp)
-        const body = JSON.stringify(event)
-
-        this._pendingPublishes++
-        const ok = await this.config.publisher.publish(matchId, body, "corner")
-        this._pendingPublishes--
-
-        if (ok) {
-          // §3.5: Scheduler lag for prefill
-          const acceptanceTime = new Date().toISOString()
-          const transmitMs = new Date(transmitTimestamp).getTime()
-          const acceptMs = new Date(acceptanceTime).getTime()
-          this._schedulerLagSamples.push(acceptMs - transmitMs)
-
-          // §AS: Commit state only after acceptance
-          state.seq = candidate.seq
-          state.score = candidate.score
-          state.clock = candidate.clock
-          state.last_event_type = candidate.last_event_type
-
-          // §4.1: Update head tracker with full state
-          const clockNum = { period: state.clock.period === "2H" ? 2 : 1, elapsed: state.clock.elapsed_seconds }
-          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, clockNum)
-
-          this._eventsPublished++
-          this._totalPublished++
-          const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
-          this._eventsPublishedByMatch.set(matchId, prev + 1)
-          const expected = this.config.getSubscriberCount?.(matchId) ?? 0
-          this.config.onPublish?.(matchId, expected)
-
-          if (firstSeq === -1) firstSeq = candidate.seq
-          lastSeq = candidate.seq
-          published++
-        }
-      } catch {
-        // §AS: On exception, committed state unchanged
-      } finally {
-        this._matchBusy.set(matchId, false)
       }
+    } finally {
+      // §3.1.G: Release the busy lock only after ALL prefill events are published
+      this._matchBusy.set(matchId, false)
     }
 
     // §3.1: Freeze the committed state snapshot after all prefill events
