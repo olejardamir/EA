@@ -178,6 +178,23 @@ describe("LateJoinScenario", () => {
           },
         })
       }
+      // Nchan may deliver an already-parsed live frame in the same network
+      // batch. It must not overwrite the reconstructed frozen target state.
+      handlerRef.current({
+        type: "message",
+        event: {
+          id: "504",
+          event: "message",
+          data: JSON.stringify({
+            match_id: "match-001",
+            canonical_seq: 504,
+            event_type: "goal",
+            score: { home: 99, away: 99 },
+            clock: { period: "2H", elapsed_seconds: 999 },
+            publish_timestamp: new Date().toISOString(),
+          }),
+        },
+      })
     }
 
     const result = await execPromise

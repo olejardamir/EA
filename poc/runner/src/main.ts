@@ -290,9 +290,9 @@ async function main(): Promise<void> {
 
     // The publisher owner establishes a known run namespace before any shard
     // opens viewers. This makes active-match retained history start at seq=1.
-    if (coordinator && publisherOwner) {
+    if ((!coordinator || publisherOwner)) {
       await resetRedisForExperiment(config.redisUrl)
-      log("Redis history reset and verified for coordinated run isolation")
+      log("Redis history reset and verified for run isolation")
     }
 
     // §4.22: Build identity — immutable provenance
@@ -667,6 +667,7 @@ async function main(): Promise<void> {
       warmupSeconds: config.warmupSeconds,
       measureSeconds: config.measureSeconds,
       burstSeconds: config.burstSeconds,
+      surgeSeconds: config.surgeSeconds,
       cooldownSeconds: config.cooldownSeconds,
       slowConsumerFraction: config.slowConsumerFraction,
       lobbyFraction: config.lobbyFraction,

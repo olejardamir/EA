@@ -101,7 +101,7 @@ Ten percent of each shard's clients form the cohort. Each client emits the field
 
 ### Surge
 
-The scheduled window is 120 seconds and additions are the exact difference from 60% active population to the local target. There is no approximate 80% pass threshold. Generator CPU ≥90%, event-loop p99 ≥100ms, backlog >1,000, invalid topology/FD/ports or invalid environment produce INCONCLUSIVE. With healthy generator and valid environment, connection/surge inability to sustain target produces REJECT.
+The final-scale scheduled window is 120 seconds and additions are the exact difference from 60% active population to the local target. The duration is resolved configuration (`SURGE_SECONDS`); smoke freezes five seconds and is never direct-evidence eligible. There is no approximate 80% pass threshold. Generator CPU ≥90%, event-loop p99 ≥100ms, backlog >1,000, invalid topology/FD/ports or invalid environment produce INCONCLUSIVE. With healthy generator and valid environment, connection/surge inability to sustain target produces REJECT.
 
 ### Slow consumer
 

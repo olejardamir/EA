@@ -65,6 +65,7 @@ services:
       WARMUP_SECONDS: "5"
       MEASURE_SECONDS: "10"
       BURST_SECONDS: "5"
+      SURGE_SECONDS: "5"
       COOLDOWN_SECONDS: "3"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "smoke"

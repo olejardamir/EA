@@ -10,12 +10,11 @@ export class ConnectionSurgeScenario implements Scenario {
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    ctx.log("--- PHASE: CONNECTION SURGE (+40% over 120s) ---")
-
     const totalTarget = ctx.config.targetConnections
     const baseCount = this.pool.size
     const surgeCount = totalTarget - baseCount
-    const surgeDurationMs = 120_000
+    const surgeDurationMs = (ctx.config.surgeSeconds ?? 120) * 1000
+    ctx.log(`--- PHASE: CONNECTION SURGE (+40% over ${surgeDurationMs / 1000}s) ---`)
 
     ctx.log(`Current pool: ${baseCount}, surge target: +${surgeCount} over ${surgeDurationMs / 1000}s`)
 

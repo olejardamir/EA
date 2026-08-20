@@ -41,6 +41,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 |---|---|---|---|---|---|
 | Base connection fraction | 60% | percentage | ASSIGNMENT_FACT | 60% base → 40% surge (assignment §2.0: +40k within 2 min) | warmup.ts:15 |
 | Surge duration | 120000 | ms | ASSIGNMENT_FACT | 120-second absolute-deadline surge window; no arbitrary 80% rate threshold | connection-surge.ts |
+| Surge duration (smoke) | 5000 | ms | VALIDATION_SCALE | Short validation using the same scenario path; never direct evidence eligible | compose.yaml, experiment-config.ts |
 | Surge batch count | 24 | count | DERIVED_VALUE | 120s / 5s per batch = 24 batches | connection-surge.ts:19-20 |
 | Connection batch size | 50 | count | PLANNING_ASSUMPTION | HTTP connection batch size for backpressure control | connection-pool.ts:132 |
 | Connection batch delay | 50 | ms | PLANNING_ASSUMPTION | 50ms pause between connection batches | connection-pool.ts:163 |

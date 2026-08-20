@@ -500,6 +500,9 @@ export class SlowConsumerScenario implements Scenario {
       `nchan_mem_bounded=${nchanMemoryBounded === null ? "unknown" : nchanMemoryBounded ? "OK" : "FAIL"}`,
       `nchan_mem_samples=${nchanMemSamplesDuring.length}`,
       `bounded=${boundedOk ? "OK" : "FAIL"}`,
+      `active_start=${all.length}`,
+      `active_peak=${all.length}`,
+      `active_end=${this.pool.size}`,
       ...perClientDetails.map(d => d.detail),
     ].join(" ")
 

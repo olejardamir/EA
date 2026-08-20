@@ -21,10 +21,17 @@ interface SpawnedCoordinator {
   dispose: () => void
 }
 
+let portCounter = 23100
+function nextPort(): number {
+  const port = portCounter
+  portCounter += 7
+  return port
+}
+
 function startCoordinator(): SpawnedCoordinator {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "coordinator-it-"))
   const resultPath = path.join(dir, "global-result.json")
-  const port = 23000 + Math.floor(Math.random() * 20000)
+  const port = nextPort()
   const child = spawn(
     process.execPath,
     ["--import", "tsx", "src/coordinator-server.ts"],
@@ -228,9 +235,12 @@ describe("§5 PASS 13-15: reduced coordinated multi-shard HTTP integration", () 
       await Promise.all([failing.barrier("preflight", "start"), healthy.barrier("preflight", "start")])
       await Promise.all([failing.barrier("preflight", "end"), healthy.barrier("preflight", "end")])
 
-      // The failing shard aborts; the healthy shard's next barrier must reject.
+      // The healthy shard waits at the next barrier; the failing shard's abort
+      // must reject that wait. The wait is created first so the ordering is
+      // deterministic regardless of HTTP round-trip timing.
+      const healthyWait = healthy.barrier("warmup", "start")
       await failing.abort("generator saturated")
-      await assert.rejects(healthy.barrier("warmup", "start"), /aborted/)
+      await assert.rejects(healthyWait, /aborted/)
     } finally {
       spawned.dispose()
     }

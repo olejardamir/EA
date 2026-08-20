@@ -92,6 +92,7 @@ services:
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
+      SURGE_SECONDS: "120"
       COOLDOWN_SECONDS: "10"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"

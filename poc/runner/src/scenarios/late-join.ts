@@ -94,6 +94,7 @@ export class LateJoinScenario implements Scenario {
       let receivedFirstSeq = -1
       let receivedLastSeq = -1
       let reconstructedState: ReconstructedState | null = null
+      let replayComplete = false
 
       const result = await new Promise<{ caughtUp: boolean; duration: number }>((resolve) => {
         const timeout = setTimeout(() => {
@@ -102,7 +103,7 @@ export class LateJoinScenario implements Scenario {
         }, 15000)
 
         subscription.onEvent((evt) => {
-          if (evt.type !== "message") return
+          if (evt.type !== "message" || replayComplete) return
           try {
             const data = JSON.parse(evt.event.data)
             if (!data || typeof data.canonical_seq !== "number") return
@@ -114,7 +115,8 @@ export class LateJoinScenario implements Scenario {
             // §3.1.A: Reconstruct score/clock from replay using the actual event schema.
             // clock.period is a string ("1H"/"2H"), clock.elapsed_seconds is a number.
             // No fallback defaults — null means reconstruction failed.
-            if (data.score && typeof data.score.home === "number" && typeof data.score.away === "number"
+            if (data.canonical_seq <= expectedLastSeq
+              && data.score && typeof data.score.home === "number" && typeof data.score.away === "number"
               && data.clock && typeof data.clock.period === "string" && typeof data.clock.elapsed_seconds === "number") {
               reconstructedState = {
                 score: { home: data.score.home, away: data.score.away },
@@ -124,6 +126,7 @@ export class LateJoinScenario implements Scenario {
 
             // §3.1: Continue until we reach the frozen target head
             if (data.canonical_seq >= expectedLastSeq) {
+              replayComplete = true
               clearTimeout(timeout)
               subscription.close()
               resolve({ caughtUp: true, duration: ctx.clock.now() - startTime })

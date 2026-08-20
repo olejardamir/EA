@@ -8,6 +8,7 @@ export interface ExperimentConfig {
   warmupSeconds: number
   measureSeconds: number
   burstSeconds: number
+  surgeSeconds?: number
   cooldownSeconds: number
   slowConsumerFraction: number
   lobbyFraction: number
@@ -62,6 +63,7 @@ export function loadConfig(): ExperimentConfig {
     warmupSeconds: requirePositiveInt(process.env.WARMUP_SECONDS, "WARMUP_SECONDS", 30),
     measureSeconds: requirePositiveInt(process.env.MEASURE_SECONDS, "MEASURE_SECONDS", 120),
     burstSeconds: requirePositiveInt(process.env.BURST_SECONDS, "BURST_SECONDS", 30),
+    surgeSeconds: requirePositiveInt(process.env.SURGE_SECONDS, "SURGE_SECONDS", 120),
     cooldownSeconds: requirePositiveInt(process.env.COOLDOWN_SECONDS, "COOLDOWN_SECONDS", 10),
     // §BR: Wire slowConsumerFraction from env (SLOW_CONSUMER_FRACTION) instead of hardcoding
     slowConsumerFraction: parseFloat(process.env.SLOW_CONSUMER_FRACTION ?? "0.05"),

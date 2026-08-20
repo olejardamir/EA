@@ -146,7 +146,7 @@ export function emitMachineReadableResult(
   metrics: AggregatedMetrics,
   eventsPublished: number,
   verdictResult: VerdictResult,
-  config: { targetConnections: number; seed: number; runProfile: string; runMode?: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number; nchanPubUrl?: string; nchanSubUrl?: string; redisUrl?: string; nchanControlUrl?: string },
+  config: { targetConnections: number; seed: number; runProfile: string; runMode?: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; surgeSeconds?: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number; nchanPubUrl?: string; nchanSubUrl?: string; redisUrl?: string; nchanControlUrl?: string },
   topologyPreflight?: TopologyPreflight,
   structuredScenarioEvidence?: Record<string, unknown>,
 ): void {
@@ -170,6 +170,7 @@ export function emitMachineReadableResult(
       warmup_seconds: config.warmupSeconds,
       measure_seconds: config.measureSeconds,
       burst_seconds: config.burstSeconds,
+      surge_seconds: config.surgeSeconds ?? 120,
       cooldown_seconds: config.cooldownSeconds,
       slow_consumer_fraction: config.slowConsumerFraction,
       lobby_fraction: config.lobbyFraction,

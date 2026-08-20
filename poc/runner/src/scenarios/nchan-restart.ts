@@ -479,6 +479,9 @@ export class NchanRestartScenario implements Scenario {
           `expectedCount=${frozenExpectedCount}`,
           `receivedCount=${replayEvents.length}`,
           `restartMs=${restartMs}`,
+          `active_start=${ctx._activePopulationStart ?? 0}`,
+          `active_peak=${ctx._activePopulationStart ?? 0}`,
+          `active_end=${ctx._activePopulationStart ?? 0}`,
         ].join(" "),
       }
     } catch (err) {
