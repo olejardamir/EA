@@ -1,0 +1,227 @@
+# §3.2: Multi-shard 100k generator topology
+# 4 runner shards on a Docker bridge network, each with distinct source IP.
+# Total capacity: 4 × ~28k ephemeral ports = ~112k > 100k (12% headroom).
+# Nchan and Redis remain on host networking for stability.
+# Runners reach host-network services via host.docker.internal.
+
+services:
+  redis:
+    image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
+    network_mode: host
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nchan:
+    build:
+      context: ./nchan
+      network: host
+    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      CONTROL_PORT: "18888"
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/pub/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nchan-2:
+    build:
+      context: ./nchan
+      network: host
+    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NGINX_CONF: "/etc/nginx/nchan-2.conf"
+      CONTROL_PORT: "18889"
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18080/pub/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # §3.2: 4 runner shards on a shared bridge network.
+  # Each container gets a unique Docker-assigned IP on the bridge subnet.
+  # Each shard connects to Nchan via host.docker.internal (host-network gateway).
+  # Per-shard capacity: ~28k ephemeral ports. Aggregate: ~112k > 100k.
+
+  runner-shard-0:
+    build:
+      context: ./runner
+      network: host
+    depends_on:
+      nchan:
+        condition: service_healthy
+    networks:
+      - shard-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      NCHAN2_SUB_URL: "http://host.docker.internal:18081"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      TARGET_CONNECTIONS: "28000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
+      SLOW_CONSUMER_FRACTION: "0.05"
+      RUN_PROFILE: "evidence"
+      SHARD_INDEX: "0"
+      SHARD_COUNT: "4"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 120000
+        hard: 120000
+
+  runner-shard-1:
+    build:
+      context: ./runner
+      network: host
+    depends_on:
+      nchan:
+        condition: service_healthy
+    networks:
+      - shard-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      NCHAN2_SUB_URL: "http://host.docker.internal:18081"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      TARGET_CONNECTIONS: "28000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
+      SLOW_CONSUMER_FRACTION: "0.05"
+      RUN_PROFILE: "evidence"
+      SHARD_INDEX: "1"
+      SHARD_COUNT: "4"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 120000
+        hard: 120000
+
+  runner-shard-2:
+    build:
+      context: ./runner
+      network: host
+    depends_on:
+      nchan:
+        condition: service_healthy
+    networks:
+      - shard-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      NCHAN2_SUB_URL: "http://host.docker.internal:18081"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      TARGET_CONNECTIONS: "28000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
+      SLOW_CONSUMER_FRACTION: "0.05"
+      RUN_PROFILE: "evidence"
+      SHARD_INDEX: "2"
+      SHARD_COUNT: "4"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 120000
+        hard: 120000
+
+  runner-shard-3:
+    build:
+      context: ./runner
+      network: host
+    depends_on:
+      nchan:
+        condition: service_healthy
+    networks:
+      - shard-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      NCHAN2_SUB_URL: "http://host.docker.internal:18081"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      TARGET_CONNECTIONS: "28000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      COOLDOWN_SECONDS: "10"
+      SLOW_CONSUMER_FRACTION: "0.05"
+      RUN_PROFILE: "evidence"
+      SHARD_INDEX: "3"
+      SHARD_COUNT: "4"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 120000
+        hard: 120000
+
+networks:
+  shard-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

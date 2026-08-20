@@ -133,9 +133,15 @@ export interface AggregatedMetrics {
   establishment_rate_peak: number
   scheduler_lag_p95: number
   scheduler_lag_max: number
+  surge_scheduler_lag_p95: number
+  surge_scheduler_lag_max: number
   active_population_start: number
   active_population_end: number
   active_population_peak: number
+  // §3.15: Per-scenario active concurrency for reconnect
+  reconnect_active_start: number
+  reconnect_active_peak: number
+  reconnect_active_end: number
   // §R: active connections peak — separate from cumulative establishments
   active_connections_peak: number
   // §4.16: Live vs replay delivery accounting
@@ -149,11 +155,13 @@ export interface AggregatedMetrics {
   restart_replay_received: number
   // §4.7: Slow-consumer metrics — populated by SlowConsumerScenario
   slow_consumer_metrics: SlowConsumerMetrics | null
-  // §4.17: Disconnect attribution
+  // §4.17: Disconnect attribution — each terminal event attributed exactly once
+  // §3.14: slowConsumerDisconnects is informational-only (not one of the 5 attribution counters)
   deliberate_disconnects: number
   unexpected_client_disconnects: number
   server_initiated_disconnects: number
   network_failures: number
+  // §3.14: Frozen as one cleanup operation per disconnectAll call (0 or 1), not per-connection
   shutdown_cleanup_disconnects: number
   // §4.9: Redis connected-client peak
   redis_connected_clients_peak: number | null

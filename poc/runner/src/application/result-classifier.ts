@@ -155,6 +155,35 @@ export function classifyResult(
         return { verdict: "INCONCLUSIVE", checks }
       }
     }
+
+    // §3.9: Mandatory resource metric availability — do not silently accept missing CPU/throttle/OOM evidence
+    // Only enforce at evidence scale (100k+) where resource evidence is structurally required
+    if (metrics.connections_target >= 100000) {
+      if (metrics.nchan_cpu_percent_peak === null) {
+        checks.push({
+          name: "inconclusive_override",
+          passed: false,
+          detail: `nchan_cpu_percent_peak=null — Nchan CPU evidence unavailable`,
+        })
+        return { verdict: "INCONCLUSIVE", checks }
+      }
+      if (metrics.redis_cpu_percent_peak === null) {
+        checks.push({
+          name: "inconclusive_override",
+          passed: false,
+          detail: `redis_cpu_percent_peak=null — Redis CPU evidence unavailable`,
+        })
+        return { verdict: "INCONCLUSIVE", checks }
+      }
+      if (metrics.cpu_throttled_count === null) {
+        checks.push({
+          name: "inconclusive_override",
+          passed: false,
+          detail: `cpu_throttled_count=null — CPU throttle evidence unavailable`,
+        })
+        return { verdict: "INCONCLUSIVE", checks }
+      }
+    }
   }
 
   // §4.11: Nchan CPU throttling — host capacity exceeded for the DUT
@@ -278,12 +307,6 @@ export function classifyResult(
     detail: `${metrics.reconnect_order_violations} == 0`,
   })
 
-  checks.push({
-    name: "nchan_history_replay",
-    passed: metrics.nchan_restart_history_replay_correct,
-    detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
-  })
-
   // §3.10: Campaign-only restart scenario — excluded from per-run classifier when intentionally
   // not scheduled. The campaign classifier separately requires the once-per-campaign restart result
   // to PASS. Per-run classifier must not mark a deliberate campaign-level omission as INCONCLUSIVE.
@@ -293,6 +316,12 @@ export function classifyResult(
       name: "nchan_restart_campaign_only",
       passed: true,
       detail: "not_scheduled_by_frozen_matrix — campaign-only scenario, excluded from per-run gate",
+    })
+  } else {
+    checks.push({
+      name: "nchan_history_replay",
+      passed: metrics.nchan_restart_history_replay_correct,
+      detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
     })
   }
 
@@ -315,6 +344,15 @@ export function classifyResult(
       passed: boundedHealthyOk,
       detail: `healthy_degradation=${slowMetrics.healthy_degradation_pct.toFixed(1)}% <= 5%`,
     })
+    // §3.8: If Nchan memory boundedness is unknown (null), INCONCLUSIVE
+    if (slowMetrics.nchan_memory_bounded === null) {
+      checks.push({
+        name: "inconclusive_override",
+        passed: false,
+        detail: `§3.8: nchan_memory_bounded=null — Nchan memory data unavailable, cannot verify boundedness`,
+      })
+      return { verdict: "INCONCLUSIVE", checks }
+    }
     // §4.8: If no server-side backpressure reached, override to INCONCLUSIVE
     if (!evidenceBackpressure) {
       checks.push({
@@ -341,8 +379,8 @@ export function classifyResult(
   if (metrics.nchan_memory_mb_peak !== null) {
     checks.push({
       name: "nchan_memory",
-      passed: metrics.nchan_memory_mb_peak < 3500,
-      detail: `${metrics.nchan_memory_mb_peak}MB < 3500MB`,
+      passed: metrics.nchan_memory_mb_peak < 7000,
+      detail: `${metrics.nchan_memory_mb_peak}MB < 7000MB (87.5% of 8 GB DUT limit)`,
     })
   }
 
@@ -539,9 +577,12 @@ export function aggregateWorkerMetrics(
   let server_initiated_disconnects = 0
   let network_failures = 0
   let shutdown_cleanup_disconnects = 0
-  // §3.9: Latency validity counters
+  // §3.7: Latency validity counters
   let latency_invalid_count = 0
   let latency_overflow_count = 0
+  // §3.7: Accumulate global scheduler lag across all workers (max of p95/max)
+  let scheduler_lag_p95_ms = 0
+  let scheduler_lag_max_ms = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -585,6 +626,9 @@ export function aggregateWorkerMetrics(
     // §3.9: Latency validity counters
     latency_invalid_count += s.latency_invalid_count
     latency_overflow_count += s.latency_overflow_count
+    // §3.7: Accumulate global scheduler lag (max across workers)
+    if (s.scheduler_lag_p95_ms > scheduler_lag_p95_ms) scheduler_lag_p95_ms = s.scheduler_lag_p95_ms
+    if (s.scheduler_lag_max_ms > scheduler_lag_max_ms) scheduler_lag_max_ms = s.scheduler_lag_max_ms
   }
 
   allFanOut.sort((a, b) => a - b)
@@ -721,11 +765,17 @@ export function aggregateWorkerMetrics(
     surge_timing_error_ms: 0,
     attempt_rate_peak: 0,
     establishment_rate_peak: 0,
-    scheduler_lag_p95: 0,
-    scheduler_lag_max: 0,
+    scheduler_lag_p95: scheduler_lag_p95_ms,
+    scheduler_lag_max: scheduler_lag_max_ms,
+    surge_scheduler_lag_p95: 0,
+    surge_scheduler_lag_max: 0,
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
+    // §3.15: Per-scenario active concurrency for reconnect
+    reconnect_active_start: 0,
+    reconnect_active_peak: 0,
+    reconnect_active_end: 0,
     // §R: active connections peak — wired from metrics recorder in main.ts
     active_connections_peak: 0,
     // §4.16: Live vs replay delivery accounting

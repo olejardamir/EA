@@ -68,16 +68,21 @@ export class ConnectionPool {
   // §3.4: Explicitly remove an active entry from pool with a reason label.
   // Used by ReconnectScenario to immediately remove cohort from active counts on close.
   // Removes from pool, decrements per-channel subscribers, updates active current metric,
-  // records deliberate disconnect reason, and preserves saved reconnect state for resume.
-  removeActiveEntry(entry: ConnectionEntry, reason: string): void {
+  // records the appropriate disconnect category, and preserves saved reconnect state for resume.
+  removeActiveEntry(entry: ConnectionEntry, reason: string, category?: "deliberate" | "network" | "server_initiated" | "unexpected"): void {
     const idx = this.connections.indexOf(entry)
     if (idx >= 0) {
       this.connections.splice(idx, 1)
       const count = this.subscribersByChannel.get(entry.matchId) ?? 0
       this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
       this.metrics.setActiveConnections(this.connections.length)
-      // §3.14: Only count deliberate disconnect when entry was actually in the pool
-      this.metrics.incrementDeliberateDisconnects()
+      // §3.14: Classify disconnect by actual category, not always deliberate
+      switch (category ?? "deliberate") {
+        case "deliberate": this.metrics.incrementDeliberateDisconnects(); break
+        case "network": this.metrics.incrementNetworkFailures(); break
+        case "server_initiated": this.metrics.incrementServerInitiatedDisconnects(); break
+        case "unexpected": this.metrics.incrementUnexpectedClientDisconnects(); break
+      }
     }
     void reason // reason is logged by caller, attribution counted here
   }
@@ -237,13 +242,16 @@ export class ConnectionPool {
           this.handleMessage(entry, evt.event.data, evt.event.id)
         } else if (evt.type === "error") {
           // §4.3: Terminal stream error — remove from active pool immediately
-          // §4.17: Disconnect attribution — classify error by cause
+          // §4.17/§3.14: Disconnect attribution — classify error by cause
           const msg = evt.error?.message ?? ""
           if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
             this.metrics.incrementNetworkFailures()
           } else if (/stream ended/i.test(msg)) {
             // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
             this.metrics.incrementServerInitiatedDisconnects()
+          } else if (/abort/i.test(msg)) {
+            // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
+            this.metrics.incrementUnexpectedClientDisconnects()
           } else {
             // §4.17: Unexpected client-side stream termination
             this.metrics.incrementUnexpectedClientDisconnects()

@@ -134,6 +134,8 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     establishment_rate_peak: 0,
     scheduler_lag_p95: 0,
     scheduler_lag_max: 0,
+    surge_scheduler_lag_p95: 0,
+    surge_scheduler_lag_max: 0,
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
@@ -145,6 +147,9 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     lobby_events_per_sec: 0,
     total_events_per_sec: 0,
     clock_validity: { clock_model: "unknown", nodes_covered: [], measurement_method: "unknown", offset_or_guarantee: -1, uncertainty_ms: -1, threshold_ms: -1, validity_result: "INCONCLUSIVE" as const, nchan1_reachable: false, nchan2_reachable: false },
+    reconnect_active_start: 0,
+    reconnect_active_peak: 0,
+    reconnect_active_end: 0,
     ...overrides,
   }
 }

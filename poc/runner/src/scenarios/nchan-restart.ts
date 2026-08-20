@@ -87,10 +87,13 @@ export class NchanRestartScenario implements Scenario {
         } catch {}
       }
 
-      // §3.11: Freeze expected range BEFORE connecting to nchan-2
-      // Expected = at minimum 1 event after nchan-1's last seq (seq > lastSeq1)
+      // §3.11/§3.13: Freeze expected range BEFORE connecting to nchan-2
+      // Expected = events between resume cursor and head at replacement time
       const frozenExpectedFirstSeq1 = lastSeq1 !== null ? lastSeq1 + 1 : null
-      const frozenExpectedMinCount1 = 1
+      const headAtReplacement = ctx.headTracker.getHead(testMatch)
+      const frozenExpectedCount1 = frozenExpectedFirstSeq1 !== null && headAtReplacement >= frozenExpectedFirstSeq1
+        ? headAtReplacement - frozenExpectedFirstSeq1 + 1
+        : 1
 
       ctx.log("Waiting 500ms before connecting to nchan-2...")
       await ctx.sleep(500)
@@ -180,7 +183,7 @@ export class NchanRestartScenario implements Scenario {
       ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq}`)
 
       // §3.11: Wire delivery accounting — frozen expected range from pre-restart observation
-      ctx.metrics.incrementRestartReplayExpected(frozenExpectedMinCount1)
+      ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount1)
       ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
 
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
@@ -188,7 +191,20 @@ export class NchanRestartScenario implements Scenario {
       return {
         name: this.name,
         passed,
-        detail: `cross-node events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}] expectedFirstSeq=${frozenExpectedFirstSeq1} expectedMinCount=${frozenExpectedMinCount1}`,
+        detail: [
+          `type=cross-node`,
+          `events=${replayEvents.length}`,
+          `gap=${replayResult.gap}`,
+          `dup=${replayResult.dup}`,
+          `outOfOrder=${outOfOrder}`,
+          `resumeTransportId=${lastEventId}`,
+          `expectedFirstSeq=${frozenExpectedFirstSeq1}`,
+          `receivedFirstSeq=${firstReplaySeq}`,
+          `receivedLastSeq=${lastReplaySeq}`,
+          `expectedCount=${frozenExpectedCount1}`,
+          `receivedCount=${replayEvents.length}`,
+          `recoveryMs=N/A`,
+        ].join(" "),
       }
     } catch (err) {
       ctx.log(`Nchan restart test failed: ${err}`)
@@ -247,10 +263,13 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
 
-      // §3.11: Record canonical range BEFORE restart — independent frozen expected range
-      // Expected = at minimum 1 event after restart (seq > lastSeq) — NOT derived from received count
+      // §3.11/§3.13: Record canonical range BEFORE restart — independent frozen expected range
+      // Expected = events between resume cursor and head at restart time (NOT derived from received count)
       const frozenExpectedFirstSeq = lastSeq !== null ? lastSeq + 1 : null
-      const frozenExpectedMinCount = 1 // At minimum 1 post-restart event expected
+      const headAtRestart = ctx.headTracker.getHead(testMatch)
+      const frozenExpectedCount = frozenExpectedFirstSeq !== null && headAtRestart >= frozenExpectedFirstSeq
+        ? headAtRestart - frozenExpectedFirstSeq + 1
+        : 1 // Fallback: at minimum 1 event expected if head is unknown or <= lastSeq
 
       // Step 2: Trigger literal Nchan process restart via control server
       ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
@@ -378,10 +397,9 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq} restartMs=${restartMs}`)
 
-      // §3.11: Wire delivery accounting — frozen expected range from pre-restart observation
-      // Expected = frozenExpectedMinCount (1 post-restart event, frozen before replay)
+      // §3.11/§3.13: Wire delivery accounting — frozen expected range from pre-restart head observation
       // NOT derived from received replay count
-      ctx.metrics.incrementRestartReplayExpected(frozenExpectedMinCount)
+      ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount)
       ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
 
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder

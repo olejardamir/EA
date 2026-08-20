@@ -26,6 +26,10 @@ export interface TopologyPreflight {
   recommended_shard_count: number
   shard_capacity_each: number
   topology_note: string | null
+  // §3.2: Aggregate capacity across all shards
+  shard_count: number
+  aggregate_target_connections: number
+  aggregate_destination_tuple_capacity: number
 }
 
 function readSysctl(key: string): string | null {
@@ -102,8 +106,11 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
       })()
     : null
 
-  // §4.2: Single source IP on host network — all connections share one source address
-  const sourceIps = 1
+  // §3.2: Source IP count from multi-shard topology
+  // Each Docker bridge-networked runner container gets a distinct source IP.
+  // SHARD_COUNT env var indicates the number of parallel runner shards.
+  const shardCount = parseInt(process.env.SHARD_COUNT ?? "1", 10) || 1
+  const sourceIps = shardCount
 
   // §4.2: Destination tuples = source IPs × ephemeral ports
   const destTupleCapacity = sourceIps * (ephemeralCount ?? 0)
@@ -132,6 +139,8 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
   }
 
   const capacitySufficient = (() => {
+    // §3.2: Aggregate target across all shards
+    const aggregateTarget = targetConnections * shardCount
     if (ephemeralCount === null) {
       warnings.push("Cannot parse /proc/sys/net/ipv4/ip_local_port_range — capacity cannot be verified")
       return false
@@ -141,19 +150,19 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
       return false
     }
     if (ephemeralCount !== null && ephemeralCount < targetConnections) {
-      warnings.push(`Ephemeral port range ${ephemeralCount} < target ${targetConnections}`)
+      warnings.push(`Ephemeral port range ${ephemeralCount} < per-shard target ${targetConnections}`)
       return false
     }
     if (nginxMaxSseCapacity < targetConnections) {
-      warnings.push(`Nginx max capacity ${nginxMaxSseCapacity} < target ${targetConnections}`)
+      warnings.push(`Nginx max capacity ${nginxMaxSseCapacity} < per-shard target ${targetConnections}`)
       return false
     }
-    if (destTupleCapacity < targetConnections) {
-      warnings.push(`Destination tuple capacity ${destTupleCapacity} (source_ips=${sourceIps} × ephemeral=${ephemeralCount}) < target ${targetConnections} — structurally insufficient for 100k`)
+    if (destTupleCapacity < aggregateTarget) {
+      warnings.push(`Aggregate destination tuple capacity ${destTupleCapacity} (${sourceIps} shards × ephemeral=${ephemeralCount}) < aggregate target ${aggregateTarget} — structurally insufficient`)
       return false
     }
     if (subscribersPerNode * nchanNodes < targetConnections) {
-      warnings.push(`Subscriber capacity ${subscribersPerNode} × ${nchanNodes} nodes < target ${targetConnections}`)
+      warnings.push(`Subscriber capacity ${subscribersPerNode} × ${nchanNodes} nodes < per-shard target ${targetConnections}`)
       return false
     }
     return true
@@ -190,5 +199,8 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     recommended_shard_count: recommendedShardCount,
     shard_capacity_each: shardCapacityEach,
     topology_note: topologyNote,
+    shard_count: shardCount,
+    aggregate_target_connections: targetConnections * shardCount,
+    aggregate_destination_tuple_capacity: destTupleCapacity,
   }
 }

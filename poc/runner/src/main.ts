@@ -3,7 +3,7 @@ import { NchanHttpPublisher } from "./adapters/nchan-http-publisher.js"
 import { SSEHttpClient } from "./adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "./adapters/metrics-recorder.js"
 import { SystemClock } from "./adapters/system-clock.js"
-import { CgroupResourceMonitor } from "./adapters/cgroup-resource-monitor.js"
+import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode } from "./adapters/cgroup-resource-monitor.js"
 import { MatchEventPublisher } from "./adapters/match-event-publisher.js"
 import { ConnectionPool } from "./application/connection-pool.js"
 import { createMatchHeadTracker } from "./domain/match-state.js"
@@ -369,6 +369,18 @@ async function main(): Promise<void> {
     const phaseHists = metrics.snapshotPhaseHistograms()
     const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots, phaseHists)
     aggregated.build_identity = buildIdentity
+    // §3.12: Wire clock validity into single-run aggregated metrics
+    aggregated.clock_validity = {
+      clock_model: clockEvidence.clock_model,
+      nodes_covered: ["runner", "nchan-1", ...(config.nchan2SubUrl ? ["nchan-2"] : [])],
+      measurement_method: "same-host-kernel-clock-verification",
+      offset_or_guarantee: clockEvidence.cross_node_max_offset_ms,
+      uncertainty_ms: 0,
+      threshold_ms: clockEvidence.threshold_ms,
+      validity_result: clockEvidence.passed ? "PASS" : "INCONCLUSIVE",
+      nchan1_reachable: clockEvidence.nchan1_reachable,
+      nchan2_reachable: clockEvidence.nchan2_reachable,
+    }
     aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
     aggregated.generator_cpu_percent_peak = resourceSnap.cpuPercentPeak
@@ -408,6 +420,13 @@ async function main(): Promise<void> {
     // §3.8: Nchan/Redis CPU percent peaks
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
+    // §3.9: Normalized CPU percent peaks — divide raw per-core % by core count
+    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / 100_000 : null
+    const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
+    aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
+    aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
+    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, cpuLimitCores)
+    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, cpuLimitCores)
     // §4.2: Topology capacity
     aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
     // §BL: Wire publisher backlog peak
@@ -464,11 +483,17 @@ async function main(): Promise<void> {
       aggregated.surge_timing_error_ms = ctx._surgeHealth.surge_timing_error_ms
       aggregated.attempt_rate_peak = ctx._surgeHealth.attempt_rate_peak
       aggregated.establishment_rate_peak = ctx._surgeHealth.establishment_rate_peak
-      aggregated.scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
-      aggregated.scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
+      aggregated.surge_scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
+      aggregated.surge_scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
       aggregated.active_population_start = ctx._surgeHealth.active_population_start
       aggregated.active_population_end = ctx._surgeHealth.active_population_end
       aggregated.active_population_peak = ctx._surgeHealth.active_population_peak
+    }
+    // §3.15: Wire reconnect active concurrency from scenario
+    if (ctx._reconnectHealth) {
+      aggregated.reconnect_active_start = ctx._reconnectHealth.active_start
+      aggregated.reconnect_active_peak = ctx._reconnectHealth.active_peak
+      aggregated.reconnect_active_end = ctx._reconnectHealth.active_end
     }
 
     const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100

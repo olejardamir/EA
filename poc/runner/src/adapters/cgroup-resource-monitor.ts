@@ -110,6 +110,29 @@ function fetchNchanMetrics(controlUrl: string): Promise<{
   })
 }
 
+// §3.9: CPU normalization — divide raw per-core % by core count for 0–100 range
+export function normalizeCpuPercent(rawPercent: number | null, cpuLimitCores: number | null): number | null {
+  if (rawPercent === null) return null
+  if (cpuLimitCores === null || cpuLimitCores <= 0) return rawPercent // no limit: raw is already 0–100 per core
+  return rawPercent / cpuLimitCores
+}
+
+// §3.9: Baseline CPU percent — idle system baseline (no active workloads)
+export function baselineCpuPercent(containerMode: "unlimited" | "limited" | "unknown"): number {
+  switch (containerMode) {
+    case "limited": return 0
+    case "unlimited": return 0
+    default: return 0
+  }
+}
+
+// §3.9: Detect container mode from cgroup cpu.max quota
+export function detectContainerMode(cpuMaxQuota: number | null): "unlimited" | "limited" | "unknown" {
+  if (cpuMaxQuota === null) return "unlimited"
+  if (cpuMaxQuota > 0) return "limited"
+  return "unknown"
+}
+
 export class CgroupResourceMonitor implements ResourceMonitor {
   private memoryMbPeak = 0
   private cpuPercentPeak = 0

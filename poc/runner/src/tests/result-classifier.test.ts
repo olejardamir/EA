@@ -120,6 +120,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     establishment_rate_peak: 0,
     scheduler_lag_p95: 0,
     scheduler_lag_max: 0,
+    surge_scheduler_lag_p95: 0,
+    surge_scheduler_lag_max: 0,
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
@@ -131,6 +133,9 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     lobby_events_per_sec: 0,
     total_events_per_sec: 0,
     clock_validity: { clock_model: "unknown", nodes_covered: [], measurement_method: "unknown", offset_or_guarantee: -1, uncertainty_ms: -1, threshold_ms: -1, validity_result: "INCONCLUSIVE" as const, nchan1_reachable: false, nchan2_reachable: false },
+    reconnect_active_start: 0,
+    reconnect_active_peak: 0,
+    reconnect_active_end: 0,
     ...overrides,
   }
 }
@@ -362,7 +367,7 @@ describe("classifyResult", () => {
   })
 
   it("REJECT when nchan_memory exceeds threshold", () => {
-    const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: 3500 }), true, true)
+    const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: 7000 }), true, true)
     assert.equal(result.verdict, "REJECT")
     assert.ok(result.checks.find((c) => c.name === "nchan_memory")!.passed === false)
   })

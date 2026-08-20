@@ -51,6 +51,12 @@ export interface ScenarioContext {
     active_population_end: number
     active_population_peak: number
   }
+  // §3.15: Reconnect scenario writes active concurrency for machine-readable output
+  _reconnectHealth?: {
+    active_start: number
+    active_peak: number
+    active_end: number
+  }
 }
 
 export interface ScenarioResult {

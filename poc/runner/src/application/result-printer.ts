@@ -151,7 +151,7 @@ export function emitMachineReadableResult(
   const preflight = topologyPreflight ?? runTopologyPreflight(config.targetConnections)
 
   const result = {
-    contract_version: "v2.0.2",
+    contract_version: "v2.0.3",
     run_profile: config.runProfile,
     run_mode: config.runMode ?? "single",
     seed: config.seed,
@@ -206,7 +206,10 @@ export function emitMachineReadableResult(
       nchan_node_count: preflight.nchan_node_count,
       cpu_quota: preflight.cpu_quota,
       cpu_count: preflight.cpu_count,
-      // §3.2: Multi-shard topology recommendation
+      // §3.2: Multi-shard topology
+      shard_count: preflight.shard_count,
+      aggregate_target_connections: preflight.aggregate_target_connections,
+      aggregate_destination_tuple_capacity: preflight.aggregate_destination_tuple_capacity,
       recommended_shard_count: preflight.recommended_shard_count,
       shard_capacity_each: preflight.shard_capacity_each,
       topology_note: preflight.topology_note,
@@ -379,6 +382,12 @@ export function emitMachineReadableResult(
       active_population_start: metrics.active_population_start,
       active_population_end: metrics.active_population_end,
       active_population_peak: metrics.active_population_peak,
+    },
+    // §3.15: Per-scenario active concurrency for reconnect
+    reconnect_health: {
+      active_start: metrics.reconnect_active_start,
+      active_peak: metrics.reconnect_active_peak,
+      active_end: metrics.reconnect_active_end,
     },
     phase_publish_rates: metrics.phase_publish_rates,
     // §4.18: Workload rate metrics with separate match/lobby/total rates

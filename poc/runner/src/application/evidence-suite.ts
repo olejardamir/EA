@@ -2,7 +2,7 @@ import { NchanHttpPublisher } from "../adapters/nchan-http-publisher.js"
 import { SSEHttpClient } from "../adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "../adapters/metrics-recorder.js"
 import { SystemClock } from "../adapters/system-clock.js"
-import { CgroupResourceMonitor } from "../adapters/cgroup-resource-monitor.js"
+import { CgroupResourceMonitor, normalizeCpuPercent, baselineCpuPercent, detectContainerMode } from "../adapters/cgroup-resource-monitor.js"
 import { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import { ConnectionPool } from "./connection-pool.js"
 import { createMatchHeadTracker } from "../domain/match-state.js"
@@ -392,6 +392,13 @@ export async function runSingleExperiment(
     // §3.8/§3.16: Nchan/Redis CPU percent peaks — evidence suite parity
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
+    // §3.9: Normalized CPU percent peaks — divide raw per-core % by core count
+    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / 100_000 : null
+    const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
+    aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
+    aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
+    aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, cpuLimitCores)
+    aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, cpuLimitCores)
     // §3.16: Phase histograms — evidence suite parity with single-run path
     const phaseHists = metrics.snapshotPhaseHistograms()
     aggregated.phase_histograms = phaseHists
@@ -449,11 +456,17 @@ export async function runSingleExperiment(
       aggregated.surge_timing_error_ms = ctx._surgeHealth.surge_timing_error_ms
       aggregated.attempt_rate_peak = ctx._surgeHealth.attempt_rate_peak
       aggregated.establishment_rate_peak = ctx._surgeHealth.establishment_rate_peak
-      aggregated.scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
-      aggregated.scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
+      aggregated.surge_scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
+      aggregated.surge_scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
       aggregated.active_population_start = ctx._surgeHealth.active_population_start
       aggregated.active_population_end = ctx._surgeHealth.active_population_end
       aggregated.active_population_peak = ctx._surgeHealth.active_population_peak
+    }
+    // §3.15: Wire reconnect active concurrency from scenario
+    if (ctx._reconnectHealth) {
+      aggregated.reconnect_active_start = ctx._reconnectHealth.active_start
+      aggregated.reconnect_active_peak = ctx._reconnectHealth.active_peak
+      aggregated.reconnect_active_end = ctx._reconnectHealth.active_end
     }
 
     // §R: Wire active connections peak from metrics recorder
@@ -645,6 +658,7 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   // §3.23: Active connections peak and scheduler lag must also use max across runs
   aggregate.active_connections_peak = Math.max(...runs.map((r) => r.aggregated.active_connections_peak))
   aggregate.scheduler_lag_p95 = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_p95))
+  aggregate.surge_scheduler_lag_p95 = Math.max(...runs.map((r) => r.aggregated.surge_scheduler_lag_p95))
   aggregate.surge_failures = Math.max(...runs.map((r) => r.aggregated.surge_failures))
   // §3.23: Surge timing/rate fields — max for peaks, sum for counts
   aggregate.surge_target_additions = runs.reduce((s, r) => s + r.aggregated.surge_target_additions, 0)
@@ -653,6 +667,7 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.attempt_rate_peak = Math.max(...runs.map((r) => r.aggregated.attempt_rate_peak))
   aggregate.establishment_rate_peak = Math.max(...runs.map((r) => r.aggregated.establishment_rate_peak))
   aggregate.scheduler_lag_max = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_max))
+  aggregate.surge_scheduler_lag_max = Math.max(...runs.map((r) => r.aggregated.surge_scheduler_lag_max))
   aggregate.active_population_peak = Math.max(...runs.map((r) => r.aggregated.active_population_peak))
   aggregate.surge_timing_error_ms = Math.max(...runs.map((r) => r.aggregated.surge_timing_error_ms))
   // §3.9/§3.16: Nchan/Redis CPU percent peaks — null in ANY run means unavailable → campaign INCONCLUSIVE
@@ -665,6 +680,20 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.redis_cpu_percent_peak = anyRedisCpuNull
     ? null
     : Math.max(...runs.map((r) => r.aggregated.redis_cpu_percent_peak as number))
+  // §3.9: Normalized CPU percent peaks — max across runs
+  const anyResourceCpuNull = runs.some((r) => r.aggregated.resource_cpu_percent_peak === null)
+  aggregate.resource_cpu_percent_peak = anyResourceCpuNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.resource_cpu_percent_peak as number))
+  aggregate.resource_cpu_baseline = runs.length > 0 ? runs[0].aggregated.resource_cpu_baseline : null
+  const anyNchanResourceCpuNull = runs.some((r) => r.aggregated.nchan_resource_cpu_percent_peak === null)
+  aggregate.nchan_resource_cpu_percent_peak = anyNchanResourceCpuNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.nchan_resource_cpu_percent_peak as number))
+  const anyRedisResourceCpuNull = runs.some((r) => r.aggregated.redis_resource_cpu_percent_peak === null)
+  aggregate.redis_resource_cpu_percent_peak = anyRedisResourceCpuNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.redis_resource_cpu_percent_peak as number))
   // §3.23: Latency invalid/overflow counts sum across runs
   aggregate.latency_invalid_count = runs.reduce((s, r) => s + r.aggregated.latency_invalid_count, 0)
   aggregate.latency_overflow_count = runs.reduce((s, r) => s + r.aggregated.latency_overflow_count, 0)

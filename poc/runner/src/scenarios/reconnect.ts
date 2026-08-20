@@ -96,8 +96,15 @@ export class ReconnectScenario implements Scenario {
             // §3.5: Pass transport ID through
             this.pool.handleMessage(s.entry, evt.event.data, evt.event.id)
           } else if (evt.type === "error") {
-            // §3.4: Terminal stream error — remove from active pool
-            this.pool.removeActiveEntry(s.entry, "reconnected_stream_error")
+            // §3.4/§3.14: Terminal stream error — remove from active pool with proper attribution
+            const msg = evt.error?.message ?? ""
+            let category: "deliberate" | "network" | "server_initiated" | "unexpected" = "unexpected"
+            if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
+              category = "network"
+            } else if (/stream ended/i.test(msg)) {
+              category = "server_initiated"
+            }
+            this.pool.removeActiveEntry(s.entry, "reconnected_stream_error", category)
           }
         })
 
@@ -176,6 +183,12 @@ export class ReconnectScenario implements Scenario {
     ].join(" ")
 
     ctx.log(`Reconnect result: ${passed ? "PASS" : "FAIL"} (${detail})`)
+    // §3.15: Write active concurrency to context for machine-readable output
+    ctx._reconnectHealth = {
+      active_start: activeAtScenarioStart,
+      active_peak: Math.max(activeAtScenarioStart, activeAfterReconnect),
+      active_end: activeAtScenarioEnd,
+    }
     return { name: this.name, passed, detail }
   }
 }
