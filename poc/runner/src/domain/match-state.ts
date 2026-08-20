@@ -52,7 +52,10 @@ export function createMatchHeadTracker(): MatchHeadTracker {
     },
     updateHeadState(matchId: string, seq: number, score: { home: number; away: number }, clock: { period: string; elapsed: number }): void {
       const current = heads.get(matchId) ?? 0
-      if (seq > current) {
+      // A subscriber may observe the accepted sequence just before the
+      // publisher commits its richer state snapshot. Equal sequence is allowed
+      // to fill/refresh state; lower sequences can never regress the head.
+      if (seq >= current) {
         heads.set(matchId, seq)
         states.set(matchId, { seq, score: { ...score }, clock: { ...clock } })
       }

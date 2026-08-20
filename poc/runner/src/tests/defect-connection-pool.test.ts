@@ -173,7 +173,7 @@ describe("ConnectionPool defect fixes", () => {
     assert.equal(metrics.counts["events_received"], 1)
   })
 
-  it("handleMessage ignores lobby events (no canonical_seq)", async () => {
+  it("handleMessage validates lobby state without treating it as a match sequence", async () => {
     const stream = mockStream()
     const metrics = mockMetrics()
     const pool = new ConnectionPool(
@@ -181,13 +181,40 @@ describe("ConnectionPool defect fixes", () => {
       metrics, mockClock(),
     )
     pool.running = true
-    await pool.connectAll(stream, 1, 0)
+    await pool.connectAll(stream, 1, 0, undefined, 1)
     const entry = pool.entries[0]
 
     const lobbyData = JSON.stringify({ matches: [], timestamp: new Date().toISOString() })
-    pool.handleMessage(entry, lobbyData)
+    pool.handleMessage(entry, lobbyData, "lobby-event-1")
 
-    assert.equal(metrics.counts["events_received"], undefined)
+    assert.equal(metrics.counts["events_received"], 1)
+    assert.equal(metrics.counts["schema_validation_errors"], undefined)
+    assert.equal(entry.tracker.totalReceived, 0)
+  })
+
+  it("updates an observed canonical head on non-publisher shards", async () => {
+    const stream = mockStream()
+    const metrics = mockMetrics()
+    let observed: { matchId: string; seq: number } | null = null
+    const pool = new ConnectionPool(
+      {
+        subUrl: "http://localhost:8081",
+        matchIds: ["match-001"],
+        onCanonicalHead: (matchId, seq) => { observed = { matchId, seq } },
+      },
+      metrics,
+      mockClock(),
+    )
+    await pool.connectAll(stream, 1, 0)
+    pool.handleMessage(pool.entries[0], JSON.stringify({
+      match_id: "match-001",
+      canonical_seq: 77,
+      event_type: "goal",
+      publish_timestamp: new Date().toISOString(),
+      score: { home: 1, away: 0 },
+      clock: { period: "1H", elapsed_seconds: 10 },
+    }), "transport-77")
+    assert.deepEqual(observed, { matchId: "match-001", seq: 77 })
   })
 
   it("connectAll with offset for surge batches", async () => {

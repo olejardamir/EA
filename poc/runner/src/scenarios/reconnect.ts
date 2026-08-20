@@ -85,6 +85,7 @@ export class ReconnectScenario implements Scenario {
         expectedCount,
         caughtUpAt: 0 as number,
         replayReceived: 0 as number,
+        requiredSeqs: new Set<number>(),
         firstReceivedSeq: null as number | null,
         // §M2-5: Per-client replay integrity counters
         duplicates: 0 as number,
@@ -123,12 +124,17 @@ export class ReconnectScenario implements Scenario {
                 if (typeof data.canonical_seq === "number") {
                   const seq = data.canonical_seq as number
                   if (pc.firstReceivedSeq === null) pc.firstReceivedSeq = seq
-                  // §3.5.B: Only count replay frames up to the frozen target
-                  if (seq <= pc.targetHead) {
+                  // §3.5.B: Count only frames in the independently frozen
+                  // required range. Older cursor duplicates and later live
+                  // frames cannot satisfy received_required_count.
+                  if (seq >= pc.expectedFirst && seq <= pc.targetHead) {
                     pc.replayReceived++
                     // §M2-5: Per-client duplicate/out-of-order detection within required range
                     if (seenSeqs.has(seq)) pc.duplicates++
-                    else seenSeqs.add(seq)
+                    else {
+                      seenSeqs.add(seq)
+                      pc.requiredSeqs.add(seq)
+                    }
                     if (prevSeq !== null && seq < prevSeq) pc.outOfOrder++
                     prevSeq = seq
                   } else {
@@ -204,14 +210,14 @@ export class ReconnectScenario implements Scenario {
 
     for (const pc of perClientExpected) {
       totalExpectedReplay += pc.expectedCount
-      totalReceivedReplay += Math.min(pc.replayReceived, pc.expectedCount)
+      totalReceivedReplay += pc.requiredSeqs.size
       if (pc.reestablished) allReconnectedCount++
       // §M2-5: target_reached requires re-establishment AND full required replay.
       // expected=0/received=0 alone does NOT count as success.
-      const targetReached = pc.reestablished && pc.replayReceived >= pc.expectedCount
+      const targetReached = pc.reestablished && pc.requiredSeqs.size === pc.expectedCount
       if (targetReached) allReachedTarget++
       // §3.5.E: Missing prefix detection
-      if (pc.expectedFirst > 0 && pc.firstReceivedSeq !== null && pc.firstReceivedSeq !== pc.expectedFirst) {
+      if (pc.expectedCount > 0 && pc.firstReceivedSeq !== null && pc.firstReceivedSeq !== pc.expectedFirst) {
         missingPrefixCount++
       }
     }
@@ -226,11 +232,11 @@ export class ReconnectScenario implements Scenario {
       expected_last_seq: pc.expectedLast,
       expected_count: pc.expectedCount,
       first_received_seq: pc.firstReceivedSeq,
-      received_required_count: Math.min(pc.replayReceived, pc.expectedCount),
-      missing: Math.max(0, pc.expectedCount - pc.replayReceived),
+      received_required_count: pc.requiredSeqs.size,
+      missing: Math.max(0, pc.expectedCount - pc.requiredSeqs.size),
       duplicates: pc.duplicates,
       out_of_order: pc.outOfOrder,
-      target_reached: pc.reestablished && pc.replayReceived >= pc.expectedCount,
+      target_reached: pc.reestablished && pc.requiredSeqs.size === pc.expectedCount,
       catch_up_ms: pc.caughtUpAt,
     }))
     ctx._reconnectPerClient = perClientResults

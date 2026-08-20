@@ -78,4 +78,21 @@ describe("ExperimentConfig", () => {
       else delete process.env.TARGET_CONNECTIONS
     }
   })
+
+  it("resolves surge duration from configuration with a 120-second default", () => {
+    const savedTarget = process.env.TARGET_CONNECTIONS
+    const savedSurge = process.env.SURGE_SECONDS
+    process.env.TARGET_CONNECTIONS = "100"
+    delete process.env.SURGE_SECONDS
+    try {
+      assert.equal(loadConfig().surgeSeconds, 120)
+      process.env.SURGE_SECONDS = "5"
+      assert.equal(loadConfig().surgeSeconds, 5)
+    } finally {
+      if (savedTarget !== undefined) process.env.TARGET_CONNECTIONS = savedTarget
+      else delete process.env.TARGET_CONNECTIONS
+      if (savedSurge !== undefined) process.env.SURGE_SECONDS = savedSurge
+      else delete process.env.SURGE_SECONDS
+    }
+  })
 })

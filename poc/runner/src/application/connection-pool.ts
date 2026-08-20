@@ -16,6 +16,9 @@ export interface ConnectionEntry {
 export interface ConnectionPoolConfig {
   subUrl: string
   matchIds: string[]
+  // Every shard observes the authoritative publisher stream. Updating a local
+  // observed head here lets non-publisher shards freeze real reconnect ranges.
+  onCanonicalHead?: (matchId: string, canonicalSeq: number) => void
 }
 
 export class ConnectionPool {
@@ -124,6 +127,26 @@ export class ConnectionPool {
       return
     }
 
+    // Lobby frames intentionally use the frozen latest-state schema rather
+    // than match canonical-sequence fields. Validate and count them without
+    // feeding them into match sequence or fan-out histograms.
+    if (entry.matchId === "lobby") {
+      const lobby = raw as Record<string, unknown>
+      const validLobby = Array.isArray(lobby.matches)
+        && typeof lobby.timestamp === "string"
+        && Number.isFinite(new Date(lobby.timestamp).getTime())
+      if (!validLobby) {
+        this.metrics.incrementSchemaValidationErrors()
+        return
+      }
+      if (transportId === undefined || transportId === null || transportId === "") {
+        this.metrics.incrementMissingTransportId()
+      }
+      this.metrics.incrementEventsReceived()
+      if (entry.mode === "steady") this.metrics.incrementLiveReceivedDeliveries(1)
+      return
+    }
+
     // §3.16: Schema validation — validate required fields before influencing any metrics
     const validation = validateMatchEventPayload(raw)
     if (!validation.valid) {
@@ -139,6 +162,7 @@ export class ConnectionPool {
     }
 
     const seq = data.canonical_seq
+    this.config.onCanonicalHead?.(data.match_id, seq)
     this.metrics.incrementEventsReceived()
 
     // §3.13: Live delivery accounting — received comes from actual frames received here.

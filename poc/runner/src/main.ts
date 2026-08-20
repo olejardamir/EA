@@ -127,7 +127,11 @@ async function main(): Promise<void> {
   const random = createPRNG(config.seed)
 
   const pool = new ConnectionPool(
-    { subUrl: config.nchanSubUrl, matchIds: [...MATCH_IDS] },
+    {
+      subUrl: config.nchanSubUrl,
+      matchIds: [...MATCH_IDS],
+      onCanonicalHead: (matchId, canonicalSeq) => headTracker.updateHead(matchId, canonicalSeq),
+    },
     metrics,
     clock,
   )
