@@ -817,6 +817,39 @@ describe("§6.30: SSE first-frame handler race", () => {
     assert.equal(frames.length, 1)
     assert.equal(frames[0].data, "日本語テスト".repeat(100))
   })
+
+  it("handshake timeout is cleared after HTTP 200 so idle healthy streams survive", async () => {
+    const http = await import("node:http")
+
+    let keepAlive: ReturnType<typeof setInterval> | null = null
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" })
+      // §6.30: Send heartbeats every 5s — enough to keep the connection alive
+      // but spaced enough to prove the 10s connect timeout was cleared.
+      keepAlive = setInterval(() => { res.write(": heartbeat\n") }, 5000)
+      res.on("close", () => { if (keepAlive) clearInterval(keepAlive) })
+    })
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const addr = server.address() as { port: number }
+
+    try {
+      const { SSEHttpClient } = await import("../adapters/sse-http-client.js")
+      const client = new SSEHttpClient()
+      const sub = await client.connect(`http://127.0.0.1:${addr.port}/sub/test`)
+
+      // §6.30: Wait >10s (connect timeout). If timeout wasn't cleared, the
+      // connection would be destroyed during the idle gap between heartbeats.
+      await new Promise((r) => setTimeout(r, 12_000))
+
+      assert.ok(sub.connected, "connection must remain alive beyond the connect timeout")
+      sub.close()
+    } finally {
+      if (keepAlive) clearInterval(keepAlive)
+      server.closeAllConnections()
+      server.close()
+    }
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -1004,8 +1037,42 @@ describe("§6.12: Channel-aware subscriber tracking", () => {
 // ═══════════════════════════════════════════════════════════════
 // §6.32: Streaming histogram correctness
 // ═══════════════════════════════════════════════════════════════
-describe("§6.32: Bounded histogram — maxLatencySamples enforcement", () => {
-  it("fan-out latency array is bounded to maxLatencySamples", () => {
+describe("§6.32: Bounded histogram — streaming histogram enforcement", () => {
+  it("streaming histogram preserves all samples (not tail-truncated)", () => {
+    const metrics = new BoundedMetricsRecorder()
+
+    for (let i = 0; i < 200_001; i++) {
+      metrics.recordFanOutLatency(i)
+    }
+
+    // §6.32: The histogram must preserve ALL samples, not just the latest 100k
+    const histogram = metrics.getFanOutHistogram()
+    assert.equal(histogram.count, 200_001, "histogram must count all 200,001 samples")
+    assert.ok(histogram.count > 100_000, "histogram must preserve more than 100k samples")
+  })
+
+  it("histogram percentile computation is correct", () => {
+    const metrics = new BoundedMetricsRecorder()
+
+    // Record values 0-999 (1000 samples)
+    for (let i = 0; i < 1000; i++) {
+      metrics.recordFanOutLatency(i)
+    }
+
+    const histogram = metrics.getFanOutHistogram()
+    // p50 should be around 500
+    const p50 = histogram.p50()
+    assert.ok(p50 >= 499 && p50 <= 501, `p50 should be ~500, got ${p50}`)
+
+    // p95 should be around 950
+    const p95 = histogram.p95()
+    assert.ok(p95 >= 949 && p95 <= 951, `p95 should be ~950, got ${p95}`)
+
+    // max should be 999
+    assert.equal(histogram.max, 999, "max should be 999")
+  })
+
+  it("raw buffer is bounded for scenario phase-scoped queries", () => {
     const metrics = new BoundedMetricsRecorder()
 
     for (let i = 0; i < 200_000; i++) {
@@ -1013,22 +1080,11 @@ describe("§6.32: Bounded histogram — maxLatencySamples enforcement", () => {
     }
 
     const snap = metrics.snapshot()
+    // The raw buffer is bounded (10k FIFO) for scenario use
     assert.ok(
-      snap.fan_out_latencies_ms.length <= 100_000,
-      `array length ${snap.fan_out_latencies_ms.length} should be bounded`,
+      snap.fan_out_latencies_ms.length <= 10_000,
+      `raw buffer length ${snap.fan_out_latencies_ms.length} should be bounded`,
     )
-  })
-
-  it("latest samples are retained when trimming", () => {
-    const metrics = new BoundedMetricsRecorder()
-
-    for (let i = 0; i < 100_100; i++) {
-      metrics.recordFanOutLatency(i)
-    }
-
-    const snap = metrics.snapshot()
-    const firstVal = snap.fan_out_latencies_ms[0]
-    assert.ok(firstVal >= 100, `first retained value ${firstVal} should be from later in the sequence`)
   })
 })
 

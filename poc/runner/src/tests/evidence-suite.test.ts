@@ -8,6 +8,7 @@ import {
   type SingleRunResult,
 } from "../application/evidence-suite.js"
 import type { AggregatedMetrics } from "../domain/result.js"
+import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -90,14 +91,18 @@ function makeRun(
   rawFanOut: number[] = [],
   rawLateJoin: number[] = [],
 ): SingleRunResult {
+  const fanOutHist = new StreamingHistogram()
+  for (const v of rawFanOut) fanOutHist.record(v)
+  const lateJoinHist = new StreamingHistogram()
+  for (const v of rawLateJoin) lateJoinHist.record(v)
   return {
     runIndex,
     seed: 42 + runIndex,
     aggregated,
     verdict: { verdict: "ACCEPT", checks: [{ name: "test", passed: true, detail: "ok" }] },
     eventsPublished: aggregated.events_published,
-    rawFanOutLatenciesMs: rawFanOut,
-    rawLateJoinLatenciesMs: rawLateJoin,
+    rawFanOutHistogram: fanOutHist,
+    rawLateJoinHistogram: lateJoinHist,
   }
 }
 
@@ -435,10 +440,12 @@ describe("Evidence Suite §6.37", () => {
   })
 
   describe("Raw sample pooling (§BA)", () => {
-    it("SingleRunResult includes raw latency arrays", () => {
+    it("SingleRunResult includes streaming histograms", () => {
       const run = makeRun(0, baseAggregated(), [10, 20, 30], [5, 10])
-      assert.deepEqual(run.rawFanOutLatenciesMs, [10, 20, 30])
-      assert.deepEqual(run.rawLateJoinLatenciesMs, [5, 10])
+      assert.equal(run.rawFanOutHistogram.count, 3)
+      assert.equal(run.rawFanOutHistogram.p95(), 30)
+      assert.equal(run.rawLateJoinHistogram.count, 2)
+      assert.equal(run.rawLateJoinHistogram.p95(), 10)
     })
 
     it("raw samples are independent from aggregated percentiles", () => {
@@ -448,9 +455,7 @@ describe("Evidence Suite §6.37", () => {
       const raw = [50, 60, 70, 80, 90, 100, 110, 120, 130, 140]
       const run = makeRun(0, agg, raw)
       // The raw samples have a different p95 than the pre-aggregated one
-      const sorted = [...raw].sort((a, b) => a - b)
-      const idx = Math.ceil(0.95 * sorted.length) - 1
-      const pooledP95 = sorted[idx]
+      const pooledP95 = run.rawFanOutHistogram.p95()
       assert.equal(pooledP95, 140) // different from aggregated p95 of 100
     })
   })

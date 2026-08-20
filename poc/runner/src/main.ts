@@ -159,8 +159,7 @@ async function main(): Promise<void> {
 
     // Phase 4: Post-burst steady
     log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
-    publisher.stop()
-    await sleep(500)
+    await publisher.drain()
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
@@ -271,7 +270,7 @@ async function main(): Promise<void> {
     // §BS: Guaranteed cleanup on all exit paths
     clearTimeout(runTimer)
     if (loopMonitor) clearInterval(loopMonitor)
-    publisher.stop()
+    await publisher.drain()
     await pool.disconnectAll().catch(() => {})
     if ("dispose" in resourceMonitor && typeof resourceMonitor.dispose === "function") {
       resourceMonitor.dispose()

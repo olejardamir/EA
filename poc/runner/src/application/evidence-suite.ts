@@ -34,9 +34,9 @@ export interface SingleRunResult {
   aggregated: AggregatedMetrics
   verdict: VerdictResult
   eventsPublished: number
-  // §BA: Raw samples for pooled percentile computation across runs
-  rawFanOutLatenciesMs: number[]
-  rawLateJoinLatenciesMs: number[]
+  // §BA: §6.32: Streaming histograms for pooled percentile computation across runs
+  rawFanOutHistogram: import("../adapters/streaming-histogram.js").StreamingHistogram
+  rawLateJoinHistogram: import("../adapters/streaming-histogram.js").StreamingHistogram
 }
 
 export interface CrossRunStats {
@@ -180,8 +180,7 @@ export async function runSingleExperiment(
     checkTimeout()
 
     // Phase 4: Post-burst steady
-    publisher.stop()
-    await sleep(500)
+    await publisher.drain()
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
@@ -211,10 +210,9 @@ export async function runSingleExperiment(
     resourceMonitor.measureCpu()
     const resourceSnap = resourceMonitor.snapshot()
 
-    // §BA: Capture raw samples before aggregation
-    const metricsSnap = metrics.snapshot()
-    const rawFanOut = metricsSnap.fan_out_latencies_ms
-    const rawLateJoin = metricsSnap.late_join_latencies_ms
+    // §BA: §6.32: Capture streaming histograms for pooled percentile computation
+    const rawFanOut = metrics.getFanOutHistogram()
+    const rawLateJoin = metrics.getLateJoinHistogram()
 
     const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots)
     aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
@@ -270,13 +268,13 @@ export async function runSingleExperiment(
       aggregated,
       verdict: verdictResult,
       eventsPublished: publisher.totalPublished,
-      rawFanOutLatenciesMs: rawFanOut,
-      rawLateJoinLatenciesMs: rawLateJoin,
+      rawFanOutHistogram: rawFanOut,
+      rawLateJoinHistogram: rawLateJoin,
     }
   } finally {
     clearTimeout(runTimer)
     if (loopMonitor) clearInterval(loopMonitor)
-    publisher.stop()
+    await publisher.drain()
     await pool.disconnectAll().catch(() => {})
     if ("dispose" in resourceMonitor && typeof resourceMonitor.dispose === "function") {
       resourceMonitor.dispose()
@@ -333,18 +331,21 @@ export function computeCrossRunStats(runs: SingleRunResult[]): CrossRunStats {
 
 // ─── Pooled percentile computation ────────────────────────────────────
 
-// §BA: Pool all raw fan-out samples across runs, recompute percentile.
-// This avoids the pitfall of averaging percentiles.
+// §BA: §6.32: Pool all streaming histograms across runs, recompute percentile.
+// This avoids the pitfall of averaging percentiles and preserves the full distribution.
 
-function poolPercentile(runs: SingleRunResult[], extract: (r: SingleRunResult) => number[]): number {
-  const all: number[] = []
-  for (const r of runs) {
-    all.push(...extract(r))
+function poolPercentileFromHistograms(
+  runs: SingleRunResult[],
+  extract: (r: SingleRunResult) => import("../adapters/streaming-histogram.js").StreamingHistogram,
+  p: number,
+): number {
+  if (runs.length === 0) return 0
+  // Merge all histograms into the first run's histogram
+  const merged = extract(runs[0])
+  for (let i = 1; i < runs.length; i++) {
+    merged.merge(extract(runs[i]))
   }
-  all.sort((a, b) => a - b)
-  if (all.length === 0) return 0
-  const idx = Math.ceil(0.95 * all.length) - 1
-  return all[Math.max(0, idx)]
+  return merged.percentile(p)
 }
 
 // ─── Aggregate across runs ────────────────────────────────────────────
@@ -377,10 +378,10 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.surge_out_of_order = runs.reduce((s, r) => s + r.aggregated.surge_out_of_order, 0)
   aggregate.surge_events_received = runs.reduce((s, r) => s + r.aggregated.surge_events_received, 0)
 
-  // For percentiles, pool raw samples and recompute (§BA)
-  aggregate.fan_out_latency_p95_ms = poolPercentile(runs, (r) => r.rawFanOutLatenciesMs)
-  aggregate.fan_out_latency_p99_ms = poolPercentile(runs, (r) => r.rawFanOutLatenciesMs)
-  aggregate.late_join_p95_ms = poolPercentile(runs, (r) => r.rawLateJoinLatenciesMs)
+  // §BA: §6.32: For percentiles, pool streaming histograms and recompute
+  aggregate.fan_out_latency_p95_ms = poolPercentileFromHistograms(runs, (r) => r.rawFanOutHistogram, 95)
+  aggregate.fan_out_latency_p99_ms = poolPercentileFromHistograms(runs, (r) => r.rawFanOutHistogram, 99)
+  aggregate.late_join_p95_ms = poolPercentileFromHistograms(runs, (r) => r.rawLateJoinHistogram, 95)
 
   // For peaks, take max across runs
   aggregate.fan_out_latency_max_ms = Math.max(...runs.map((r) => r.aggregated.fan_out_latency_max_ms))

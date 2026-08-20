@@ -170,6 +170,8 @@ export class MatchEventPublisher {
           const expected = this.config.getSubscriberCount?.("lobby") ?? 0
           this.config.onPublish?.("lobby", expected)
         }
+      }).catch(() => {
+        this._pendingPublishes--
       })
       const timer = setTimeout(scheduleLobby, 1000)
       this.timers.push(timer)
@@ -183,6 +185,16 @@ export class MatchEventPublisher {
     this.running = false
     for (const t of this.timers) clearTimeout(t)
     this.timers = []
+  }
+
+  // §6.19: Drain in-flight publishes with a bounded timeout.
+  // Stops the publisher and waits for all pending HTTP POSTs to settle.
+  async drain(timeoutMs = 5000): Promise<void> {
+    this.stop()
+    const deadline = Date.now() + timeoutMs
+    while (this._pendingPublishes > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
   }
 
   getMatchHead(matchId: string): number {

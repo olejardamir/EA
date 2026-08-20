@@ -1,8 +1,18 @@
 import type { MetricsRecorder, MetricsSnapshot } from "../ports/metrics.js"
+import { StreamingHistogram } from "./streaming-histogram.js"
+
+// §6.32: Bounded-memory metrics recorder using streaming histograms.
+// Cumulative percentiles are computed from the histogram (preserves ALL samples).
+// A small raw buffer (10k samples, FIFO) is kept for scenario-level phase-scoped queries
+// (burst.ts, slow-consumer.ts, connection-surge.ts use array.slice for phase deltas).
+const PHASE_BUFFER_MAX = 10_000
 
 export class BoundedMetricsRecorder implements MetricsRecorder {
-  private fanOutLatencies: number[] = []
-  private lateJoinLatencies: number[] = []
+  private fanOutHistogram = new StreamingHistogram()
+  private lateJoinHistogram = new StreamingHistogram()
+  // Small FIFO buffer for the most recent samples (scenario phase-scoped queries)
+  private fanOutBuffer: number[] = []
+  private lateJoinBuffer: number[] = []
   private latencySampleCount = 0
   private latencyInvalidCount = 0
   private latencyOverflowCount = 0
@@ -28,27 +38,20 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private jsonParseErrors = 0
   private invalidTimestampCount = 0
 
-  private maxLatencySamples = 100_000
-
-  private trimArray(arr: number[]): number[] {
-    if (arr.length > this.maxLatencySamples) {
-      return arr.slice(arr.length - this.maxLatencySamples)
-    }
-    return arr
-  }
-
   recordFanOutLatency(ms: number): void {
     this.latencySampleCount++
-    this.fanOutLatencies.push(ms)
-    if (this.fanOutLatencies.length > this.maxLatencySamples) {
-      this.fanOutLatencies = this.trimArray(this.fanOutLatencies)
+    this.fanOutHistogram.record(ms)
+    this.fanOutBuffer.push(ms)
+    if (this.fanOutBuffer.length > PHASE_BUFFER_MAX) {
+      this.fanOutBuffer = this.fanOutBuffer.slice(-PHASE_BUFFER_MAX)
     }
   }
 
   recordLateJoinLatency(ms: number): void {
-    this.lateJoinLatencies.push(ms)
-    if (this.lateJoinLatencies.length > this.maxLatencySamples) {
-      this.lateJoinLatencies = this.trimArray(this.lateJoinLatencies)
+    this.lateJoinHistogram.record(ms)
+    this.lateJoinBuffer.push(ms)
+    if (this.lateJoinBuffer.length > PHASE_BUFFER_MAX) {
+      this.lateJoinBuffer = this.lateJoinBuffer.slice(-PHASE_BUFFER_MAX)
     }
   }
 
@@ -81,10 +84,16 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementJsonParseErrors(): void { this.jsonParseErrors++ }
   incrementInvalidTimestampCount(): void { this.invalidTimestampCount++ }
 
+  // §6.32: Expose histograms for final percentile computation
+  getFanOutHistogram(): StreamingHistogram { return this.fanOutHistogram }
+  getLateJoinHistogram(): StreamingHistogram { return this.lateJoinHistogram }
+
   snapshot(): MetricsSnapshot {
     return {
-      fan_out_latencies_ms: [...this.fanOutLatencies],
-      late_join_latencies_ms: [...this.lateJoinLatencies],
+      // §6.32: Raw arrays are a bounded recent buffer for scenario phase-scoped queries.
+      // Final percentiles must be computed from the streaming histograms, not these arrays.
+      fan_out_latencies_ms: [...this.fanOutBuffer],
+      late_join_latencies_ms: [...this.lateJoinBuffer],
       latency_sample_count: this.latencySampleCount,
       latency_invalid_count: this.latencyInvalidCount,
       latency_overflow_count: this.latencyOverflowCount,

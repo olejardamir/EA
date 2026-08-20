@@ -18,6 +18,7 @@ class ThrottledSubscription implements Subscription {
   private eventsReceived = 0
   private paused = false
   private handler: ((event: SubscriptionEvent) => void) | null = null
+  private resumeTimers: ReturnType<typeof setTimeout>[] = []
 
   constructor(inner: Subscription) {
     this.inner = inner
@@ -36,12 +37,13 @@ class ThrottledSubscription implements Subscription {
         if (!this.paused) {
           this.paused = true
           this.inner.pause()
-          setTimeout(() => {
+          const timer = setTimeout(() => {
             this.paused = false
             if (this.inner.connected) {
               this.inner.resume()
             }
           }, SLOW_EVENT_INTERVAL_MS)
+          this.resumeTimers.push(timer)
         }
       }
       this.handler(evt)
@@ -50,7 +52,11 @@ class ThrottledSubscription implements Subscription {
 
   pause(): void { this.inner.pause() }
   resume(): void { this.inner.resume() }
-  close(): void { this.inner.close() }
+  close(): void {
+    for (const t of this.resumeTimers) clearTimeout(t)
+    this.resumeTimers = []
+    this.inner.close()
+  }
 
   get achievedRate(): number {
     return this.eventsReceived > 0 ? this.eventsReceived : 0

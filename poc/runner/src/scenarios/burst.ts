@@ -10,7 +10,7 @@ export class BurstScenario implements Scenario {
     const preBurstCount = ctx.metrics.snapshot().fan_out_latencies_ms.length
 
     ctx.publisher.stop()
-    await ctx.sleep(500)
+    await ctx.publisher.drain()
     ctx.publisher.burstMode = true
     ctx.publisher.start(false)
 

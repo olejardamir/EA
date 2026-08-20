@@ -191,6 +191,11 @@ export class SSEHttpClient implements EventStream {
         }
 
         sub.attachResponse(res)
+        // §6.30: Clear handshake timeout once HTTP response is streaming.
+        // The 10s connect timeout must not kill a healthy long-lived SSE stream
+        // when Nchan heartbeat interval is 15s.
+        req.setTimeout(0)
+        req.removeAllListeners("timeout")
         resolve(sub)
       })
 

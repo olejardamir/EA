@@ -78,7 +78,7 @@ services:
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       COOLDOWN_SECONDS: "10"
-      SLOW_SECONDS: "15"
+      SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
     deploy:
       resources:

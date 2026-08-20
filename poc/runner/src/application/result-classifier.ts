@@ -214,15 +214,38 @@ export function classifyResult(
 }
 
 export function aggregateWorkerMetrics(
-  workerMetrics: Array<{ snapshot(): import("../ports/metrics.js").MetricsSnapshot }>,
+  workerMetrics: Array<{
+    snapshot(): import("../ports/metrics.js").MetricsSnapshot
+    getFanOutHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
+    getLateJoinHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
+  }>,
   phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number }>,
 ): AggregatedMetrics {
-  function percentile(sorted: number[], p: number): number {
+  // §6.32: Use streaming histograms for final percentile computation when available.
+  // Falls back to sorted-array computation when histograms are not provided (tests/mocks).
+  function percentileFromSorted(sorted: number[], p: number): number {
     if (sorted.length === 0) return 0
     const idx = Math.ceil((p / 100) * sorted.length) - 1
     return sorted[Math.max(0, idx)]
   }
 
+  // §6.32: Merge streaming histograms from all workers for final percentile computation
+  const mergedFanOut = workerMetrics[0]?.getFanOutHistogram?.()
+  const mergedLateJoin = workerMetrics[0]?.getLateJoinHistogram?.()
+  if (mergedFanOut && workerMetrics.length > 1) {
+    for (let i = 1; i < workerMetrics.length; i++) {
+      const h = workerMetrics[i].getFanOutHistogram?.()
+      if (h) mergedFanOut.merge(h)
+    }
+  }
+  if (mergedLateJoin && workerMetrics.length > 1) {
+    for (let i = 1; i < workerMetrics.length; i++) {
+      const h = workerMetrics[i].getLateJoinHistogram?.()
+      if (h) mergedLateJoin.merge(h)
+    }
+  }
+
+  // Fallback arrays for when histograms are unavailable (test mocks)
   const allFanOut: number[] = []
   const allLateJoin: number[] = []
 
@@ -270,6 +293,17 @@ export function aggregateWorkerMetrics(
   allFanOut.sort((a, b) => a - b)
   allLateJoin.sort((a, b) => a - b)
 
+  // §6.32: Final percentiles from streaming histograms (preserves all samples)
+  // Falls back to sorted arrays when histograms are unavailable (test mocks)
+  const fanOutP50 = mergedFanOut ? mergedFanOut.p50() : percentileFromSorted(allFanOut, 50)
+  const fanOutP95 = mergedFanOut ? mergedFanOut.p95() : percentileFromSorted(allFanOut, 95)
+  const fanOutP99 = mergedFanOut ? mergedFanOut.p99() : percentileFromSorted(allFanOut, 99)
+  const fanOutMax = mergedFanOut ? mergedFanOut.max : (allFanOut.length > 0 ? allFanOut[allFanOut.length - 1] : 0)
+  const lateJoinP50 = mergedLateJoin ? mergedLateJoin.p50() : percentileFromSorted(allLateJoin, 50)
+  const lateJoinP95 = mergedLateJoin ? mergedLateJoin.p95() : percentileFromSorted(allLateJoin, 95)
+  const lateJoinP99 = mergedLateJoin ? mergedLateJoin.p99() : percentileFromSorted(allLateJoin, 99)
+  const lateJoinMax = mergedLateJoin ? mergedLateJoin.max : (allLateJoin.length > 0 ? allLateJoin[allLateJoin.length - 1] : 0)
+
   const phaseRates = (phaseSnapshots ?? []).map((ps) => {
     const rate = ps.durationMs > 0 ? ps.eventsPublished / (ps.durationMs / 1000) : 0
     const total = Array.from(ps.byMatch.values()).reduce((a, b) => a + b, 0)
@@ -290,14 +324,14 @@ export function aggregateWorkerMetrics(
     missing_sequences,
     duplicates,
     out_of_order,
-    fan_out_latency_p50_ms: percentile(allFanOut, 50),
-    fan_out_latency_p95_ms: percentile(allFanOut, 95),
-    fan_out_latency_p99_ms: percentile(allFanOut, 99),
-    fan_out_latency_max_ms: allFanOut.length > 0 ? allFanOut[allFanOut.length - 1] : 0,
-    late_join_p50_ms: percentile(allLateJoin, 50),
-    late_join_p95_ms: percentile(allLateJoin, 95),
-    late_join_p99_ms: percentile(allLateJoin, 99),
-    late_join_max_ms: allLateJoin.length > 0 ? allLateJoin[allLateJoin.length - 1] : 0,
+    fan_out_latency_p50_ms: fanOutP50,
+    fan_out_latency_p95_ms: fanOutP95,
+    fan_out_latency_p99_ms: fanOutP99,
+    fan_out_latency_max_ms: fanOutMax,
+    late_join_p50_ms: lateJoinP50,
+    late_join_p95_ms: lateJoinP95,
+    late_join_p99_ms: lateJoinP99,
+    late_join_max_ms: lateJoinMax,
     reconnect_gaps,
     reconnect_duplicates,
     reconnect_order_violations,
