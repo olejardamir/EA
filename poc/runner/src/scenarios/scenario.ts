@@ -6,6 +6,13 @@ import type { MatchHeadTracker } from "../domain/match-state.js"
 import type { ExperimentConfig } from "../config/experiment-config.js"
 import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 
+export interface PhaseSnapshot {
+  phase: string
+  eventsPublished: number
+  byMatch: Map<string, number>
+  durationMs: number
+}
+
 export interface ScenarioContext {
   publisher: MatchEventPublisher
   eventStream: EventStream
@@ -15,6 +22,7 @@ export interface ScenarioContext {
   headTracker: MatchHeadTracker
   config: ExperimentConfig
   matchIds: string[]
+  phaseSnapshots: PhaseSnapshot[]
   log: (msg: string) => void
   sleep: (ms: number) => Promise<void>
 }

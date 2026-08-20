@@ -14,7 +14,9 @@ services:
       retries: 5
 
   nchan:
-    image: poc-nchan:latest
+    build:
+      context: ./nchan
+      network: host
     network_mode: host
     depends_on:
       redis:
@@ -35,7 +37,9 @@ services:
       retries: 10
 
   runner:
-    image: poc-runner:latest
+    build:
+      context: ./runner
+      network: host
     network_mode: host
     depends_on:
       nchan:
@@ -44,7 +48,6 @@ services:
       NCHAN_PUB_URL: "http://localhost:8080"
       NCHAN_SUB_URL: "http://localhost:8081"
       REDIS_URL: "redis://localhost:6379"
-      WORKER_COUNT: "1"
       TARGET_CONNECTIONS: "100"
       WARMUP_SECONDS: "5"
       MEASURE_SECONDS: "10"

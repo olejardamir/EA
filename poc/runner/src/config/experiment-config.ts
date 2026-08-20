@@ -3,25 +3,23 @@ export interface ExperimentConfig {
   nchanSubUrl: string
   nchan2SubUrl: string
   redisUrl: string
-  workerCount: number
   targetConnections: number
   warmupSeconds: number
   measureSeconds: number
   burstSeconds: number
   cooldownSeconds: number
   slowConsumerFraction: number
+  lobbyFraction: number
   historyUrl: string
   seed: number
-  steadyDuration: number
-  burstDuration: number
-  warmupDuration: number
-  stabilizationDuration: number
-  cooldownDuration: number
   runProfile: "smoke" | "evidence"
 }
 
-function requirePositiveInt(value: string | undefined, name: string, fallback: number): number {
-  if (value === undefined) return fallback
+function requirePositiveInt(value: string | undefined, name: string, fallback?: number): number {
+  if (value === undefined) {
+    if (fallback === undefined) throw new Error(`Missing required env var: ${name}`)
+    return fallback
+  }
   const parsed = parseInt(value, 10)
   if (isNaN(parsed) || parsed <= 0) {
     throw new Error(`Invalid ${name}: "${value}" must be a positive integer`)
@@ -48,20 +46,15 @@ export function loadConfig(): ExperimentConfig {
     nchanSubUrl,
     nchan2SubUrl: process.env.NCHAN2_SUB_URL ?? "",
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
-    workerCount: requirePositiveInt(process.env.WORKER_COUNT, "WORKER_COUNT", 4),
-    targetConnections: requirePositiveInt(process.env.TARGET_CONNECTIONS, "TARGET_CONNECTIONS", 10000),
+    targetConnections: requirePositiveInt(process.env.TARGET_CONNECTIONS, "TARGET_CONNECTIONS"),
     warmupSeconds: requirePositiveInt(process.env.WARMUP_SECONDS, "WARMUP_SECONDS", 30),
-    measureSeconds: requirePositiveInt(process.env.MEASURE_SECONDS, "MEASURE_SECONDS", 60),
+    measureSeconds: requirePositiveInt(process.env.MEASURE_SECONDS, "MEASURE_SECONDS", 120),
     burstSeconds: requirePositiveInt(process.env.BURST_SECONDS, "BURST_SECONDS", 30),
     cooldownSeconds: requirePositiveInt(process.env.COOLDOWN_SECONDS, "COOLDOWN_SECONDS", 10),
     slowConsumerFraction: 0.05,
+    lobbyFraction: 0.02,
     historyUrl: nchanSubUrl,
     seed: requirePositiveInt(process.env.SEED, "SEED", 42),
-    steadyDuration: requirePositiveInt(process.env.STEADY_DURATION, "STEADY_DURATION", 60),
-    burstDuration: requirePositiveInt(process.env.BURST_DURATION, "BURST_DURATION", 30),
-    warmupDuration: requirePositiveInt(process.env.WARMUP_DURATION, "WARMUP_DURATION", 30),
-    stabilizationDuration: requirePositiveInt(process.env.STABILIZATION_DURATION, "STABILIZATION_DURATION", 10),
-    cooldownDuration: requirePositiveInt(process.env.COOLDOWN_DURATION, "COOLDOWN_DURATION", 10),
     runProfile: (process.env.RUN_PROFILE === "evidence" ? "evidence" : "smoke") as "smoke" | "evidence",
   }
 }

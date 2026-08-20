@@ -12,13 +12,13 @@ export class WarmupScenario implements Scenario {
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
     ctx.log(`--- PHASE: WARMUP (${ctx.config.warmupSeconds}s) ---`)
 
-    const connectionsPerWorker = Math.ceil(ctx.config.targetConnections / ctx.config.workerCount)
-    ctx.log(`Connecting ${ctx.config.targetConnections} SSE clients...`)
+    const baseCount = Math.floor(ctx.config.targetConnections * 0.6)
+    ctx.log(`Connecting ${baseCount} SSE clients (60% of ${ctx.config.targetConnections})...`)
 
     const connectStart = ctx.clock.now()
-    await this.pool.connectAll(ctx.eventStream, connectionsPerWorker, 0)
+    await this.pool.connectAll(ctx.eventStream, baseCount, 0, undefined, ctx.config.lobbyFraction)
     const connectDuration = ctx.clock.now() - connectStart
-    ctx.log(`All connections established in ${connectDuration}ms`)
+    ctx.log(`All connections established in ${connectDuration}ms (pool size: ${this.pool.size})`)
 
     await ctx.sleep(ctx.config.warmupSeconds * 1000)
     ctx.log("Warm-up complete")
@@ -26,7 +26,7 @@ export class WarmupScenario implements Scenario {
     return {
       name: this.name,
       passed: true,
-      detail: `${this.pool.size} connections established in ${connectDuration}ms`,
+      detail: `${this.pool.size} connections established in ${connectDuration}ms (60% base of ${ctx.config.targetConnections})`,
     }
   }
 }

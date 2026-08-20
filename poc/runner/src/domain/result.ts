@@ -41,6 +41,7 @@ export interface AggregatedMetrics {
   slow_consumer_disconnects: number
   event_loop_delay_p99_ms: number
   memory_mb_peak: number
+  connections_dropped: number
   expected_fan_deliveries: number
   received_fan_deliveries: number
   connections_target: number
@@ -54,9 +55,11 @@ export interface AggregatedMetrics {
   generator_cpu_percent_peak: number
   generator_event_loop_p99_ms: number
   run_profile: "smoke" | "evidence"
+  lobby_subscribers: number
+  phase_publish_rates: Array<{ phase: string; eventsPerSec: number; hotMatchPct: number }>
 }
 
-export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE"
+export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"
 
 export interface VerdictResult {
   verdict: Verdict

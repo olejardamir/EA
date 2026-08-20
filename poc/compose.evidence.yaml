@@ -14,7 +14,9 @@ services:
       retries: 5
 
   nchan:
-    image: poc-nchan:latest
+    build:
+      context: ./nchan
+      network: host
     network_mode: host
     depends_on:
       redis:
@@ -34,8 +36,34 @@ services:
       timeout: 3s
       retries: 10
 
+  nchan-2:
+    build:
+      context: ./nchan
+      network: host
+    command: ["nginx", "-c", "/etc/nginx/nchan-2.conf", "-g", "daemon off;"]
+    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:18080/pub/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   runner:
-    image: poc-runner:latest
+    build:
+      context: ./runner
+      network: host
     network_mode: host
     depends_on:
       nchan:
@@ -43,9 +71,9 @@ services:
     environment:
       NCHAN_PUB_URL: "http://localhost:8080"
       NCHAN_SUB_URL: "http://localhost:8081"
+      NCHAN2_SUB_URL: "http://localhost:18081"
       REDIS_URL: "redis://localhost:6379"
-      WORKER_COUNT: "4"
-      TARGET_CONNECTIONS: "10000"
+      TARGET_CONNECTIONS: "100000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"

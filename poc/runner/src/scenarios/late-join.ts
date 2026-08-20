@@ -17,9 +17,8 @@ export class LateJoinScenario implements Scenario {
 
     const testMatch = ctx.matchIds[0]
     const headBefore = ctx.headTracker.getHead(testMatch)
-    const eventsBefore = ctx.metrics.snapshot().events_received
 
-    ctx.log(`Late-join: prefilling ${PREFILL_EVENT_COUNT} events into ${testMatch} (current head=${headBefore})...`)
+    ctx.log(`Late-join: waiting for ${PREFILL_EVENT_COUNT} events on ${testMatch} (current head=${headBefore})...`)
 
     const targetHead = headBefore + PREFILL_EVENT_COUNT
     const deadline = ctx.clock.now() + PREFILL_TIMEOUT_MS
@@ -29,10 +28,8 @@ export class LateJoinScenario implements Scenario {
     }
 
     const headAtPrefill = ctx.headTracker.getHead(testMatch)
-    const eventsAfterPrefill = ctx.metrics.snapshot().events_received
-    const eventsPublished = eventsAfterPrefill - eventsBefore
 
-    ctx.log(`Late-join: prefill done, head=${headAtPrefill}, events_published=${eventsPublished}`)
+    ctx.log(`Late-join: prefill done, head=${headAtPrefill}`)
 
     if (headAtPrefill <= headBefore) {
       ctx.log("Late-join: no new events published during prefill, skipping")
@@ -49,7 +46,6 @@ export class LateJoinScenario implements Scenario {
       let historyEvents = 0
       let firstSeq = -1
       let lastSeq = -1
-      let headAtConnectionStart = -1
 
       const result = await new Promise<{ caughtUp: boolean; duration: number }>((resolve) => {
         const timeout = setTimeout(() => {
@@ -67,10 +63,6 @@ export class LateJoinScenario implements Scenario {
             if (firstSeq === -1) firstSeq = data.canonical_seq
             lastSeq = data.canonical_seq
 
-            if (headAtConnectionStart === -1) {
-              headAtConnectionStart = historyHead
-            }
-
             if (data.canonical_seq >= historyHead) {
               clearTimeout(timeout)
               subscription.close()
@@ -83,8 +75,10 @@ export class LateJoinScenario implements Scenario {
       ctx.metrics.recordLateJoinLatency(result.duration)
 
       if (result.caughtUp) {
+        const historyExpected = historyHead
+
         const detail = [
-          `history_expected=${historyEvents}`,
+          `history_expected=${historyExpected}`,
           `history_received=${historyEvents}`,
           `first_seq=${firstSeq}`,
           `target_head=${historyHead}`,

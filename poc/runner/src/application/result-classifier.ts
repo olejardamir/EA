@@ -7,6 +7,41 @@ export function classifyResult(
 ): VerdictResult {
   const checks: Array<{ name: string; passed: boolean; detail: string }> = []
 
+  if (metrics.run_profile === "smoke") {
+    checks.push({
+      name: "smoke_gate",
+      passed: true,
+      detail: "smoke profile: measurement-only, not ACCEPT/REJECT",
+    })
+    return { verdict: "NOT_APPLICABLE", checks }
+  }
+
+  checks.push({
+    name: "timing_valid",
+    passed: timingValid,
+    detail: timingValid ? "timing measurements valid" : "timing measurements invalid",
+  })
+
+  checks.push({
+    name: "generator_not_saturated",
+    passed: generatorHealthy,
+    detail: generatorHealthy ? "generator healthy" : "generator saturated",
+  })
+
+  if (!timingValid || !generatorHealthy) {
+    const reason = !timingValid && !generatorHealthy
+      ? "timing invalid + generator saturated"
+      : !timingValid
+        ? "timing measurements invalid"
+        : "generator saturated"
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `${reason} — all other checks suppressed`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
   checks.push({
     name: "fan_out_p95",
     passed: metrics.fan_out_latency_p95_ms <= 500,
@@ -19,11 +54,10 @@ export function classifyResult(
     detail: `${metrics.late_join_p95_ms}ms <= 2000ms`,
   })
 
-  const connectionsTarget = metrics.connections_target || 10000
   checks.push({
     name: "connections_target",
-    passed: metrics.connections_established >= connectionsTarget,
-    detail: `${metrics.connections_established} >= ${connectionsTarget}`,
+    passed: metrics.connections_established >= metrics.connections_target,
+    detail: `${metrics.connections_established} >= ${metrics.connections_target}`,
   })
 
   checks.push({
@@ -68,13 +102,11 @@ export function classifyResult(
     detail: `${metrics.reconnect_order_violations} == 0`,
   })
 
-  if (metrics.run_profile === "evidence") {
-    checks.push({
-      name: "nchan_history_replay",
-      passed: metrics.nchan_restart_history_replay_correct,
-      detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
-    })
-  }
+  checks.push({
+    name: "nchan_history_replay",
+    passed: metrics.nchan_restart_history_replay_correct,
+    detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
+  })
 
   checks.push({
     name: "slow_consumer_disconnects",
@@ -104,24 +136,10 @@ export function classifyResult(
     })
   }
 
-  checks.push({
-    name: "timing_valid",
-    passed: timingValid,
-    detail: timingValid ? "timing measurements valid" : "timing measurements invalid",
-  })
-
-  checks.push({
-    name: "generator_not_saturated",
-    passed: generatorHealthy,
-    detail: generatorHealthy ? "generator healthy" : "generator saturated",
-  })
-
   const allPassed = checks.every((c) => c.passed)
   let verdict: Verdict
 
-  if (!generatorHealthy) {
-    verdict = "INCONCLUSIVE"
-  } else if (allPassed) {
+  if (allPassed) {
     verdict = "ACCEPT"
   } else {
     verdict = "REJECT"
@@ -132,6 +150,7 @@ export function classifyResult(
 
 export function aggregateWorkerMetrics(
   workerMetrics: Array<{ snapshot(): import("../ports/metrics.js").MetricsSnapshot }>,
+  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number }>,
 ): AggregatedMetrics {
   function percentile(sorted: number[], p: number): number {
     if (sorted.length === 0) return 0
@@ -145,6 +164,7 @@ export function aggregateWorkerMetrics(
   let connections_attempted = 0
   let connections_established = 0
   let connection_failures = 0
+  let connections_dropped = 0
   let events_received = 0
   let expected_fan_deliveries = 0
   let received_fan_deliveries = 0
@@ -161,6 +181,7 @@ export function aggregateWorkerMetrics(
     connections_attempted += s.connections_attempted
     connections_established += s.connections_established
     connection_failures += s.connection_failures
+    connections_dropped += s.connections_dropped
     events_received += s.events_received
     expected_fan_deliveries += s.expected_fan_deliveries
     received_fan_deliveries += s.received_fan_deliveries
@@ -178,10 +199,19 @@ export function aggregateWorkerMetrics(
   allFanOut.sort((a, b) => a - b)
   allLateJoin.sort((a, b) => a - b)
 
+  const phaseRates = (phaseSnapshots ?? []).map((ps) => {
+    const rate = ps.durationMs > 0 ? ps.eventsPublished / (ps.durationMs / 1000) : 0
+    const total = Array.from(ps.byMatch.values()).reduce((a, b) => a + b, 0)
+    const hotMatch = ps.byMatch.get("match-001") ?? 0
+    const hotMatchPct = total > 0 ? (hotMatch / total) * 100 : 0
+    return { phase: ps.phase, eventsPerSec: Math.round(rate * 10) / 10, hotMatchPct: Math.round(hotMatchPct * 10) / 10 }
+  })
+
   return {
     connections_attempted,
     connections_established,
     connection_failures,
+    connections_dropped,
     events_published: 0,
     events_received,
     expected_fan_deliveries,
@@ -203,7 +233,7 @@ export function aggregateWorkerMetrics(
     slow_consumer_disconnects,
     event_loop_delay_p99_ms: 0,
     memory_mb_peak: 0,
-    connections_target: 10000,
+    connections_target: 0,
     burst_fan_out_p95_ms: 0,
     nchan_restart_history_replay_correct: false,
     nchan_restart_missing_sequences: 0,
@@ -214,5 +244,7 @@ export function aggregateWorkerMetrics(
     generator_cpu_percent_peak: 0,
     generator_event_loop_p99_ms: 0,
     run_profile: "evidence" as const,
+    lobby_subscribers: 0,
+    phase_publish_rates: phaseRates,
   }
 }

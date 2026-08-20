@@ -24,24 +24,26 @@ export class ReconnectScenario implements Scenario {
     const saved = cohort.map((entry) => ({
       entry,
       lastEventId: entry.subscription.lastEventId,
-      head: ctx.headTracker.getHead(entry.matchId),
+      headBefore: ctx.headTracker.getHead(entry.matchId),
       trackerLastSeq: entry.tracker.lastSeq,
     }))
 
     ctx.log(`Reconnect cohort: ${cohortSize}/${all.length} connections`)
-    ctx.log(`Pre-disconnect heads: ${saved.map((s) => `${s.entry.matchId}=${s.head}`).join(", ")}`)
+    ctx.log(`Pre-disconnect heads: ${saved.map((s) => `${s.entry.matchId}=${s.headBefore}`).join(", ")}`)
 
     for (const s of saved) {
       s.entry.subscription.close()
     }
     ctx.log(`Disconnected ${cohortSize} connections, publisher still running`)
 
-    const eventsDuringDisconnect = ctx.metrics.snapshot().events_received
     await ctx.sleep(2000)
-    const eventsAfterDisconnect = ctx.metrics.snapshot().events_received
-    const eventsMissed = eventsAfterDisconnect - eventsDuringDisconnect
 
-    ctx.log(`Events published during disconnect window: ${eventsMissed}`)
+    const eventsDuringDisconnect = saved.map((s) => {
+      const headAfter = ctx.headTracker.getHead(s.entry.matchId)
+      return headAfter - s.headBefore
+    }).reduce((a, b) => a + b, 0)
+
+    ctx.log(`Events published during disconnect window: ${eventsDuringDisconnect}`)
 
     const newSubscriptions: Array<{ entry: ConnectionEntry; subscription: Subscription; saved: typeof saved[number] }> = []
     for (const s of saved) {
@@ -73,13 +75,13 @@ export class ReconnectScenario implements Scenario {
     const passed = snap.reconnect_gaps === 0 &&
       snap.reconnect_duplicates === 0 &&
       snap.reconnect_order_violations === 0 &&
-      eventsMissed > 0
+      eventsDuringDisconnect > 0
 
     const detail = [
       `gaps=${snap.reconnect_gaps}`,
       `dups=${snap.reconnect_duplicates}`,
       `ooo=${snap.reconnect_order_violations}`,
-      `events_during_disconnect=${eventsMissed}`,
+      `events_during_disconnect=${eventsDuringDisconnect}`,
       `reconnected=${newSubscriptions.length}/${cohortSize}`,
     ].join(" ")
 

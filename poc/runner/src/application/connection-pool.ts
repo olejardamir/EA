@@ -23,11 +23,16 @@ export class ConnectionPool {
   private metrics: MetricsRecorder
   private clock: Clock
   private _running = false
+  private subscribersByChannel = new Map<string, number>()
 
   constructor(config: ConnectionPoolConfig, metrics: MetricsRecorder, clock: Clock) {
     this.config = config
     this.metrics = metrics
     this.clock = clock
+  }
+
+  getSubscriberCount(channel: string): number {
+    return this.subscribersByChannel.get(channel) ?? 0
   }
 
   get size(): number {
@@ -111,10 +116,12 @@ export class ConnectionPool {
     connectionsPerWorker: number,
     connectionOffset: number,
     onSlowConsumer?: (entry: ConnectionEntry) => void,
+    lobbyFraction = 0,
   ): Promise<void> {
     this._running = true
     const batchSize = 50
     const batches = Math.ceil(connectionsPerWorker / batchSize)
+    const lobbyCount = Math.floor(connectionsPerWorker * lobbyFraction)
 
     for (let b = 0; b < batches && this._running; b++) {
       const start = b * batchSize
@@ -123,8 +130,10 @@ export class ConnectionPool {
 
       for (let i = start; i < end; i++) {
         const connId = connectionOffset + i
-        const matchIdx = connId % this.config.matchIds.length
-        const matchId = this.config.matchIds[matchIdx]
+        const isLobby = i < lobbyCount
+        const matchId = isLobby
+          ? "lobby"
+          : this.config.matchIds[(connId - lobbyCount) % this.config.matchIds.length]
         const isSlow = i < Math.floor(connectionsPerWorker * 0.05)
 
         this.metrics.incrementConnectionsAttempted()
@@ -170,6 +179,9 @@ export class ConnectionPool {
         }
       })
 
+      const count = this.subscribersByChannel.get(matchId) ?? 0
+      this.subscribersByChannel.set(matchId, count + 1)
+
       return entry
     } catch {
       this.metrics.incrementConnectionFailures()
@@ -184,6 +196,8 @@ export class ConnectionPool {
         conn.subscription.close()
       } catch {}
       this.metrics.incrementConnectionsDropped()
+      const count = this.subscribersByChannel.get(conn.matchId) ?? 0
+      this.subscribersByChannel.set(conn.matchId, Math.max(0, count - 1))
     }
     this.connections = []
   }
@@ -226,6 +240,8 @@ export class ConnectionPool {
         })
 
         this.connections.push(entry)
+        const count = this.subscribersByChannel.get(matchId) ?? 0
+        this.subscribersByChannel.set(matchId, count + 1)
       } catch {
         this.metrics.incrementConnectionFailures()
       }

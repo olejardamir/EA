@@ -17,6 +17,7 @@ export function printSummary(
   console.log(`  Attempted:         ${metrics.connections_attempted}`)
   console.log(`  Established:       ${metrics.connections_established}`)
   console.log(`  Failures:          ${metrics.connection_failures}`)
+  console.log(`  Target:            ${metrics.connections_target}`)
   console.log("")
 
   console.log("EVENTS")
@@ -60,13 +61,17 @@ export function printSummary(
   console.log(`  Disconnects:       ${metrics.slow_consumer_disconnects}`)
   console.log("")
 
+  console.log("LOBBY")
+  console.log(`  Subscribers:       ${metrics.lobby_subscribers}`)
+  console.log("")
+
   console.log("RESOURCES")
   console.log(`  Event loop p99:    ${metrics.event_loop_delay_p99_ms}ms`)
   console.log(`  Memory peak:       ${metrics.memory_mb_peak}MB`)
   if (metrics.nchan_memory_mb_peak !== null) {
     console.log(`  Nchan memory peak: ${metrics.nchan_memory_mb_peak}MB`)
   } else {
-    console.log(`  Nchan memory peak: unavailable`)
+    console.log(`  Nchan memory peak: unavailable (requires Docker socket)`)
   }
   if (metrics.redis_memory_mb_peak !== null) {
     console.log(`  Redis memory peak: ${metrics.redis_memory_mb_peak}MB`)
@@ -74,6 +79,14 @@ export function printSummary(
     console.log(`  Redis memory peak: unavailable`)
   }
   console.log("")
+
+  if (metrics.phase_publish_rates.length > 0) {
+    console.log("PHASE PUBLISH RATES")
+    for (const pr of metrics.phase_publish_rates) {
+      console.log(`  ${pr.phase.padEnd(12)} ${pr.eventsPerSec} evt/s  hot-match: ${pr.hotMatchPct}%`)
+    }
+    console.log("")
+  }
 
   console.log("═══════════════════════════════════════════════════════════════")
 

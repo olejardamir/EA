@@ -48,6 +48,7 @@ export class SlowConsumerScenario implements Scenario {
     for (const conn of slowConnections) {
       if (!conn.subscription.connected) {
         slowDisconnects++
+        ctx.metrics.incrementSlowConsumerDisconnects()
       }
       try { conn.subscription.resume() } catch {}
     }
@@ -57,7 +58,7 @@ export class SlowConsumerScenario implements Scenario {
     const p95During = percentile(latenciesDuring, 0.95)
 
     ctx.log(`Slow consumers: ${slowDisconnects}/${slowCount} disconnected by server`)
-    ctx.log(`Healthy p95 latency: before=${p95Before}ms, with_slow=${p95During}ms`)
+    ctx.log(`Overall p95 latency: before=${p95Before}ms, with_slow=${p95During}ms`)
 
     const degradation = p95Before > 0
       ? (p95During - p95Before) / p95Before

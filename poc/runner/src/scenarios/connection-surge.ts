@@ -13,13 +13,18 @@ export class ConnectionSurgeScenario implements Scenario {
     ctx.log("--- PHASE: CONNECTION SURGE (+40% over 120s) ---")
 
     const totalTarget = ctx.config.targetConnections
-    const baseCount = Math.floor(totalTarget * 0.6)
+    const baseCount = this.pool.size
     const surgeCount = totalTarget - baseCount
     const surgeDurationMs = 120_000
     const batchSize = Math.ceil(surgeCount / 24)
     const batchIntervalMs = surgeDurationMs / 24
 
-    ctx.log(`Base: ${baseCount}, surge target: ${surgeCount} over 120s (${batchSize} per ${batchIntervalMs}ms batch)`)
+    ctx.log(`Current pool: ${baseCount}, surge target: +${surgeCount} over 120s (${batchSize} per ${Math.round(batchIntervalMs)}ms batch)`)
+
+    if (surgeCount <= 0) {
+      ctx.log("Pool already at or above target, skipping surge")
+      return { name: this.name, passed: true, detail: `skipped (pool ${baseCount} >= target ${totalTarget})` }
+    }
 
     const attemptsBefore = ctx.metrics.snapshot().connections_attempted
     const establishedBefore = ctx.metrics.snapshot().connections_established
@@ -29,14 +34,13 @@ export class ConnectionSurgeScenario implements Scenario {
     const surgeStart = ctx.clock.now()
 
     for (let batch = 0; batch < 24; batch++) {
-      const offset = this.pool.size
       const remaining = surgeCount - (batch * batchSize)
       const count = Math.min(batchSize, remaining)
 
       if (count <= 0) break
 
       ctx.log(`Surge batch ${batch + 1}/24: adding ${count} connections (pool size: ${this.pool.size})`)
-      await this.pool.connectAll(ctx.eventStream, count, offset)
+      await this.pool.connectAll(ctx.eventStream, count, this.pool.size, undefined, ctx.config.lobbyFraction)
 
       if (batch < 23) {
         await ctx.sleep(batchIntervalMs)
@@ -57,8 +61,8 @@ export class ConnectionSurgeScenario implements Scenario {
     const surgeFailures = snap.connection_failures - failuresBefore
     const surgeDrops = snap.connections_dropped - dropsBefore
 
-    const attemptsPerSec = surgeAttempted / (surgeElapsed / 1000)
-    const establishedPerSec = surgeEstablished / (surgeElapsed / 1000)
+    const attemptsPerSec = surgeElapsed > 0 ? surgeAttempted / (surgeElapsed / 1000) : 0
+    const establishedPerSec = surgeElapsed > 0 ? surgeEstablished / (surgeElapsed / 1000) : 0
 
     ctx.log(`Surge stats: attempted=${surgeAttempted} established=${surgeEstablished} failures=${surgeFailures} drops=${surgeDrops}`)
     ctx.log(`Rates: ${attemptsPerSec.toFixed(1)} att/s, ${establishedPerSec.toFixed(1)} est/s`)

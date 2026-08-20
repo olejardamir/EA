@@ -8,6 +8,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     connections_attempted: 10000,
     connections_established: 10000,
     connection_failures: 0,
+    connections_dropped: 0,
     events_published: 500,
     events_received: 5000000,
     missing_sequences: 0,
@@ -40,6 +41,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
     run_profile: "evidence" as const,
+    lobby_subscribers: 200,
+    phase_publish_rates: [],
     ...overrides,
   }
 }
@@ -208,9 +211,9 @@ describe("classifyResult", () => {
     assert.ok(result.checks.find((c) => c.name === "non_slow_impact")!.passed === false)
   })
 
-  it("REJECT when timing_valid is false", () => {
+  it("returns INCONCLUSIVE when timing_valid is false", () => {
     const result = classifyResult(baseMetrics(), true, false)
-    assert.equal(result.verdict, "REJECT")
+    assert.equal(result.verdict, "INCONCLUSIVE")
     assert.ok(result.checks.find((c) => c.name === "timing_valid")!.passed === false)
   })
 

@@ -11,8 +11,8 @@ export interface MatchEventPublisherConfig {
   headTracker: MatchHeadTracker
   burstMode: boolean
   random: () => number
-  onPublish?: (expectedDeliveries: number) => void
-  getActiveConnections?: () => number
+  onPublish?: (channel: string, expectedForChannel: number) => void
+  getSubscriberCount?: (channel: string) => number
 }
 
 export class MatchEventPublisher {
@@ -49,6 +49,16 @@ export class MatchEventPublisher {
     return [...MATCH_IDS]
   }
 
+  snapshotAndReset(): { eventsPublished: number; byMatch: Map<string, number> } {
+    const snapshot = {
+      eventsPublished: this._eventsPublished,
+      byMatch: new Map(this._eventsPublishedByMatch),
+    }
+    this._eventsPublished = 0
+    this._eventsPublishedByMatch.clear()
+    return snapshot
+  }
+
   start(steadyRate = true): void {
     this.running = true
     this._eventsPublished = 0
@@ -79,8 +89,9 @@ export class MatchEventPublisher {
           this._totalPublished++
           const prev = this._eventsPublishedByMatch.get(MATCH_IDS[matchIdx]) ?? 0
           this._eventsPublishedByMatch.set(MATCH_IDS[matchIdx], prev + 1)
-          const expected = this.config.getActiveConnections?.() ?? 0
-          this.config.onPublish?.(expected)
+          const channel = MATCH_IDS[matchIdx]
+          const expected = this.config.getSubscriberCount?.(channel) ?? 0
+          this.config.onPublish?.(channel, expected)
         }
       })
 
@@ -105,8 +116,8 @@ export class MatchEventPublisher {
         if (ok) {
           this._eventsPublished++
           this._totalPublished++
-          const expected = this.config.getActiveConnections?.() ?? 0
-          this.config.onPublish?.(expected)
+          const expected = this.config.getSubscriberCount?.("lobby") ?? 0
+          this.config.onPublish?.("lobby", expected)
         }
       })
       const timer = setTimeout(scheduleLobby, 1000)

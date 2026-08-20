@@ -51,7 +51,8 @@ COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
 COPY --from=builder /etc/nginx/ /etc/nginx/
 
 COPY nchan.conf /etc/nginx/nginx.conf
+COPY nchan-2.conf /etc/nginx/nchan-2.conf
 
-EXPOSE 8080 8081
+EXPOSE 8080 8081 18080 18081
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;"]

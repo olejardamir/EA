@@ -33,9 +33,12 @@ function parseRedisUsedMemory(info: string): number | null {
 export class CgroupResourceMonitor implements ResourceMonitor {
   private eventLoopDelays: number[] = []
   private memoryMbPeak = 0
+  private cpuPercentPeak = 0
   private redisMemoryMbPeak: number | null = null
   private maxSamples = 1000
   private pollTimer: ReturnType<typeof setInterval> | null = null
+  private prevCpuTime = 0
+  private prevWallTime = 0
 
   constructor(redisUrl?: string) {
     if (redisUrl) {
@@ -67,6 +70,26 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     })
   }
 
+  measureCpu(): void {
+    const cpuTimes = process.cpuUsage()
+    const totalCpu = cpuTimes.user + cpuTimes.system
+    const wallTime = Date.now()
+
+    if (this.prevWallTime > 0) {
+      const cpuDelta = totalCpu - this.prevCpuTime
+      const wallDelta = wallTime - this.prevWallTime
+      if (wallDelta > 0) {
+        const cpuPercent = (cpuDelta / 1000 / wallDelta) * 100
+        if (cpuPercent > this.cpuPercentPeak) {
+          this.cpuPercentPeak = cpuPercent
+        }
+      }
+    }
+
+    this.prevCpuTime = totalCpu
+    this.prevWallTime = wallTime
+  }
+
   snapshot(): ResourceSnapshot {
     const mem = process.memoryUsage()
     const memMb = mem.heapUsed / (1024 * 1024)
@@ -84,6 +107,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     return {
       memoryMbPeak: this.memoryMbPeak,
       eventLoopDelayP99Ms: p99,
+      cpuPercentPeak: this.cpuPercentPeak,
       nchanMemoryMbPeak: null,
       redisMemoryMbPeak: this.redisMemoryMbPeak,
     }

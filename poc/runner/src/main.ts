@@ -19,7 +19,7 @@ import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
 import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
 import { printSummary } from "./application/result-printer.js"
-import type { ScenarioContext } from "./scenarios/scenario.js"
+import type { ScenarioContext, PhaseSnapshot } from "./scenarios/scenario.js"
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23)
@@ -69,9 +69,9 @@ async function main(): Promise<void> {
     headTracker,
     burstMode: false,
     random,
-    getActiveConnections: () => pool.size,
-    onPublish: (expectedDeliveries) => {
-      metrics.incrementExpectedFanDeliveries(expectedDeliveries)
+    getSubscriberCount: (channel) => pool.getSubscriberCount(channel),
+    onPublish: (channel, expected) => {
+      metrics.incrementExpectedFanDeliveries(expected)
     },
   })
 
@@ -86,25 +86,36 @@ async function main(): Promise<void> {
     headTracker,
     config,
     matchIds: publisher.matchIds,
+    phaseSnapshots: [],
     log,
     sleep,
   }
 
   log("=== POC Runner Starting ===")
-  log(`Config: ${config.workerCount} workers, ${config.targetConnections} target connections`)
+  log(`Config: ${config.targetConnections} target connections, seed=${config.seed}`)
+  log(`Profile: ${config.runProfile}`)
   log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
 
-  // Phase 1: Warmup
+  const loopMonitor = setInterval(() => {
+    resourceMonitor.measureEventLoop()
+    resourceMonitor.measureCpu()
+  }, 100)
+
+  // Phase 1: Warmup (60% base)
   const warmup = new WarmupScenario(pool)
   const warmupResult = await warmup.execute(ctx)
   log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
+  const warmupSnap = publisher.snapshotAndReset()
+  ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
 
   // Phase 2: Steady
   const steady = new SteadyScenario(pool)
   const steadyResult = await steady.execute(ctx)
   log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
+  const steadySnap = publisher.snapshotAndReset()
+  ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
 
-  // Phase 2.5: Late-join (during steady, at t=10s)
+  // Phase 2.5: Late-join (during steady)
   const lateJoin = new LateJoinScenario(pool)
   const lateJoinResult = await lateJoin.execute(ctx)
   log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
@@ -113,6 +124,8 @@ async function main(): Promise<void> {
   const burst = new BurstScenario()
   const burstResult = await burst.execute(ctx)
   log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
+  const burstSnap = publisher.snapshotAndReset()
+  ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
 
   // Phase 4: Post-burst steady
   log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
@@ -122,6 +135,8 @@ async function main(): Promise<void> {
   publisher.start(true)
   await sleep(config.cooldownSeconds * 1000)
   log("Post-burst steady complete")
+  const cooldownSnap = publisher.snapshotAndReset()
+  ctx.phaseSnapshots.push({ phase: "cooldown", eventsPublished: cooldownSnap.eventsPublished, byMatch: cooldownSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
 
   // Phase 5: Reconnect
   const reconnect = new ReconnectScenario(pool)
@@ -133,7 +148,7 @@ async function main(): Promise<void> {
   const slowResult = await slowConsumer.execute(ctx)
   log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
 
-  // Phase 7: Connection surge
+  // Phase 7: Connection surge (+40%)
   const connectionSurge = new ConnectionSurgeScenario(pool)
   const surgeResult = await connectionSurge.execute(ctx)
   log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
@@ -143,19 +158,25 @@ async function main(): Promise<void> {
   const nchanResult = await nchanRestart.execute(ctx)
   log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
 
+  clearInterval(loopMonitor)
+
   // Collect metrics
   log("\n--- COLLECTING METRICS ---")
   resourceMonitor.measureEventLoop()
+  resourceMonitor.measureCpu()
   const resourceSnap = resourceMonitor.snapshot()
 
-  const aggregated = aggregateWorkerMetrics([metrics])
+  const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots)
   aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
   aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
+  aggregated.generator_cpu_percent_peak = resourceSnap.cpuPercentPeak
+  aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
   aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
   aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
   aggregated.connections_target = config.targetConnections
   aggregated.run_profile = config.runProfile
   aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
+  aggregated.lobby_subscribers = pool.getSubscriberCount("lobby")
 
   // Parse slow consumer degradation from result detail
   const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
@@ -165,7 +186,7 @@ async function main(): Promise<void> {
   aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
   aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
 
-  const generatorHealthy = aggregated.event_loop_delay_p99_ms < 500
+  const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
   const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
   const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid)
