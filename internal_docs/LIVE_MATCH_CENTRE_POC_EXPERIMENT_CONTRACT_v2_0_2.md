@@ -450,9 +450,8 @@ Total SSE messages published: ~51/s (50 match + 1 lobby)
 > **§G clarification:** "50 events/s burst" refers to match events only.
 > Lobby publishes at ~1/s independently, bringing total SSE messages to ~51/s.
 > The hot-match concentration (Section 11) applies: match-001 receives ~40 of the 50 match events/s.
-Lobby updates: still ~1/s (unchanged)
-Total SSE messages published during burst: ~1,530
-```
+> Lobby updates: still ~1/s (unchanged)
+> Total SSE messages published during burst: ~1,530
 
 The burst begins abruptly (not ramped) to simulate a real simultaneous-goal scenario.
 
@@ -991,7 +990,8 @@ Nchan restart:
 
 Slow client:
   Nchan handles slow/backpressured consumers without unbounded memory growth
-  slow_consumer_disconnects > 0 (backpressure mechanism observed)
+  slow_consumer_disconnects > 0 (backpressure mechanism observed;
+    0 → INCONCLUSIVE per §30, not REJECT)
   non_sustainable consumer impact on non-slow p95 <= 5% degradation
 
 Resource health:
@@ -1157,7 +1157,7 @@ This contract was reviewed against the following before freezing:
 # 33. File Location
 
 ```text
-internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_1.md
+internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_2.md
 ```
 
 ---

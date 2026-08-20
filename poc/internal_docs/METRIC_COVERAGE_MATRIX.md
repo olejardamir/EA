@@ -23,7 +23,7 @@ Purpose: Verify every required metric record from the frozen contract and Milest
 | reconnect_duplicates | SequenceTracker | count | reconnect | Detected during reconnect replay | = 0 for ACCEPT | REJECT if > 0 | result-classifier |
 | reconnect_order_violations | SequenceTracker | count | reconnect | Detected during reconnect replay | = 0 for ACCEPT | REJECT if > 0 | result-classifier |
 | burst_fan_out_p95_ms | BurstScenario | ms | burst | Same method as steady fan_out | All samples recorded | REJECT if > 1000ms | result-classifier |
-| slow_consumer_disconnects | ConnectionPool | count | slow-consumer | Incremented on slow-consumer disconnect | > 0 for ACCEPT | REJECT if = 0 | result-classifier |
+| slow_consumer_disconnects | ConnectionPool | count | slow-consumer | Incremented on slow-consumer disconnect | > 0 for ACCEPT | INCONCLUSIVE if = 0 (§30), not REJECT | result-classifier |
 | non_slow_p95_degradation_pct | SlowConsumerScenario | % | slow-compare | Compare non-slow p95 before/after slow consumer | >= 0 | REJECT if > 5% | result-classifier |
 | event_loop_delay_p99_ms | perf_hooks.monitorEventLoopDelay | ms | all | Continuous histogram, 10ms resolution | < 200ms for valid timing | INCONCLUSIVE if >= 100ms | defect-measurement |
 | memory_mb_peak | process.memoryUsage | MB | all | Snapshot at collection time | >= 0 | Informational | defect-scenarios |

@@ -80,6 +80,8 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
       incrementShutdownCleanup() {},
       incrementSchemaValidationErrors() {},
       incrementMissingTransportId() {},
+      recordSchedulerLag() {},
+      beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -99,6 +101,7 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
           schema_validation_errors: 0, missing_transport_id: 0,
           fan_out_sample_count: 0, fan_out_overflow_count: 0,
           late_join_sample_count: 0, late_join_overflow_count: 0,
+          scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
         }
       },
     },
@@ -108,7 +111,7 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
     },
     resourceMonitor: {
       measureCpu() {},
-      snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchan_memory_current_bytes: null, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, memory_max_bytes: null } },
+      snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchan_memory_current_bytes: null, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, nchan_cpu_percent_peak: null, redis_cpu_percent_peak: null, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, memory_max_bytes: null } },
       startEventLoopMonitor() {}, stopEventLoopMonitor() {}, dispose() {},
     },
     headTracker: { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } },

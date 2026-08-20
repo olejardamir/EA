@@ -64,6 +64,13 @@ export class MatchEventPublisher {
     return this._schedulerLagSamples.length > 0 ? Math.max(...this._schedulerLagSamples) : 0
   }
 
+  // §3.5: Drain accumulated scheduler lag samples and return them
+  drainSchedulerLagSamples(): number[] {
+    const samples = this._schedulerLagSamples
+    this._schedulerLagSamples = []
+    return samples
+  }
+
   get eventsPublishedByMatch(): ReadonlyMap<string, number> {
     return this._eventsPublishedByMatch
   }

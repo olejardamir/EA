@@ -63,7 +63,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 
 | Component | CPU | Memory | File Descriptors | Classification | Rationale |
 |---|---|---|---|---|---|
-| nchan-primary | 4 | 4 GB (evidence) / 8 GB (smoke) | 200,000 | ASSIGNMENT_FACT | Frozen DUT envelope (contract §6) |
+| nchan-primary | 4 | 8 GB | 200,000 | PLANNING_ASSUMPTION | Frozen DUT envelope (contract §6) |
 | nchan-2 (evidence only) | 4 | 4 GB | 200,000 | PLANNING_ASSUMPTION | Cross-node replacement test resource |
 | redis | 2 | 2 GB | — | PLANNING_ASSUMPTION | Local Redis for shared history |
 | runner | 8 | 8 GB | 100,000 | PLANNING_ASSUMPTION | Must support 100k SSE connections + metrics |

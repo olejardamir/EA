@@ -156,11 +156,11 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 
 | Component | CPUs | RAM | Status |
 |---|---|---|---|
-| nchan-primary (DUT) | 4 | 4 GB | PASS |
+| nchan-primary (DUT) | 4 | 8 GB | PASS |
 | nchan-2 (replacement) | 4 | 4 GB | PASS (§O documented) |
 | redis | 2 | 2 GB | PASS |
 | runner | 8 | 8 GB | PASS |
-| **Total evidence topology** | **18** | **18 GB** | **PASS (§4.10 reconciled in contract §O)** |
+| **Total evidence topology** | **18** | **22 GB** | **PASS (§4.10 reconciled in contract §O)** |
 
 ## §4.3 Active connection lifecycle
 

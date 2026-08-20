@@ -1,4 +1,4 @@
-import type { AggregatedMetrics, Verdict, VerdictResult, SlowConsumerMetrics } from "../domain/result.js"
+import type { AggregatedMetrics, Verdict, VerdictResult, SlowConsumerMetrics, PhaseHistogramResult } from "../domain/result.js"
 import type { TopologyPreflight } from "../adapters/topology-preflight.js"
 
 export function classifyResult(
@@ -472,6 +472,7 @@ export function aggregateWorkerMetrics(
     getLateJoinHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
   }>,
   phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number }>,
+  phaseHistograms?: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>,
 ): AggregatedMetrics {
   // §6.32: Use streaming histograms for final percentile computation when available.
   // Falls back to sorted-array computation when histograms are not provided (tests/mocks).
@@ -722,6 +723,9 @@ export function aggregateWorkerMetrics(
     shutdown_cleanup_disconnects,
     // §4.9: Redis connected-client peak — wired from resource monitor in main.ts
     redis_connected_clients_peak: null,
+    // §3.8: Nchan/Redis CPU percent peaks
+    nchan_cpu_percent_peak: null,
+    redis_cpu_percent_peak: null,
     // §4.2: Topology capacity — wired from preflight in main.ts
     topology_capacity_sufficient: true,
     // §4.25: Histogram sample population metadata — defaults
@@ -732,5 +736,15 @@ export function aggregateWorkerMetrics(
     // §3.9: Latency validity counters
     latency_invalid_count,
     latency_overflow_count,
+    // §4.22: Build identity — defaults, overwritten in main.ts
+    build_identity: {
+      git_commit_sha: null,
+      nginx_version: "1.27.4",
+      nchan_version: "1.3.8",
+      node_version: process.version,
+      redis_version: "7.2",
+    },
+    // §4.25: Per-phase latency histograms
+    phase_histograms: phaseHistograms ?? {},
   }
 }

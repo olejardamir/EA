@@ -134,6 +134,9 @@ export interface AggregatedMetrics {
   shutdown_cleanup_disconnects: number
   // §4.9: Redis connected-client peak
   redis_connected_clients_peak: number | null
+  // §3.8: Nchan/Redis CPU percent peaks
+  nchan_cpu_percent_peak: number | null
+  redis_cpu_percent_peak: number | null
   // §4.2: Topology capacity sufficient
   topology_capacity_sufficient: boolean
   // §4.25: Histogram sample population metadata
@@ -144,6 +147,16 @@ export interface AggregatedMetrics {
   // §3.9: Latency validity counters — negative/overflow latencies indicate measurement failure
   latency_invalid_count: number
   latency_overflow_count: number
+  // §4.22: Build identity — immutable provenance
+  build_identity: {
+    git_commit_sha: string | null
+    nginx_version: string
+    nchan_version: string
+    node_version: string
+    redis_version: string
+  }
+  // §4.25: Per-phase latency histograms — each phase has isolated fan-out and late-join percentiles
+  phase_histograms: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>
 }
 
 // §4.7: Slow-consumer result metrics — computed in the scenario, consumed by classifier
@@ -176,6 +189,14 @@ export interface SlowConsumerMetrics {
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"
+
+export interface PhaseHistogramResult {
+  p50: number
+  p95: number
+  p99: number
+  max: number
+  count: number
+}
 
 export interface VerdictResult {
   verdict: Verdict

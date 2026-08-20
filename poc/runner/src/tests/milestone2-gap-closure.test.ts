@@ -62,6 +62,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementShutdownCleanup() {},
     incrementSchemaValidationErrors: () => inc("schema_validation_errors"),
     incrementMissingTransportId: () => inc("missing_transport_id"),
+    recordSchedulerLag: () => {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -84,6 +85,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         schema_validation_errors: 0, missing_transport_id: 0,
         fan_out_sample_count: 0, fan_out_overflow_count: 0,
         late_join_sample_count: 0, late_join_overflow_count: 0,
+        scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
       }
     },
   }
@@ -158,6 +160,8 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
     nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
     redis_connected_clients_peak: null,
+    nchan_cpu_percent_peak: null,
+    redis_cpu_percent_peak: null,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -226,6 +230,7 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
+    build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
     ...overrides,
   }
 }

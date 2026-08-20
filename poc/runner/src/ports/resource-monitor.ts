@@ -24,6 +24,10 @@ export interface ResourceSnapshot {
   nchan_memory_oom_kill_events: number | null
   // §4.9: Redis connected-client peak
   redis_connected_clients_peak: number | null
+  // §3.8: Nchan CPU percent peak (derived from cumulative cpu_usage_usec delta)
+  nchan_cpu_percent_peak: number | null
+  // §3.8: Redis CPU percent peak (derived from used_cpu_sys + used_cpu_user delta)
+  redis_cpu_percent_peak: number | null
 }
 
 export interface NginxPreflight {

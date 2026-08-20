@@ -22,7 +22,16 @@ import { printSummary, emitMachineReadableResult } from "./application/result-pr
 import { runEvidenceSuite } from "./application/evidence-suite.js"
 import { runTopologyPreflight } from "./adapters/topology-preflight.js"
 import crypto from "node:crypto"
+import { execSync } from "node:child_process"
 import type { ScenarioContext } from "./scenarios/scenario.js"
+
+function getGitCommitSha(): string | null {
+  try {
+    return execSync("git rev-parse HEAD", { encoding: "utf-8", timeout: 2000 }).trim()
+  } catch {
+    return null
+  }
+}
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23)
@@ -211,98 +220,132 @@ async function main(): Promise<void> {
       process.exit(2)
     }
 
+    // §4.22: Build identity — immutable provenance
+    const buildIdentity = {
+      git_commit_sha: getGitCommitSha(),
+      nginx_version: "1.27.4",
+      nchan_version: "1.3.8",
+      node_version: process.version,
+      redis_version: "7.2",
+    }
+
     loopMonitor = setInterval(() => {
       resourceMonitor.measureCpu()
       // §BL: Sample publisher backlog (in-flight publish promises) every 100ms
       metrics.setBacklog(publisher.pendingPublishes)
+      // §3.5: Drain publisher scheduler lag samples into metrics recorder
+      const lagSamples = publisher.drainSchedulerLagSamples()
+      for (const ms of lagSamples) {
+        metrics.recordSchedulerLag(ms)
+      }
     }, 100)
 
     // §AB: Start continuous event-loop delay monitor before measured phases
     resourceMonitor.startEventLoopMonitor()
 
     // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
+    metrics.beginPhase("warmup")
     const warmup = new WarmupScenario(pool)
     const warmupResult = await warmup.execute(ctx)
+    metrics.endPhase()
     log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
     // §4.6: Record phase snapshot for publish rate measurement
     const warmupSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
 
     // Phase 2: Steady — publisher already running from warm-up
+    metrics.beginPhase("steady")
     const steady = new SteadyScenario(pool)
     const steadyResult = await steady.execute(ctx)
+    metrics.endPhase()
     log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
     // §4.6: Record phase snapshot
     const steadySnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
 
     // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
+    metrics.beginPhase("surge")
     const connectionSurge = new ConnectionSurgeScenario(pool)
     const surgeResult = await connectionSurge.execute(ctx)
+    metrics.endPhase()
     log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
     // §4.6: Record phase snapshot
     const surgeSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0 })
 
     // Phase 4: Post-surge stabilization
+    metrics.beginPhase("post-surge")
     log(`--- PHASE: POST-SURGE STABILIZATION (${config.cooldownSeconds}s) ---`)
     await sleep(config.cooldownSeconds * 1000)
+    metrics.endPhase()
     log("Post-surge stabilization complete")
 
     // Phase 5: Late-join under peak load
+    metrics.beginPhase("late-join")
     const lateJoinStart = ctx.clock.now()
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
     const lateJoinDuration = ctx.clock.now() - lateJoinStart
+    metrics.endPhase()
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const lateJoinSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration })
 
     // Phase 6: Burst at peak
+    metrics.beginPhase("burst")
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
+    metrics.endPhase()
     log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
     // §4.6: Record phase snapshot
     const burstSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
 
     // Phase 7: Post-burst steady
+    metrics.beginPhase("post-burst")
     log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
     await publisher.drain()
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
+    metrics.endPhase()
     log("Post-burst steady complete")
     // §4.6: Record phase snapshot
     const postBurstSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
 
     // Phase 8: Reconnect while publishing
+    metrics.beginPhase("reconnect")
     const reconnectStart = ctx.clock.now()
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
     const reconnectDuration = ctx.clock.now() - reconnectStart
+    metrics.endPhase()
     log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const reconnectSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
+    metrics.beginPhase("slow-consumer")
     const slowConsumerStart = ctx.clock.now()
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     const slowConsumerDuration = ctx.clock.now() - slowConsumerStart
+    metrics.endPhase()
     log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const slowSnap = publisher.snapshotAndReset()
     ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration })
 
     // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
+    metrics.beginPhase("nchan-restart")
     const restartStart = ctx.clock.now()
     const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     const restartDuration = ctx.clock.now() - restartStart
+    metrics.endPhase()
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
     // §4.6: Record phase snapshot with actual duration
     const restartSnap = publisher.snapshotAndReset()
@@ -314,7 +357,9 @@ async function main(): Promise<void> {
     resourceMonitor.measureCpu()
     const resourceSnap = resourceMonitor.snapshot()
 
-    const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots)
+    const phaseHists = metrics.snapshotPhaseHistograms()
+    const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots, phaseHists)
+    aggregated.build_identity = buildIdentity
     aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
     aggregated.generator_cpu_percent_peak = resourceSnap.cpuPercentPeak
@@ -341,6 +386,9 @@ async function main(): Promise<void> {
     aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
     // §4.9: Redis connected-client peak
     aggregated.redis_connected_clients_peak = resourceSnap.redis_connected_clients_peak
+    // §3.8: Nchan/Redis CPU percent peaks
+    aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
+    aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
     // §4.2: Topology capacity
     aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
     // §BL: Wire publisher backlog peak

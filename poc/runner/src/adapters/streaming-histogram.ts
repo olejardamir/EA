@@ -79,4 +79,14 @@ export class StreamingHistogram {
     }
     if (other.trackedMax > this.trackedMax) this.trackedMax = other.trackedMax
   }
+
+  // §3.23: Clone this histogram for safe cross-run aggregation without mutating the original
+  clone(): StreamingHistogram {
+    const copy = new StreamingHistogram(this.maxMs)
+    copy.totalCount = this.totalCount
+    copy.overflowCount = this.overflowCount
+    copy.trackedMax = this.trackedMax
+    copy.buckets = new Uint32Array(this.buckets)
+    return copy
+  }
 }

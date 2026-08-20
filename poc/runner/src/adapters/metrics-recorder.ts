@@ -55,6 +55,35 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private serverInitiatedDisconnects = 0
   private networkFailures = 0
   private shutdownCleanupDisconnects = 0
+  // §3.5: Publisher scheduler lag
+  private schedulerLagHistogram = new StreamingHistogram()
+  // §4.25: Per-phase histogram isolation — separate histograms per named phase
+  private phaseFanOutHistograms = new Map<string, StreamingHistogram>()
+  private phaseLateJoinHistograms = new Map<string, StreamingHistogram>()
+  private activePhaseName: string | null = null
+
+  beginPhase(name: string): void {
+    this.endPhase()
+    this.activePhaseName = name
+    this.phaseFanOutHistograms.set(name, new StreamingHistogram())
+    this.phaseLateJoinHistograms.set(name, new StreamingHistogram())
+  }
+
+  endPhase(): void {
+    this.activePhaseName = null
+  }
+
+  snapshotPhaseHistograms(): Record<string, { fanOut: { p50: number; p95: number; p99: number; max: number; count: number }; lateJoin: { p50: number; p95: number; p99: number; max: number; count: number } }> {
+    const result: Record<string, any> = {}
+    for (const [name, h] of this.phaseFanOutHistograms) {
+      const lh = this.phaseLateJoinHistograms.get(name)
+      result[name] = {
+        fanOut: { p50: h.p50(), p95: h.p95(), p99: h.p99(), max: h.max, count: h.count },
+        lateJoin: { p50: lh?.p50() ?? 0, p95: lh?.p95() ?? 0, p99: lh?.p99() ?? 0, max: lh?.max ?? 0, count: lh?.count ?? 0 },
+      }
+    }
+    return result
+  }
 
   recordFanOutLatency(ms: number): void {
     this.latencySampleCount++
@@ -63,6 +92,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
     if (this.fanOutBuffer.length > PHASE_BUFFER_MAX) {
       this.fanOutBuffer = this.fanOutBuffer.slice(-PHASE_BUFFER_MAX)
     }
+    if (this.activePhaseName) {
+      this.phaseFanOutHistograms.get(this.activePhaseName)?.record(ms)
+    }
   }
 
   recordLateJoinLatency(ms: number): void {
@@ -70,6 +102,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
     this.lateJoinBuffer.push(ms)
     if (this.lateJoinBuffer.length > PHASE_BUFFER_MAX) {
       this.lateJoinBuffer = this.lateJoinBuffer.slice(-PHASE_BUFFER_MAX)
+    }
+    if (this.activePhaseName) {
+      this.phaseLateJoinHistograms.get(this.activePhaseName)?.record(ms)
     }
   }
 
@@ -121,6 +156,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementServerInitiatedDisconnects(): void { this.serverInitiatedDisconnects++ }
   incrementNetworkFailures(): void { this.networkFailures++ }
   incrementShutdownCleanup(): void { this.shutdownCleanupDisconnects++ }
+
+  // §3.5: Publisher scheduler lag
+  recordSchedulerLag(ms: number): void { this.schedulerLagHistogram.record(ms) }
 
   // §6.32: Expose histograms for final percentile computation
   getFanOutHistogram(): StreamingHistogram { return this.fanOutHistogram }
@@ -177,6 +215,9 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       fan_out_overflow_count: this.fanOutHistogram.overflows,
       late_join_sample_count: this.lateJoinHistogram.count,
       late_join_overflow_count: this.lateJoinHistogram.overflows,
+      // §3.5: Publisher scheduler lag
+      scheduler_lag_p95_ms: this.schedulerLagHistogram.p95(),
+      scheduler_lag_max_ms: this.schedulerLagHistogram.max,
     }
   }
 }

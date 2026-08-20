@@ -42,6 +42,8 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       incrementShutdownCleanup() {},
       incrementSchemaValidationErrors() {},
       incrementMissingTransportId() {},
+      recordSchedulerLag() {},
+      beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -61,6 +63,7 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
           schema_validation_errors: 0, missing_transport_id: 0,
           fan_out_sample_count: 0, fan_out_overflow_count: 0,
           late_join_sample_count: 0, late_join_overflow_count: 0,
+          scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
         }
       },
     },

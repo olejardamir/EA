@@ -484,8 +484,8 @@ function poolPercentileFromHistograms(
   p: number,
 ): number {
   if (runs.length === 0) return 0
-  // Merge all histograms into the first run's histogram
-  const merged = extract(runs[0])
+  // §3.23: Clone the first histogram to avoid mutating run-0's original data
+  const merged = extract(runs[0]).clone()
   for (let i = 1; i < runs.length; i++) {
     merged.merge(extract(runs[i]))
   }
@@ -530,6 +530,15 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.server_initiated_disconnects = runs.reduce((s, r) => s + r.aggregated.server_initiated_disconnects, 0)
   aggregate.network_failures = runs.reduce((s, r) => s + r.aggregated.network_failures, 0)
   aggregate.shutdown_cleanup_disconnects = runs.reduce((s, r) => s + r.aggregated.shutdown_cleanup_disconnects, 0)
+  // §3.23: Replay/live-vs-replay delivery fields must be summed across runs
+  aggregate.live_expected_deliveries = runs.reduce((s, r) => s + r.aggregated.live_expected_deliveries, 0)
+  aggregate.live_received_deliveries = runs.reduce((s, r) => s + r.aggregated.live_received_deliveries, 0)
+  aggregate.late_join_history_expected = runs.reduce((s, r) => s + r.aggregated.late_join_history_expected, 0)
+  aggregate.late_join_history_received = runs.reduce((s, r) => s + r.aggregated.late_join_history_received, 0)
+  aggregate.reconnect_replay_expected = runs.reduce((s, r) => s + r.aggregated.reconnect_replay_expected, 0)
+  aggregate.reconnect_replay_received = runs.reduce((s, r) => s + r.aggregated.reconnect_replay_received, 0)
+  aggregate.restart_replay_expected = runs.reduce((s, r) => s + r.aggregated.restart_replay_expected, 0)
+  aggregate.restart_replay_received = runs.reduce((s, r) => s + r.aggregated.restart_replay_received, 0)
 
   // §BA: §6.32: For percentiles, pool streaming histograms and recompute
   aggregate.fan_out_latency_p95_ms = poolPercentileFromHistograms(runs, (r) => r.rawFanOutHistogram, 95)
@@ -546,6 +555,21 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.active_connections_peak = Math.max(...runs.map((r) => r.aggregated.active_connections_peak))
   aggregate.scheduler_lag_p95 = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_p95))
   aggregate.surge_failures = Math.max(...runs.map((r) => r.aggregated.surge_failures))
+  // §3.23: Surge timing/rate fields — max for peaks, sum for counts
+  aggregate.surge_target_additions = runs.reduce((s, r) => s + r.aggregated.surge_target_additions, 0)
+  aggregate.surge_attempted = runs.reduce((s, r) => s + r.aggregated.surge_attempted, 0)
+  aggregate.surge_established = runs.reduce((s, r) => s + r.aggregated.surge_established, 0)
+  aggregate.attempt_rate_peak = Math.max(...runs.map((r) => r.aggregated.attempt_rate_peak))
+  aggregate.establishment_rate_peak = Math.max(...runs.map((r) => r.aggregated.establishment_rate_peak))
+  aggregate.scheduler_lag_max = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_max))
+  aggregate.active_population_peak = Math.max(...runs.map((r) => r.aggregated.active_population_peak))
+  aggregate.surge_timing_error_ms = Math.max(...runs.map((r) => r.aggregated.surge_timing_error_ms))
+  // §3.23: Nchan/Redis CPU percent peaks use max across runs (filter nulls — null means unavailable → INCONCLUSIVE)
+  aggregate.nchan_cpu_percent_peak = Math.max(0, ...runs.map((r) => r.aggregated.nchan_cpu_percent_peak ?? 0))
+  aggregate.redis_cpu_percent_peak = Math.max(0, ...runs.map((r) => r.aggregated.redis_cpu_percent_peak ?? 0))
+  // §3.23: Latency invalid/overflow counts sum across runs
+  aggregate.latency_invalid_count = runs.reduce((s, r) => s + r.aggregated.latency_invalid_count, 0)
+  aggregate.latency_overflow_count = runs.reduce((s, r) => s + r.aggregated.latency_overflow_count, 0)
 
   return aggregate
 }

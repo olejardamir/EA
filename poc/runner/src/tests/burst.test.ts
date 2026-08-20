@@ -43,6 +43,8 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
         incrementShutdownCleanup() {},
         incrementSchemaValidationErrors() {},
         incrementMissingTransportId() {},
+        recordSchedulerLag() {},
+        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
         snapshot(): MetricsSnapshot {
           snapshotCount++
           // First snapshot (pre-burst) returns 5 latencies, second (post-burst) returns 15
@@ -68,6 +70,7 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
             schema_validation_errors: 0, missing_transport_id: 0,
             fan_out_sample_count: 0, fan_out_overflow_count: 0,
             late_join_sample_count: 0, late_join_overflow_count: 0,
+            scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
           }
         },
       }
@@ -162,6 +165,8 @@ describe("BurstScenario", () => {
         incrementShutdownCleanup() {},
         incrementSchemaValidationErrors() {},
         incrementMissingTransportId() {},
+        recordSchedulerLag() {},
+        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
         snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -181,6 +186,7 @@ describe("BurstScenario", () => {
           schema_validation_errors: 0, missing_transport_id: 0,
           fan_out_sample_count: 0, fan_out_overflow_count: 0,
           late_join_sample_count: 0, late_join_overflow_count: 0,
+          scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
         }
       },
     } as any

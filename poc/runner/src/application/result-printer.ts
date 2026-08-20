@@ -265,6 +265,8 @@ export function emitMachineReadableResult(
       gaps: metrics.reconnect_gaps,
       duplicates: metrics.reconnect_duplicates,
       order_violations: metrics.reconnect_order_violations,
+      expected: metrics.reconnect_replay_expected,
+      received: metrics.reconnect_replay_received,
     },
     slow_client_metrics: {
       disconnects: metrics.slow_consumer_disconnects,
@@ -391,6 +393,7 @@ export function emitMachineReadableResult(
       max_ms: metrics.late_join_max_ms,
       history_expected: metrics.late_join_history_expected,
       history_received: metrics.late_join_history_received,
+      history_missing: (metrics.late_join_history_expected ?? 0) - (metrics.late_join_history_received ?? 0),
     },
     viewer_concentration: {
       lobby_subscribers: metrics.lobby_subscribers,
@@ -424,6 +427,8 @@ export function emitMachineReadableResult(
         overflow_count: metrics.late_join_overflow_count,
       },
     },
+    // §4.25: Per-phase latency histograms — each phase has isolated fan-out and late-join percentiles
+    phase_latency_histograms: metrics.phase_histograms,
     // §4.15/§4.18: Clock validity — same-host containers share Linux kernel clock
     // Not RTT-based. All containers on the same Docker host share monotonic and wall clocks.
     clock_validity: {
@@ -453,6 +458,8 @@ export function emitMachineReadableResult(
       verdict: verdictResult.verdict,
       checks: verdictResult.checks,
     },
+    // §4.22: Build identity — exact upstream versions and commit
+    build_identity: metrics.build_identity,
   }
 
   // Emit as a single JSON line on stdout for machine parsing

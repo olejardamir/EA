@@ -53,6 +53,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementShutdownCleanup() {},
     incrementSchemaValidationErrors() {},
     incrementMissingTransportId() {},
+    recordSchedulerLag() {},
+    beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -75,6 +77,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         schema_validation_errors: 0, missing_transport_id: 0,
         fan_out_sample_count: 0, fan_out_overflow_count: 0,
         late_join_sample_count: 0, late_join_overflow_count: 0,
+        scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
       }
     },
   }
@@ -124,6 +127,8 @@ function mockResourceMonitor(): ResourceMonitor {
         nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
         nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
         redis_connected_clients_peak: null,
+        nchan_cpu_percent_peak: null,
+        redis_cpu_percent_peak: null,
       }
     },
     startEventLoopMonitor() {},

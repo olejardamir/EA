@@ -41,6 +41,12 @@ export interface MetricsRecorder {
   incrementServerInitiatedDisconnects(): void
   incrementNetworkFailures(): void
   incrementShutdownCleanup(): void
+  // §3.5: Event-publisher scheduler lag
+  recordSchedulerLag(ms: number): void
+  // §4.25: Per-phase histogram isolation
+  beginPhase(name: string): void
+  endPhase(): void
+  snapshotPhaseHistograms(): Record<string, { fanOut: { p50: number; p95: number; p99: number; max: number; count: number }; lateJoin: { p50: number; p95: number; p99: number; max: number; count: number } }>
   snapshot(): MetricsSnapshot
 }
 
@@ -94,4 +100,7 @@ export interface MetricsSnapshot {
   fan_out_overflow_count: number
   late_join_sample_count: number
   late_join_overflow_count: number
+  // §3.5: Event-publisher scheduler lag
+  scheduler_lag_p95_ms: number
+  scheduler_lag_max_ms: number
 }

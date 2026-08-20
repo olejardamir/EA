@@ -56,6 +56,8 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
     nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
     redis_connected_clients_peak: null,
+    nchan_cpu_percent_peak: null,
+    redis_cpu_percent_peak: null,
     timing_valid: true,
     generator_cpu_percent_peak: 50,
     generator_event_loop_p99_ms: 10,
@@ -124,6 +126,7 @@ function baseAggregated(overrides: Partial<AggregatedMetrics> = {}): AggregatedM
     active_population_start: 0,
     active_population_end: 0,
     active_population_peak: 0,
+    build_identity: { git_commit_sha: null, nginx_version: "1.27.4", nchan_version: "1.3.8", node_version: "", redis_version: "7.2" },
     ...overrides,
   }
 }

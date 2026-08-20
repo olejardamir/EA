@@ -205,6 +205,7 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
       incrementReconnectReplayReceived() {},
       incrementRestartReplayExpected() {},
       incrementRestartReplayReceived() {},
+      beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
       snapshot() {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -225,6 +226,10 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0,
           shutdown_cleanup_disconnects: 0,
+          schema_validation_errors: 0, missing_transport_id: 0,
+          fan_out_sample_count: 0, fan_out_overflow_count: 0,
+          late_join_sample_count: 0, late_join_overflow_count: 0,
+          scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
         }
       },
     }

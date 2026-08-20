@@ -47,6 +47,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementShutdownCleanup() {},
     incrementSchemaValidationErrors() {},
     incrementMissingTransportId() {},
+    recordSchedulerLag() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -69,6 +70,7 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         schema_validation_errors: 0, missing_transport_id: 0,
         fan_out_sample_count: 0, fan_out_overflow_count: 0,
         late_join_sample_count: 0, late_join_overflow_count: 0,
+        scheduler_lag_p95_ms: 0, scheduler_lag_max_ms: 0,
       }
     },
   }

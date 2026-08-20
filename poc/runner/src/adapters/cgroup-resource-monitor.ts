@@ -16,7 +16,7 @@ function redisInfo(redisUrl: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = new URL(redisUrl)
     const sock = net.connect(parseInt(url.port) || 6379, url.hostname, () => {
-      sock.write("INFO memory\r\nINFO clients\r\n")
+      sock.write("INFO memory\r\nINFO clients\r\nINFO cpu\r\n")
     })
     let data = ""
     sock.on("data", (chunk) => {
@@ -45,6 +45,27 @@ function parseRedisConnectedClients(info: string): number | null {
   for (const line of info.split("\r\n")) {
     if (line.startsWith("connected_clients:")) {
       const val = parseInt(line.split(":")[1], 10)
+      if (!isNaN(val)) return val
+    }
+  }
+  return null
+}
+
+// §3.8: Parse Redis used_cpu_sys and used_cpu_user from INFO cpu output
+function parseRedisCpuSys(info: string): number | null {
+  for (const line of info.split("\r\n")) {
+    if (line.startsWith("used_cpu_sys:")) {
+      const val = parseFloat(line.split(":")[1])
+      if (!isNaN(val)) return val
+    }
+  }
+  return null
+}
+
+function parseRedisCpuUser(info: string): number | null {
+  for (const line of info.split("\r\n")) {
+    if (line.startsWith("used_cpu_user:")) {
+      const val = parseFloat(line.split(":")[1])
       if (!isNaN(val)) return val
     }
   }
@@ -102,6 +123,15 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private nchanMemoryOomEvents: number | null = null
   private nchanMemoryOomKillEvents: number | null = null
   private redisConnectedClientsPeak: number | null = null
+  // §3.8: Nchan CPU percent tracking
+  private nchanCpuPercentPeak: number | null = null
+  private prevNchanCpuUsageUsec: number | null = null
+  private prevNchanWallTime: number = 0
+  // §3.8: Redis CPU percent tracking
+  private redisCpuPercentPeak: number | null = null
+  private prevRedisCpuSys: number | null = null
+  private prevRedisCpuUser: number | null = null
+  private prevRedisWallTime: number = 0
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private prevCpuTime = 0
   private prevWallTime = 0
@@ -146,8 +176,29 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       if (clients !== null && (this.redisConnectedClientsPeak === null || clients > this.redisConnectedClientsPeak)) {
         this.redisConnectedClientsPeak = clients
       }
+      // §3.8: Compute Redis CPU percent from used_cpu_sys + used_cpu_user deltas
+      const cpuSys = parseRedisCpuSys(info)
+      const cpuUser = parseRedisCpuUser(info)
+      if (cpuSys !== null && cpuUser !== null) {
+        const totalCpu = cpuSys + cpuUser
+        const wallTime = Date.now()
+        if (this.prevRedisCpuSys !== null && this.prevRedisCpuUser !== null) {
+          const cpuDelta = totalCpu - (this.prevRedisCpuSys + this.prevRedisCpuUser)
+          const wallDelta = (wallTime - this.prevRedisWallTime) / 1000 // seconds
+          if (wallDelta > 0) {
+            // Redis reports CPU in seconds; convert to percentage of wall time
+            const cpuPercent = (cpuDelta / wallDelta) * 100
+            if (this.redisCpuPercentPeak === null || cpuPercent > this.redisCpuPercentPeak) {
+              this.redisCpuPercentPeak = cpuPercent
+            }
+          }
+        }
+        this.prevRedisCpuSys = cpuSys
+        this.prevRedisCpuUser = cpuUser
+        this.prevRedisWallTime = wallTime
+      }
     } catch {
-      // Redis unavailable — leave redisMemoryMbPeak as-is
+      // Redis unavailable — leave metrics as-is
     }
   }
 
@@ -168,6 +219,21 @@ export class CgroupResourceMonitor implements ResourceMonitor {
           this.nchanMemoryPeakBytes = metrics.memory_peak_bytes
         }
         if (metrics.cpu_usage_usec !== null) {
+          // §3.8: Compute Nchan CPU percent from cumulative cpu_usage_usec delta
+          const wallTime = Date.now()
+          if (this.prevNchanCpuUsageUsec !== null) {
+            const cpuDelta = metrics.cpu_usage_usec - this.prevNchanCpuUsageUsec
+            const wallDelta = (wallTime - this.prevNchanWallTime) / 1000 // seconds
+            if (wallDelta > 0) {
+              // cpu_usage_usec is in microseconds; convert to percentage of wall time
+              const cpuPercent = (cpuDelta / 1000 / wallDelta) * 100
+              if (this.nchanCpuPercentPeak === null || cpuPercent > this.nchanCpuPercentPeak) {
+                this.nchanCpuPercentPeak = cpuPercent
+              }
+            }
+          }
+          this.prevNchanCpuUsageUsec = metrics.cpu_usage_usec
+          this.prevNchanWallTime = wallTime
           this.nchanCpuUsageUsec = metrics.cpu_usage_usec
         }
         if (metrics.cpu_throttled_count !== null) {
@@ -334,6 +400,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       nchan_memory_oom_kill_events: this.nchanMemoryOomKillEvents,
       // §4.9: Redis connected-client peak
       redis_connected_clients_peak: this.redisConnectedClientsPeak,
+      // §3.8: Nchan/Redis CPU percent peaks
+      nchan_cpu_percent_peak: this.nchanCpuPercentPeak,
+      redis_cpu_percent_peak: this.redisCpuPercentPeak,
     }
   }
 
