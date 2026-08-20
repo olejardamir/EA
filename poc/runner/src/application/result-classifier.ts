@@ -1,5 +1,6 @@
 import type { AggregatedMetrics, Verdict, VerdictResult, SlowConsumerMetrics, PhaseHistogramResult } from "../domain/result.js"
 import type { TopologyPreflight } from "../adapters/topology-preflight.js"
+import type { PhaseSnapshot } from "../scenarios/scenario.js"
 
 export function classifyResult(
   metrics: AggregatedMetrics,
@@ -514,7 +515,7 @@ export function aggregateWorkerMetrics(
     getFanOutHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
     getLateJoinHistogram?(): import("../adapters/streaming-histogram.js").StreamingHistogram
   }>,
-  phaseSnapshots?: Array<{ phase: string; eventsPublished: number; byMatch: Map<string, number>; durationMs: number; lobbyPublished?: number; matchPublished?: number; matchAttempts?: number; lobbyAttempts?: number }>,
+  phaseSnapshots?: Array<PhaseSnapshot>,
   phaseHistograms?: Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>,
 ): AggregatedMetrics {
   // §6.32: Use streaming histograms for final percentile computation when available.
@@ -666,10 +667,10 @@ export function aggregateWorkerMetrics(
     const hotMatch = ps.byMatch.get("match-001") ?? 0
     const hotMatchPct = total > 0 ? (hotMatch / total) * 100 : 0
     // §3.7: Lobby vs match breakdown
-    const matchPublished = ps.matchPublished ?? (total)
-    const lobbyPublished = ps.lobbyPublished ?? 0
-    const matchAttempts = ps.matchAttempts ?? matchPublished
-    const lobbyAttempts = ps.lobbyAttempts ?? lobbyPublished
+    const matchPublished = ps.matchPublished
+    const lobbyPublished = ps.lobbyPublished
+    const matchAttempts = ps.matchAttempts
+    const lobbyAttempts = ps.lobbyAttempts
     total_match_attempts += matchAttempts
     total_lobby_attempts += lobbyAttempts
     const durationSec = ps.durationMs / 1000

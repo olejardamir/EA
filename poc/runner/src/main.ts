@@ -410,6 +410,7 @@ async function main(): Promise<void> {
     aggregated.memory_current_bytes = resourceSnap.memory_current_bytes
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
+    aggregated.cpu_max_period = resourceSnap.cpu_max_period
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
     // §4.9: Wire Nchan container resource metrics — deltas for cumulative counters
     aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec !== null && cgroupBaseline.nchan_cpu_usage_usec !== null
@@ -435,13 +436,15 @@ async function main(): Promise<void> {
     aggregated.nchan_cpu_percent_peak = resourceSnap.nchan_cpu_percent_peak
     aggregated.redis_cpu_percent_peak = resourceSnap.redis_cpu_percent_peak
     // §3.9: Normalized CPU percent peaks — divide raw per-core % by core count
-    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / 100_000 : null
+    // §3.8.B: Use actual cpu.max period from cgroup, not hard-coded 100000µs
+    const cpuPeriod = resourceSnap.cpu_max_period ?? 100_000
+    const cpuLimitCores = resourceSnap.cpu_max_quota !== null ? resourceSnap.cpu_max_quota / cpuPeriod : null
     const containerMode = detectContainerMode(resourceSnap.cpu_max_quota)
     aggregated.resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.cpuPercentPeak, cpuLimitCores)
     aggregated.resource_cpu_baseline = baselineCpuPercent(containerMode)
     // §3.8.A: Per-service CPU normalization — use each service's own cgroup limit, not the runner's
-    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / 100_000 : cpuLimitCores
-    const redisCpuLimitCores = resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / 100_000 : cpuLimitCores
+    const nchanCpuLimitCores = resourceSnap.nchan_cpu_max_quota !== null ? resourceSnap.nchan_cpu_max_quota / cpuPeriod : cpuLimitCores
+    const redisCpuLimitCores = resourceSnap.redis_cpu_max_quota !== null ? resourceSnap.redis_cpu_max_quota / cpuPeriod : cpuLimitCores
     aggregated.nchan_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.nchan_cpu_percent_peak, nchanCpuLimitCores)
     aggregated.redis_resource_cpu_percent_peak = normalizeCpuPercent(resourceSnap.redis_cpu_percent_peak, redisCpuLimitCores)
     // §4.2: Topology capacity

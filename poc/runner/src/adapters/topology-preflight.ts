@@ -164,6 +164,11 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
       warnings.push(`Nginx max capacity ${nginxMaxSseCapacity} < per-shard target ${targetConnections}`)
       return false
     }
+    // §3.4.C: Nginx is shared across all shards — compare against aggregate target, not per-shard
+    if (nginxMaxSseCapacity < aggregateTarget) {
+      warnings.push(`Nginx usable capacity ${nginxMaxSseCapacity} < aggregate subscriber target ${aggregateTarget} (${shardCount} shards × ${targetConnections})`)
+      return false
+    }
     if (destTupleCapacity < aggregateTarget) {
       warnings.push(`Aggregate destination tuple capacity ${destTupleCapacity} (${sourceIps} shards × ephemeral=${ephemeralCount}) < aggregate target ${aggregateTarget} — structurally insufficient`)
       return false
