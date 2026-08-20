@@ -18,8 +18,8 @@ import { SlowConsumerScenario } from "./scenarios/slow-consumer.js"
 import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
 import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
-import { printSummary } from "./application/result-printer.js"
-import type { ScenarioContext, PhaseSnapshot } from "./scenarios/scenario.js"
+import { printSummary, emitMachineReadableResult } from "./application/result-printer.js"
+import type { ScenarioContext } from "./scenarios/scenario.js"
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 23)
@@ -75,134 +75,212 @@ async function main(): Promise<void> {
     },
   })
 
-  await waitForNchan(config.nchanPubUrl)
+  // §BS: Maximum run deadline to prevent indefinite hangs
+  const MAX_RUN_MS = 10 * 60 * 1000 // 10 minutes
+  const runTimer = setTimeout(() => {
+    log(`§BS: Maximum run deadline (${MAX_RUN_MS / 1000}s) reached — forcing shutdown`)
+    process.exit(2)
+  }, MAX_RUN_MS)
 
-  const ctx: ScenarioContext = {
-    publisher: publisher as any,
-    eventStream: sseClient as any,
-    metrics,
-    clock,
-    resourceMonitor,
-    headTracker,
-    config,
-    matchIds: publisher.matchIds,
-    phaseSnapshots: [],
-    log,
-    sleep,
-  }
+  let loopMonitor: NodeJS.Timeout | null = null
+  let verdictVerdict = "NOT_APPLICABLE" as string
 
-  log("=== POC Runner Starting ===")
-  log(`Config: ${config.targetConnections} target connections, seed=${config.seed}`)
-  log(`Profile: ${config.runProfile}`)
-  log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
+  try {
+    await waitForNchan(config.nchanPubUrl)
 
-  const loopMonitor = setInterval(() => {
-    resourceMonitor.measureEventLoop()
+    // §AD: Measure wall-clock offset between runner and Nchan.
+    async function measureClockOffset(url: string, label: string): Promise<void> {
+      try {
+        const start = Date.now()
+        const resp = await fetch(`${url}/pub/healthcheck`, { signal: AbortSignal.timeout(3000) })
+        const end = Date.now()
+        if (resp.ok) {
+          const rtt = end - start
+          log(`§AD clock-offset ${label}: RTT=${rtt}ms (max skew estimate: ${Math.round(rtt / 2)}ms)`)
+        }
+      } catch (err) {
+        log(`§AD clock-offset ${label}: FAILED (${err})`)
+      }
+    }
+
+    await measureClockOffset(config.nchanPubUrl, "nchan-1")
+    if (config.nchan2SubUrl) {
+      const nchan2PubUrl = config.nchan2SubUrl.replace("/sub/", "/pub/").replace(":8081", ":18080")
+      await measureClockOffset(nchan2PubUrl, "nchan-2")
+    }
+
+    const ctx: ScenarioContext = {
+      publisher,
+      eventStream: sseClient,
+      metrics,
+      clock,
+      resourceMonitor,
+      headTracker,
+      config,
+      matchIds: publisher.matchIds,
+      phaseSnapshots: [],
+      log,
+      sleep,
+    }
+
+    log("=== POC Runner Starting ===")
+    log(`Config: ${config.targetConnections} target connections, seed=${config.seed}`)
+    log(`Profile: ${config.runProfile}`)
+    log(`Phases: warmup=${config.warmupSeconds}s, steady=${config.measureSeconds}s, burst=${config.burstSeconds}s`)
+
+    loopMonitor = setInterval(() => {
+      resourceMonitor.measureCpu()
+      // §BL: Sample publisher backlog (in-flight publish promises) every 100ms
+      metrics.setBacklog(publisher.pendingPublishes)
+    }, 100)
+
+    // §AB: Start continuous event-loop delay monitor before measured phases
+    resourceMonitor.startEventLoopMonitor()
+
+    // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
+    const warmup = new WarmupScenario(pool)
+    const warmupResult = await warmup.execute(ctx)
+    log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
+
+    // Phase 2: Steady — publisher already running from warm-up
+    const steady = new SteadyScenario(pool)
+    const steadyResult = await steady.execute(ctx)
+    log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
+
+    // Phase 2.5: Late-join (during steady)
+    const lateJoin = new LateJoinScenario(pool)
+    const lateJoinResult = await lateJoin.execute(ctx)
+    log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
+
+    // Phase 3: Burst
+    const burst = new BurstScenario()
+    const burstResult = await burst.execute(ctx)
+    log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
+
+    // Phase 4: Post-burst steady
+    log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
+    publisher.stop()
+    await sleep(500)
+    publisher.burstMode = false
+    publisher.start(true)
+    await sleep(config.cooldownSeconds * 1000)
+    log("Post-burst steady complete")
+
+    // Phase 5: Reconnect
+    const reconnect = new ReconnectScenario(pool)
+    const reconnectResult = await reconnect.execute(ctx)
+    log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
+
+    // Phase 6: Slow consumer
+    const slowConsumer = new SlowConsumerScenario(pool)
+    const slowResult = await slowConsumer.execute(ctx)
+    log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
+
+    // Phase 7: Connection surge (+40%)
+    const connectionSurge = new ConnectionSurgeScenario(pool)
+    const surgeResult = await connectionSurge.execute(ctx)
+    log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+
+    // Phase 8: Nchan restart (cross-node Redis history)
+    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchan2SubUrl)
+    const nchanResult = await nchanRestart.execute(ctx)
+    log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
+
+    // Collect metrics
+    log("\n--- COLLECTING METRICS ---")
+    resourceMonitor.stopEventLoopMonitor()
     resourceMonitor.measureCpu()
-  }, 100)
+    const resourceSnap = resourceMonitor.snapshot()
 
-  // Phase 1: Warmup (60% base)
-  const warmup = new WarmupScenario(pool)
-  const warmupResult = await warmup.execute(ctx)
-  log(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
-  const warmupSnap = publisher.snapshotAndReset()
-  ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
+    const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots)
+    aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
+    aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
+    aggregated.generator_cpu_percent_peak = resourceSnap.cpuPercentPeak
+    aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
+    aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
+    aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
+    // §AC: Wire cgroup v2 runtime signals
+    aggregated.cpu_usage_usec = resourceSnap.cpu_usage_usec
+    aggregated.cpu_throttled_count = resourceSnap.cpu_throttled_count
+    aggregated.cpu_throttled_usec = resourceSnap.cpu_throttled_usec
+    aggregated.memory_oom_events = resourceSnap.memory_oom_events
+    aggregated.memory_oom_kill_events = resourceSnap.memory_oom_kill_events
+    aggregated.memory_current_bytes = resourceSnap.memory_current_bytes
+    aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
+    aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
+    aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
+    // §BL: Wire publisher backlog peak
+    aggregated.generator_backlog_peak = metrics.snapshot().generator_backlog_peak
+    // §BM: Wire publisher acceptance stats
+    aggregated.publisher_attempts = nchanPublisher.stats.attempts
+    aggregated.publisher_successes = nchanPublisher.stats.successes
+    aggregated.publisher_definite_failures = nchanPublisher.stats.definiteFailures
+    aggregated.publisher_ambiguous_failures = nchanPublisher.stats.ambiguousFailures
+    aggregated.connections_target = config.targetConnections
+    aggregated.run_profile = config.runProfile
+    aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
+    aggregated.lobby_subscribers = pool.getSubscriberCount("lobby")
+    aggregated.match_001_subscribers = pool.getSubscriberCount("match-001")
+    // §R: Wire active connections peak from metrics recorder
+    aggregated.active_connections_peak = metrics.snapshot().active_connections_peak ?? 0
 
-  // Phase 2: Steady
-  const steady = new SteadyScenario(pool)
-  const steadyResult = await steady.execute(ctx)
-  log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
-  const steadySnap = publisher.snapshotAndReset()
-  ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
+    // §V: Log hot-match viewer concentration for evidence
+    const totalSubscribers = MATCH_IDS.reduce((sum, id) => sum + pool.getSubscriberCount(id), 0) + pool.getSubscriberCount("lobby")
+    log(`§V viewer-concentration: match-001=${aggregated.match_001_subscribers}, lobby=${aggregated.lobby_subscribers}, total=${totalSubscribers}`)
 
-  // Phase 2.5: Late-join (during steady)
-  const lateJoin = new LateJoinScenario(pool)
-  const lateJoinResult = await lateJoin.execute(ctx)
-  log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
+    // Parse slow consumer degradation from result detail
+    const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
+    aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
 
-  // Phase 3: Burst
-  const burst = new BurstScenario()
-  const burstResult = await burst.execute(ctx)
-  log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
-  const burstSnap = publisher.snapshotAndReset()
-  ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
+    // Parse nchan restart result
+    aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
+    aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
 
-  // Phase 4: Post-burst steady
-  log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
-  publisher.stop()
-  await sleep(500)
-  publisher.burstMode = false
-  publisher.start(true)
-  await sleep(config.cooldownSeconds * 1000)
-  log("Post-burst steady complete")
-  const cooldownSnap = publisher.snapshotAndReset()
-  ctx.phaseSnapshots.push({ phase: "cooldown", eventsPublished: cooldownSnap.eventsPublished, byMatch: cooldownSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
+    // §BH: Wire surge existing-viewer health
+    if (ctx._surgeHealth) {
+      aggregated.surge_fan_out_p95_ms = ctx._surgeHealth.fan_out_p95_ms
+      aggregated.surge_missing_sequences = ctx._surgeHealth.missing_sequences
+      aggregated.surge_duplicates = ctx._surgeHealth.duplicates
+      aggregated.surge_out_of_order = ctx._surgeHealth.out_of_order
+      aggregated.surge_events_received = ctx._surgeHealth.events_received
+    }
 
-  // Phase 5: Reconnect
-  const reconnect = new ReconnectScenario(pool)
-  const reconnectResult = await reconnect.execute(ctx)
-  log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
+    const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
+    const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
-  // Phase 6: Slow consumer
-  const slowConsumer = new SlowConsumerScenario(pool)
-  const slowResult = await slowConsumer.execute(ctx)
-  log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
+    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid)
+    verdictVerdict = verdictResult.verdict
 
-  // Phase 7: Connection surge (+40%)
-  const connectionSurge = new ConnectionSurgeScenario(pool)
-  const surgeResult = await connectionSurge.execute(ctx)
-  log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+    printSummary(aggregated, publisher.totalPublished, verdictResult)
 
-  // Phase 8: Nchan restart (cross-node Redis history)
-  const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchan2SubUrl)
-  const nchanResult = await nchanRestart.execute(ctx)
-  log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
+    // §6.24: Emit machine-readable JSON result to stdout
+    emitMachineReadableResult(aggregated, publisher.totalPublished, verdictResult, {
+      targetConnections: config.targetConnections,
+      seed: config.seed,
+      runProfile: config.runProfile,
+      warmupSeconds: config.warmupSeconds,
+      measureSeconds: config.measureSeconds,
+      burstSeconds: config.burstSeconds,
+      cooldownSeconds: config.cooldownSeconds,
+      slowConsumerFraction: config.slowConsumerFraction,
+      lobbyFraction: config.lobbyFraction,
+    })
 
-  clearInterval(loopMonitor)
-
-  // Collect metrics
-  log("\n--- COLLECTING METRICS ---")
-  resourceMonitor.measureEventLoop()
-  resourceMonitor.measureCpu()
-  const resourceSnap = resourceMonitor.snapshot()
-
-  const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots)
-  aggregated.event_loop_delay_p99_ms = resourceSnap.eventLoopDelayP99Ms
-  aggregated.memory_mb_peak = resourceSnap.memoryMbPeak
-  aggregated.generator_cpu_percent_peak = resourceSnap.cpuPercentPeak
-  aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
-  aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
-  aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
-  aggregated.connections_target = config.targetConnections
-  aggregated.run_profile = config.runProfile
-  aggregated.burst_fan_out_p95_ms = burst.burstFanOutP95Ms
-  aggregated.lobby_subscribers = pool.getSubscriberCount("lobby")
-
-  // Parse slow consumer degradation from result detail
-  const degradationMatch = slowResult.detail.match(/degradation=([\d.]+)%/)
-  aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
-
-  // Parse nchan restart result
-  aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
-  aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
-
-  const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
-  const timingValid = aggregated.event_loop_delay_p99_ms < 200
-
-  const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid)
-
-  printSummary(aggregated, publisher.totalPublished, verdictResult)
-
-  // Shutdown
-  log("\nShutting down...")
-  publisher.stop()
-  await pool.disconnectAll()
-
-  if ("dispose" in resourceMonitor && typeof resourceMonitor.dispose === "function") {
-    resourceMonitor.dispose()
+    log("=== POC Runner Complete ===")
+  } finally {
+    // §BS: Guaranteed cleanup on all exit paths
+    clearTimeout(runTimer)
+    if (loopMonitor) clearInterval(loopMonitor)
+    publisher.stop()
+    await pool.disconnectAll().catch(() => {})
+    if ("dispose" in resourceMonitor && typeof resourceMonitor.dispose === "function") {
+      resourceMonitor.dispose()
+    }
+    log("Cleanup complete")
   }
 
-  log("=== POC Runner Complete ===")
+  // §BS: Exit with code based on verdict (outside finally so process.exit works)
+  process.exitCode = verdictVerdict === "ACCEPT" || verdictVerdict === "NOT_APPLICABLE" ? 0 : 1
 }
 
 main().catch((err) => {

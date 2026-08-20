@@ -29,12 +29,13 @@ describe("CgroupResourceMonitor (Defect 9)", () => {
     monitor.dispose()
   })
 
-  it("measureEventLoop tracks delay", async () => {
+  it("startEventLoopMonitor / stopEventLoopMonitor tracks delay", async () => {
     const monitor = new CgroupResourceMonitor()
-    monitor.measureEventLoop()
+    monitor.startEventLoopMonitor()
     await new Promise((r) => setTimeout(r, 10))
     const snap = monitor.snapshot()
     assert.ok(snap.eventLoopDelayP99Ms >= 0)
+    monitor.stopEventLoopMonitor()
     monitor.dispose()
   })
 

@@ -31,6 +31,13 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementConnectionsEstablished: () => inc("connections_established"),
     incrementConnectionFailures: () => inc("connection_failures"),
     incrementConnectionsDropped: () => inc("connections_dropped"),
+    setActiveConnections() {},
+    incrementLatencyInvalid() {},
+    incrementLatencyOverflow() {},
+    setBacklog() {},
+    incrementSseParseErrors() {},
+    incrementJsonParseErrors() {},
+    incrementInvalidTimestampCount() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -40,6 +47,10 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         reconnect_order_violations: 0, slow_consumer_disconnects: 0,
         connections_attempted: 0, connections_established: 0,
         connection_failures: 0, connections_dropped: 0,
+        active_connections_peak: 0,
+        latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
+        generator_backlog_peak: 0,
+        sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
       }
     },
   }
@@ -74,18 +85,31 @@ function mockStream(): EventStream {
 
 function mockResourceMonitor(): ResourceMonitor {
   return {
-    measureEventLoop() {},
     measureCpu() {},
     snapshot(): ResourceSnapshot {
-      return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100 }
+      return {
+        memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50,
+        nchanMemoryMbPeak: null, redisMemoryMbPeak: 100,
+        cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null,
+        memory_current_bytes: null, memory_peak_bytes: null,
+        memory_oom_events: null, memory_oom_kill_events: null,
+        cpu_max_quota: null, memory_max_bytes: null,
+      }
     },
+    startEventLoopMonitor() {},
+    stopEventLoopMonitor() {},
+    dispose() {},
   }
 }
 
 function mockCtx(overrides: Partial<ExperimentConfig> = {}): ScenarioContext {
   const clock = mockClock()
   return {
-    publisher: {} as MatchEventPublisher,
+    publisher: {
+      start() {},
+      stop() {},
+      snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
+    } as unknown as MatchEventPublisher,
     eventStream: mockStream(),
     metrics: mockMetrics(),
     clock,

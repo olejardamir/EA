@@ -23,6 +23,10 @@ export class MatchEventPublisher {
   private _eventsPublished = 0
   private _totalPublished = 0
   private _eventsPublishedByMatch: Map<string, number> = new Map()
+  // §BL: Track in-flight publish promises — backlog = number of unresolved tasks
+  private _pendingPublishes = 0
+  // §6.20: Per-match publish lock — prevents concurrent same-match publishes from overtaking canonical order
+  private _matchBusy = new Map<string, boolean>()
 
   constructor(config: MatchEventPublisherConfig) {
     this.config = config
@@ -39,6 +43,11 @@ export class MatchEventPublisher {
 
   get totalPublished(): number {
     return this._totalPublished
+  }
+
+  // §BL: Number of publish tasks not yet resolved (in-flight to Nchan)
+  get pendingPublishes(): number {
+    return this._pendingPublishes
   }
 
   get eventsPublishedByMatch(): ReadonlyMap<string, number> {
@@ -72,34 +81,74 @@ export class MatchEventPublisher {
 
       const random = this.config.random
       const matchIdx = weightedRandom(weights, random)
+      const matchId = MATCH_IDS[matchIdx]
+
+      // §6.20: If this match already has a publish in-flight, skip this tick
+      // to preserve per-match canonical ordering. The next timer will retry.
+      if (this._matchBusy.get(matchId)) {
+        const rate = this.config.burstMode ? 50 : 9
+        const intervalMs = 1000 / rate
+        const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs))
+        this.timers.push(timer)
+        return
+      }
+
+      this._matchBusy.set(matchId, true)
+
       const state = this.matchStates[matchIdx]
       const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight), random)
       const eventType = EVENT_TYPES[eventTypeIdx].type
 
-      advanceMatchState(state, eventType, random)
+      // §AS: Build candidate state without mutating the committed state.
+      // Clone current state, advance the clone, and build the payload from it.
+      // The committed state is only updated after an unambiguous Nchan acceptance.
+      const candidate: MatchState = {
+        seq: state.seq,
+        score: { ...state.score },
+        clock: { ...state.clock },
+        last_event_type: state.last_event_type,
+      }
+      advanceMatchState(candidate, eventType, random)
 
-      const event = createEventPayload(MATCH_IDS[matchIdx], state.seq, eventType, state.score, state.clock)
+      const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock)
       const body = JSON.stringify(event)
 
-      this.config.headTracker.updateHead(MATCH_IDS[matchIdx], state.seq)
+      const finalize = () => {
+        this._matchBusy.set(matchId, false)
+        const rate = this.config.burstMode ? 50 : 9
+        const intervalMs = 1000 / rate
+        const jitter = intervalMs * 0.3 * (random() - 0.5)
+        const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs + jitter))
+        this.timers.push(timer)
+      }
 
-      this.config.publisher.publish(MATCH_IDS[matchIdx], body, eventType).then((ok) => {
+      this._pendingPublishes++
+      this.config.publisher.publish(matchId, body, eventType).then((ok) => {
+        this._pendingPublishes--
         if (ok) {
+          // §AQ: Set publish_timestamp to Nchan acceptance time (post-POST)
+          event.publish_timestamp = new Date().toISOString()
+          // §AS: Atomically commit candidate state only after Nchan acceptance
+          state.seq = candidate.seq
+          state.score = candidate.score
+          state.clock = candidate.clock
+          state.last_event_type = candidate.last_event_type
+          // §AS: Only commit head tracker and counters after Nchan acceptance
+          this.config.headTracker.updateHead(matchId, state.seq)
           this._eventsPublished++
           this._totalPublished++
-          const prev = this._eventsPublishedByMatch.get(MATCH_IDS[matchIdx]) ?? 0
-          this._eventsPublishedByMatch.set(MATCH_IDS[matchIdx], prev + 1)
-          const channel = MATCH_IDS[matchIdx]
-          const expected = this.config.getSubscriberCount?.(channel) ?? 0
-          this.config.onPublish?.(channel, expected)
+          const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
+          this._eventsPublishedByMatch.set(matchId, prev + 1)
+          const expected = this.config.getSubscriberCount?.(matchId) ?? 0
+          this.config.onPublish?.(matchId, expected)
         }
+        // §AS: On failure, committed state is unchanged — no revert needed
+        finalize()
+      }).catch(() => {
+        // §AS: On exception, committed state is unchanged — no revert needed
+        this._pendingPublishes--
+        finalize()
       })
-
-      const rate = this.config.burstMode ? 50 : 9
-      const intervalMs = 1000 / rate
-      const jitter = intervalMs * 0.3 * (random() - 0.5)
-      const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs + jitter))
-      this.timers.push(timer)
     }
 
     const scheduleLobby = () => {
@@ -112,7 +161,9 @@ export class MatchEventPublisher {
       }))
       const lobby = createLobbyPayload(lobbyStates)
       const body = JSON.stringify(lobby)
+      this._pendingPublishes++
       this.config.publisher.publish("lobby", body, "lobby").then((ok) => {
+        this._pendingPublishes--
         if (ok) {
           this._eventsPublished++
           this._totalPublished++

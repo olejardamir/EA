@@ -136,6 +136,71 @@ export function classifyResult(
     })
   }
 
+  // §BK: CPU throttling acceptance — frozen rule: nr_throttled must be 0
+  // Counter is sampled from cgroup v2 cpu.stat at end of run.
+  // If cgroup v2 is unavailable, check is skipped (not INCONCLUSIVE).
+  if (metrics.cpu_throttled_count !== null) {
+    checks.push({
+      name: "cpu_throttling",
+      passed: metrics.cpu_throttled_count === 0,
+      detail: `nr_throttled=${metrics.cpu_throttled_count} == 0`,
+    })
+  }
+
+  // §AC: OOM kill detection — frozen rule: no container OOM kills
+  // Counter is sampled from cgroup v2 memory.events oom_kill at end of run.
+  if (metrics.memory_oom_kill_events !== null) {
+    checks.push({
+      name: "oom_kills",
+      passed: metrics.memory_oom_kill_events === 0,
+      detail: `oom_kill=${metrics.memory_oom_kill_events} == 0`,
+    })
+  }
+
+  // §BJ: Parse error accounting — frozen rule: no malformed/control-frame errors
+  checks.push({
+    name: "sse_parse_errors",
+    passed: metrics.sse_parse_errors === 0,
+    detail: `${metrics.sse_parse_errors} == 0`,
+  })
+
+  checks.push({
+    name: "json_parse_errors",
+    passed: metrics.json_parse_errors === 0,
+    detail: `${metrics.json_parse_errors} == 0`,
+  })
+
+  checks.push({
+    name: "invalid_timestamp_count",
+    passed: metrics.invalid_timestamp_count === 0,
+    detail: `${metrics.invalid_timestamp_count} == 0`,
+  })
+
+  // §BH: Surge existing-viewer health — frozen rule: no correctness degradation during ramp
+  checks.push({
+    name: "surge_missing_sequences",
+    passed: metrics.surge_missing_sequences === 0,
+    detail: `${metrics.surge_missing_sequences} == 0`,
+  })
+
+  checks.push({
+    name: "surge_duplicates",
+    passed: metrics.surge_duplicates === 0,
+    detail: `${metrics.surge_duplicates} == 0`,
+  })
+
+  checks.push({
+    name: "surge_out_of_order",
+    passed: metrics.surge_out_of_order === 0,
+    detail: `${metrics.surge_out_of_order} == 0`,
+  })
+
+  checks.push({
+    name: "surge_fan_out_p95",
+    passed: metrics.surge_fan_out_p95_ms <= 500,
+    detail: `${metrics.surge_fan_out_p95_ms}ms <= 500ms`,
+  })
+
   const allPassed = checks.every((c) => c.passed)
   let verdict: Verdict
 
@@ -175,6 +240,9 @@ export function aggregateWorkerMetrics(
   let reconnect_duplicates = 0
   let reconnect_order_violations = 0
   let slow_consumer_disconnects = 0
+  let sse_parse_errors = 0
+  let json_parse_errors = 0
+  let invalid_timestamp_count = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -192,6 +260,9 @@ export function aggregateWorkerMetrics(
     reconnect_duplicates += s.reconnect_duplicates
     reconnect_order_violations += s.reconnect_order_violations
     slow_consumer_disconnects += s.slow_consumer_disconnects
+    sse_parse_errors += s.sse_parse_errors
+    json_parse_errors += s.json_parse_errors
+    invalid_timestamp_count += s.invalid_timestamp_count
     allFanOut.push(...s.fan_out_latencies_ms)
     allLateJoin.push(...s.late_join_latencies_ms)
   }
@@ -245,6 +316,36 @@ export function aggregateWorkerMetrics(
     generator_event_loop_p99_ms: 0,
     run_profile: "evidence" as const,
     lobby_subscribers: 0,
+    match_001_subscribers: 0,
     phase_publish_rates: phaseRates,
+    // §AC: cgroup v2 — wired from resource monitor in main.ts
+    cpu_usage_usec: null,
+    cpu_throttled_count: null,
+    cpu_throttled_usec: null,
+    memory_oom_events: null,
+    memory_oom_kill_events: null,
+    memory_current_bytes: null,
+    memory_peak_bytes: null,
+    cpu_max_quota: null,
+    memory_max_bytes: null,
+    // §BL: wired from publisher in main.ts
+    generator_backlog_peak: 0,
+    // §BM: wired from nchan publisher in main.ts
+    publisher_attempts: 0,
+    publisher_successes: 0,
+    publisher_definite_failures: 0,
+    publisher_ambiguous_failures: 0,
+    // §BJ: parse error accounting
+    sse_parse_errors,
+    json_parse_errors,
+    invalid_timestamp_count,
+    // §BH: surge health — defaults, wired from surge scenario in main.ts
+    surge_fan_out_p95_ms: 0,
+    surge_missing_sequences: 0,
+    surge_duplicates: 0,
+    surge_out_of_order: 0,
+    surge_events_received: 0,
+    // §R: active connections peak — wired from metrics recorder in main.ts
+    active_connections_peak: 0,
   }
 }

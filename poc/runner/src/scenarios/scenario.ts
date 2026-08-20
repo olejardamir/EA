@@ -25,6 +25,14 @@ export interface ScenarioContext {
   phaseSnapshots: PhaseSnapshot[]
   log: (msg: string) => void
   sleep: (ms: number) => Promise<void>
+  // §BH: surge scenario writes health metrics here for main.ts aggregation
+  _surgeHealth?: {
+    fan_out_p95_ms: number
+    missing_sequences: number
+    duplicates: number
+    out_of_order: number
+    events_received: number
+  }
 }
 
 export interface ScenarioResult {

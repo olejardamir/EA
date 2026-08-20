@@ -56,7 +56,37 @@ export interface AggregatedMetrics {
   generator_event_loop_p99_ms: number
   run_profile: "smoke" | "evidence"
   lobby_subscribers: number
+  match_001_subscribers: number
   phase_publish_rates: Array<{ phase: string; eventsPerSec: number; hotMatchPct: number }>
+  // §AC: cgroup v2 runtime signals — null when unsupported/unavailable
+  cpu_usage_usec: number | null             // cpu.stat usage_usec — total CPU time in microseconds
+  cpu_throttled_count: number | null      // §BK: nr_throttled — must be 0 for ACCEPT
+  cpu_throttled_usec: number | null       // total throttled time in microseconds
+  memory_oom_events: number | null        // OOM events from memory.events
+  memory_oom_kill_events: number | null   // OOM kills from memory.events
+  memory_current_bytes: number | null     // current memory usage in bytes
+  memory_peak_bytes: number | null        // peak memory usage in bytes
+  cpu_max_quota: number | null            // CPU quota in usec per period (null = unlimited)
+  memory_max_bytes: number | null         // memory limit in bytes (null = unlimited)
+  // §BL: generator backlog — max pending publish tasks during run
+  generator_backlog_peak: number
+  // §BM: Nchan publisher acceptance stats
+  publisher_attempts: number
+  publisher_successes: number
+  publisher_definite_failures: number
+  publisher_ambiguous_failures: number
+  // §BJ: parse error accounting
+  sse_parse_errors: number
+  json_parse_errors: number
+  invalid_timestamp_count: number
+  // §BH: surge existing-viewer health — deltas during surge phase
+  surge_fan_out_p95_ms: number
+  surge_missing_sequences: number
+  surge_duplicates: number
+  surge_out_of_order: number
+  surge_events_received: number
+  // §R: active connections peak — separate from cumulative establishments
+  active_connections_peak: number
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

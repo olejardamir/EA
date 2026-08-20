@@ -37,6 +37,15 @@ function requireUrl(value: string | undefined, name: string, fallback: string): 
   }
 }
 
+function requireFraction(value: string | undefined, name: string, fallback: number): number {
+  if (value === undefined) return fallback
+  const parsed = parseFloat(value)
+  if (isNaN(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`Invalid ${name}: "${value}" must be a fraction between 0 and 1`)
+  }
+  return parsed
+}
+
 export function loadConfig(): ExperimentConfig {
   const nchanPubUrl = requireUrl(process.env.NCHAN_PUB_URL, "NCHAN_PUB_URL", "http://localhost:8080")
   const nchanSubUrl = requireUrl(process.env.NCHAN_SUB_URL, "NCHAN_SUB_URL", "http://localhost:8081")
@@ -51,8 +60,9 @@ export function loadConfig(): ExperimentConfig {
     measureSeconds: requirePositiveInt(process.env.MEASURE_SECONDS, "MEASURE_SECONDS", 120),
     burstSeconds: requirePositiveInt(process.env.BURST_SECONDS, "BURST_SECONDS", 30),
     cooldownSeconds: requirePositiveInt(process.env.COOLDOWN_SECONDS, "COOLDOWN_SECONDS", 10),
-    slowConsumerFraction: 0.05,
-    lobbyFraction: 0.02,
+    // §BR: Wire slowConsumerFraction from env (SLOW_CONSUMER_FRACTION) instead of hardcoding
+    slowConsumerFraction: parseFloat(process.env.SLOW_CONSUMER_FRACTION ?? "0.05"),
+    lobbyFraction: parseFloat(process.env.LOBBY_FRACTION ?? "0.02"),
     historyUrl: nchanSubUrl,
     seed: requirePositiveInt(process.env.SEED, "SEED", 42),
     runProfile: (process.env.RUN_PROFILE === "evidence" ? "evidence" : "smoke") as "smoke" | "evidence",

@@ -7,7 +7,7 @@ interface ParsedFrame {
   data: string[]
 }
 
-export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSEEvent[]; remainder: string } {
+export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSEEvent[]; remainder: string; error: boolean } {
   const frames: SSEEvent[] = []
   const lines = buffer.split("\n")
 
@@ -61,7 +61,7 @@ export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSE
     }
   }
 
-  return { frames, remainder }
+  return { frames, remainder, error: false }
 }
 
 class SSESubscription implements Subscription {
@@ -72,6 +72,12 @@ class SSESubscription implements Subscription {
   private _buffer = ""
   private _frame: ParsedFrame = { data: [] }
   private _closed = false
+  private _decoder = new TextDecoder("utf-8", { fatal: false })
+  private _onParseError?: () => void
+
+  constructor(onParseError?: () => void) {
+    this._onParseError = onParseError
+  }
 
   get connected(): boolean {
     return this._connected && !this._closed
@@ -107,15 +113,30 @@ class SSESubscription implements Subscription {
     res.on("data", (chunk: Buffer) => {
       if (this._closed || !this._handler) return
 
-      this._buffer += chunk.toString("utf-8")
-      const { frames, remainder } = parseSSEChunk(this._buffer, this._frame)
-      this._buffer = remainder
+      try {
+        // §AF: use TextDecoder with stream:true to handle multibyte chars
+        // split across TCP chunks (e.g. 4-byte CJK chars at chunk boundary)
+        this._buffer += this._decoder.decode(chunk, { stream: true })
 
-      for (const frame of frames) {
-        if (frame.id !== undefined && frame.id !== null) {
-          this._lastEventId = frame.id
+        // §BJ: Detect null bytes indicating binary corruption in SSE stream
+        if (this._buffer.includes("\0")) {
+          this._onParseError?.()
+          this._buffer = ""
+          return
         }
-        this._handler({ type: "message", event: frame })
+
+        const { frames, remainder } = parseSSEChunk(this._buffer, this._frame)
+        this._buffer = remainder
+
+        for (const frame of frames) {
+          if (frame.id !== undefined && frame.id !== null) {
+            this._lastEventId = frame.id
+          }
+          this._handler({ type: "message", event: frame })
+        }
+      } catch {
+        // §BJ: Parse failure — invoke error callback
+        this._onParseError?.()
       }
     })
 
@@ -136,9 +157,9 @@ class SSESubscription implements Subscription {
 }
 
 export class SSEHttpClient implements EventStream {
-  connect(url: string, lastEventId?: string | null): Promise<Subscription> {
+  connect(url: string, lastEventId?: string | null, onParseError?: () => void): Promise<Subscription> {
     return new Promise((resolve, reject) => {
-      const sub = new SSESubscription()
+      const sub = new SSESubscription(onParseError)
       const parsedUrl = new URL(url)
 
       const options: http.RequestOptions = {
@@ -158,6 +179,14 @@ export class SSEHttpClient implements EventStream {
         if (res.statusCode !== 200) {
           res.destroy()
           reject(new Error(`HTTP ${res.statusCode}`))
+          return
+        }
+
+        // §AF: Validate Content-Type is text/event-stream
+        const contentType = res.headers["content-type"] ?? ""
+        if (!contentType.includes("text/event-stream")) {
+          res.destroy()
+          reject(new Error(`Invalid Content-Type: ${contentType} (expected text/event-stream)`))
           return
         }
 

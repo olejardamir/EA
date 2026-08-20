@@ -4,6 +4,12 @@ import type { ConnectionPool } from "../application/connection-pool.js"
 const PREFILL_EVENT_COUNT = 500
 const PREFILL_TIMEOUT_MS = 15000
 
+// §BA FROZEN INTERPRETATION: Single late-join per run.
+// With N=1 sample, p95 = p50 = p99 = max = the single observation.
+// This is a frozen interpretation, NOT a robust statistical estimate.
+// The evidence-suite orchestrator (§6.37) may run multiple late-join cohorts
+// across repeated runs to build a meaningful sample population.
+
 export class LateJoinScenario implements Scenario {
   name = "late-join"
   private pool: ConnectionPool

@@ -12,18 +12,15 @@ export class SteadyScenario implements Scenario {
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
     ctx.log(`--- PHASE: STEADY MEASUREMENT (${ctx.config.measureSeconds}s) ---`)
 
-    ctx.publisher.start(true)
-
-    const loopMonitor = setInterval(() => {
-      ctx.resourceMonitor.measureEventLoop()
-    }, 100)
+    // §BT: Publisher already started during warm-up; do not re-start here.
+    // Reset phase snapshot counters for clean measurement.
+    ctx.publisher.snapshotAndReset()
 
     const steadyStart = ctx.clock.now()
 
     await ctx.sleep(ctx.config.measureSeconds * 1000)
 
     const steadyDuration = ctx.clock.now() - steadyStart
-    clearInterval(loopMonitor)
     ctx.log(`Steady measurement complete (${steadyDuration}ms)`)
 
     return {

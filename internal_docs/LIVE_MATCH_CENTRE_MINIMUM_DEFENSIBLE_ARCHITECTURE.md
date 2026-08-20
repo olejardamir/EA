@@ -85,7 +85,7 @@ The browser still validates the **application** `canonical_seq`. Nchan's transpo
 For each active match:
 
 ```text
-channel = match:<match_id>
+channel = match-001 … match-008  (bare Nchan channel_id; code publishes directly)
 first message = oldest
 message timeout = 0 while match is active
 buffer size = enough for the entire active match

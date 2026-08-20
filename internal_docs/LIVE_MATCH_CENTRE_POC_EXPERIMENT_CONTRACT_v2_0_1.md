@@ -48,26 +48,63 @@
 
 The POC MUST build Nchan from source inside a Dockerfile using a pinned official Nginx base image. Do not use an opaque community Nchan image.
 
-Dockerfile approach:
+Dockerfile approach (multi-stage build on ubuntu:24.04, compiles Nginx 1.27.4 + Nchan 1.3.8 from source):
 
 ```dockerfile
-FROM ubuntu:24.04 AS build
+FROM ubuntu:24.04 AS builder
 
 ARG NGINX_VERSION=1.27.4
 ARG NCHAN_VERSION=1.3.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpcre2-dev zlib1g-dev libssl-dev \
-    libcurl4-openssl-dev libyajl-dev wget ca-certificates && \
-    wget -q http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
-    tar xzf nginx-${NGINX_VERSION}.tar.gz && \
-    wget -q https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz && \
-    tar xzf v${NCHAN_VERSION}.tar.gz && \
-    cd nginx-${NGINX_VERSION} && \
-    ./configure --add-module=/nchan-${NCHAN_VERSION} --with-http_ssl_module --with-http_realip_module && \
-    make && make install && \
-    apt-get purge -y build-essential wget && apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* /nginx-* /nchan-*
+    build-essential libpcre3-dev libssl-dev zlib1g-dev \
+    libcurl4-openssl-dev libyajl-dev \
+    curl ca-certificates wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# Download Nginx source
+RUN cd /tmp && \
+    wget -q https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    tar xzf nginx-${NGINX_VERSION}.tar.gz
+
+# Download Nchan source
+RUN cd /tmp && \
+    curl -fsSL https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz \
+    | tar xz
+
+# Build Nginx with Nchan module
+RUN cd /tmp/nginx-${NGINX_VERSION} && \
+    ./configure \
+        --prefix=/etc/nginx \
+        --sbin-path=/usr/sbin/nginx \
+        --modules-path=/usr/lib64/nginx/modules \
+        --conf-path=/etc/nginx/nginx.conf \
+        --error-log-path=/var/log/nginx/error.log \
+        --http-log-path=/var/log/nginx/access.log \
+        --pid-path=/var/run/nginx.pid \
+        --lock-path=/var/run/nginx.lock \
+        --with-http_ssl_module \
+        --with-http_v2_module \
+        --with-http_realip_module \
+        --with-http_stub_status_module \
+        --add-module=/tmp/nchan-${NCHAN_VERSION} && \
+    make -j$(nproc) && \
+    make install && \
+    rm -rf /tmp/nginx-${NGINX_VERSION} /tmp/nchan-${NCHAN_VERSION}
+
+# Runtime stage
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpcre3 libssl3 zlib1g libcurl4 libyajl2 \
+    curl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
+COPY --from=builder /etc/nginx/ /etc/nginx/
+
+COPY nchan.conf /etc/nginx/nginx.conf
+COPY nchan-2.conf /etc/nginx/nchan-2.conf
 ```
 
 Pin both `NCHAN_VERSION` and the Nginx base tag.
@@ -150,6 +187,21 @@ nchan_shared_memory_size 64m;
 server {
     listen 8080;
 
+    location = /pub/healthcheck {
+        return 200 'ok';
+    }
+
+    # §6.33: Lobby publisher — buffer_length=1 (latest state only).
+    # Exact location (=) takes priority over regex (~) in Nginx.
+    location = /pub/lobby {
+        nchan_publisher;
+        nchan_channel_id "lobby";
+        nchan_message_timeout 2h;
+        nchan_message_buffer_length 1;
+        nchan_redis_pass redis_backend;
+    }
+
+    # Match publishers — buffer_length=5000 (§15).
     location ~ ^/pub/(.+)$ {
         nchan_publisher;
         nchan_channel_id $1;
@@ -198,7 +250,7 @@ server {
 | Parameter | Value | Rationale |
 |---|---|---|
 | `nchan_message_buffer_length` (match) | 5000 | Finite cap for late-join history. 0 disables buffering entirely (contradicts §15). |
-| `nchan_message_timeout` (match) | 2h | Messages survive longer than a single test run. Prevents premature expiry. |
+| `nchan_message_timeout` (match) | 2h | POC retention: long enough that no required test history expires during a valid run. Production requirement: retain complete active-match history for as long as the match is active (timeout = 0 while active). The 2h value is a POC convenience, not a production design claim (§BN). |
 | `nchan_message_buffer_length` (lobby) | 1 | Lobby retains only the latest state (§14). |
 | `nchan_eventsource_ping_interval` | 15 | Keepalive pings every 15s (below CloudFront 30s idle timeout). |
 | `nchan_subscriber eventsource` | argument to `nchan_subscriber` | Correct syntax: `eventsource` is a subscriber type, not a standalone directive. |
@@ -207,21 +259,25 @@ server {
 ### Channel naming convention
 
 ```text
-match:<match_id>    — per-match event channel
-lobby               — lobby latest-state channel
+match-001 … match-008  — per-match event channel (bare Nchan channel_id)
+lobby                   — lobby latest-state channel
 ```
 
 Publisher HTTP POSTs to:
 ```text
-POST http://nchan:8080/pub/match:<match_id>
+POST http://nchan:8080/pub/match-001   … POST http://nchan:8080/pub/match-008
 POST http://nchan:8080/pub/lobby
 ```
 
 Subscriber SSE connects to:
 ```text
-GET http://nchan:8081/sub/match:<match_id>
+GET http://nchan:8081/sub/match-001   … GET http://nchan:8081/sub/match-008
 GET http://nchan:8081/sub/lobby
 ```
+
+> Re-frozen to match implementation: code publishes to bare `match-001` channel_ids
+> through Nchan's regex capture (`~ ^/pub/(.+)$`). The `match:<match_id>` convention
+> from v2.0.0 was never implemented; this revision corrects the contract.
 
 ---
 
@@ -232,11 +288,16 @@ Each published SSE message carries an `id:` field (for `Last-Event-ID` resume) a
 ### SSE framing
 
 ```text
-id: <canonical_seq>
-event: <event_type>
-data: <JSON payload>
+id: <nchan_message_id>       ← Nchan auto-generated transport ID (for Last-Event-ID resume only)
+event: <event_type>          ← per-message X-Event-Source-Event header value
+data: <JSON payload>         ← contains canonical_seq as application truth
 \n
 ```
+
+> **§A clarification:** The `id:` field is Nchan's internal message sequence number,
+> used exclusively for `Last-Event-ID` resume. Application-level ordering/dedup
+> uses `canonical_seq` from the JSON payload. These are different concepts.
+> Nchan auto-generates the `id:` field; the publisher does not set it explicitly.
 
 ### JSON data payload
 
@@ -259,7 +320,7 @@ Fields:
 |---|---|---|---|
 | `match_id` | string | yes | channel routing + verification |
 | `canonical_seq` | integer | yes | application sequence; monotonic per match; used for ordering/dedup verification |
-| `event_type` | string | yes | `goal`, `yellow_card`, `red_card`, `substitution`, `corner`, `free_kick`, `var_review`, `period_start`, `period_end`, `match_start`, `match_end`, `routine` |
+| `event_type` | string | yes | `goal`, `yellow_card`, `red_card`, `substitution`, `corner`, `free_kick`, `offside`, `var_review` |
 | `publish_timestamp` | ISO 8601 | yes | T0 proxy for fan-out latency measurement |
 | `score` | object | yes | `{ "home": N, "away": N }` |
 | `clock` | object | yes | `{ "period": "1H"/"2H"/etc, "elapsed_seconds": N }` |
@@ -367,7 +428,14 @@ During this phase, all load-generator connections are established and stable.
 
 ```text
 Duration: 30 seconds
-Total event rate: ~50 canonical events/s
+Match event rate: ~50 canonical events/s (80% match-001, 20% others)
+Lobby updates: ~1/s (full lobby state)
+Total SSE messages published: ~51/s (50 match + 1 lobby)
+```
+
+> **§G clarification:** "50 events/s burst" refers to match events only.
+> Lobby publishes at ~1/s independently, bringing total SSE messages to ~51/s.
+> The hot-match concentration (Section 11) applies: match-001 receives ~40 of the 50 match events/s.
 Lobby updates: still ~1/s (unchanged)
 Total SSE messages published during burst: ~1,530
 ```
@@ -569,6 +637,19 @@ Because shared Redis is specifically intended to make cross-node/history resume 
 
 If the topology includes `nchan-2` (Section 18), reconnecting clients may be routed to `nchan-2` during the restart window, directly testing cross-node Redis-backed history.
 
+> **§E clarification:** The current `nchan-restart` scenario performs cross-node
+> replacement (nchan-1 -> nchan-2), not a literal Nchan process restart. Both tests
+> are valuable: cross-node replacement tests Redis-backed history resume across
+> Nchan instances; literal restart tests process lifecycle and state recovery.
+> A literal restart test (docker stop/start on the same container) should be added
+> as a separate scenario or combined into this one.
+>
+> **§AT clarification:** For any restart or cross-node replacement result to be
+> valid, the wall-clock offset between every participating Nchan instance must be
+> measured and recorded. Docker containers on the same host typically have
+> sub-millisecond offset, but this must be verified, not assumed. If the measured
+> offset exceeds 50ms, the cross-node/restart result is INCONCLUSIVE.
+
 ### Constraints
 
 This test is executed **once** during the measurement sequence. It is not repeated in every measured run.
@@ -597,6 +678,13 @@ Slow-client/backpressure behavior is tested as part of the **main acceptance sui
 
 Nchan disconnects slow subscribers when the per-subscriber message buffer is exceeded. The POC must verify this is the case and that it does not cause cascading problems.
 
+> **§N clarification:** The acceptance criteria require that the POC observes
+> at least one slow-consumer disconnect (`slow_consumer_disconnects > 0`) to
+> confirm that Nchan's backpressure mechanism is real. If no slow consumer is
+> disconnected during the test, the result is INCONCLUSIVE for the slow-client
+> property, not PASS. The core hypothesis is: bounded server behavior under
+> backpressure with no material harm to healthy clients.
+
 ---
 
 # 21. Warm-Up Period
@@ -607,11 +695,15 @@ Duration: 30 seconds
 
 During warm-up:
 - Publisher begins generating events.
-- All load-generator connections are established.
+- 60% of target connections are established (base connections).
 - No measurements are recorded.
 - Redis and Nchan caches are populated.
 
 After warm-up, a 5-second stabilization pause occurs, then the measured phase begins.
+
+> **§H clarification:** Warm-up establishes 60% of target connections (base).
+> The remaining 40% are added during the connection-surge phase (Section 17)
+> over 120 seconds, simulating the +40,000 viewer surge from the assignment.
 
 ---
 
@@ -624,7 +716,7 @@ Steady measurement:  120 seconds
 Burst measurement:    30 seconds
 Post-burst steady:    30 seconds
 Late-join test:       executed at t=90s of steady measurement
-Reconnect test:       executed at t=150s of steady measurement
+Reconnect test:       executed at t=105s of steady measurement
 Hot-match test:       60 seconds (during burst phase)
 Nchan restart test:   1 event per measurement run (see Section 19)
 Cool-down:            10 seconds
@@ -657,6 +749,21 @@ One lucky run is never sufficient for an ACCEPT decision.
 
 These are Docker `deploy.resources.limits`. The host must have at least 16 CPUs and 16 GB RAM available for Docker.
 
+### §O: Auxiliary topology resource envelope
+
+The POC includes auxiliary containers beyond the primary DUT. Each component's resource envelope is frozen separately:
+
+```text
+DUT (nchan-primary):       4 CPUs, 4 GB RAM — the architecture under test
+nchan-2 (replacement):     4 CPUs, 4 GB RAM — cross-node restart test only; not part of primary DUT capacity
+Redis:                     2 CPUs, 2 GB RAM — backing store for both Nchan nodes
+Runner (load generator):   8 CPUs, 8 GB RAM — measurement + load generation
+```
+
+Cross-node restart testing uses nchan-2 as a replacement node, not as additional DUT capacity. The ACCEPT/REJECT criteria apply to each Nchan node individually under its own 4 CPU / 4 GB envelope. Aggregate Nchan capacity across both nodes must not be claimed as single-node capacity.
+
+The runner's 8 CPU / 8 GB envelope is the load-generator ceiling. Generator saturation (Section 30) applies to the runner, not the DUT.
+
 ---
 
 # 25. Host Prerequisites
@@ -684,13 +791,18 @@ For connection counts above 10,000, the host prerequisites from Section 16 apply
 
 ```text
 T0 = publish_timestamp embedded in the SSE event payload by the publisher
-     (generated using process.hrtime.bigint() at publish time, serialized as ISO 8601)
+     (wall-clock ISO 8601 via Date.now().toISOString() at publish time)
 
 T1 = timestamp when the SSE client frame is fully received and parsed
-     (generated using process.hrtime.bigint() at client receive time)
+     (wall-clock via Date.now() at client receive time)
 
-fan_out_latency = T1 - T0
+fan_out_latency = T1 - T0  (milliseconds)
 ```
+
+> **§F clarification:** Both T0 and T1 use wall-clock timestamps (Date.now()),
+> not monotonic process.hrtime.bigint(). process.hrtime.bigint() is used only
+> for elapsed durations within the same process (e.g. phase timers).
+> Cross-component latency requires wall-clock timestamps for comparability.
 
 ### Clock synchronization
 
@@ -703,7 +815,7 @@ Because publisher and generator may be in different containers, clock drift is e
 ### Late-join timing
 
 ```text
-T_late_join_start = client connection open timestamp (process.hrtime.bigint())
+T_late_join_start = client connection open timestamp (wall-clock Date.now())
 T_late_join_end   = timestamp when client receives the event whose
                      canonical_seq >= match_head_at_connection_time
 late_join_duration = T_late_join_end - T_late_join_start
@@ -803,6 +915,7 @@ nchan_restart_history_replay_correct (true/false)
 nchan_restart_missing_sequences
 nchan_restart_duplicates
 nchan_restart_order_violations
+nchan_restart_clock_offset_ms (measured wall-clock offset between Nchan instances, §AT)
 ```
 
 ---
@@ -824,6 +937,15 @@ Connections:
   machine maximum reached with per-resource extrapolation demonstrating
   that Nchan is not the bottleneck (document the maximum achieved)
 
+  §L clarity: This criterion validates Nchan architecture at whatever scale
+  the hardware supports. A run that reaches the machine maximum and
+  demonstrates Nchan is not the bottleneck passes this ACCEPT criterion.
+  The overall 100k-scale verdict is separate: if the machine cannot
+  physically reach 100,000 connections, the run verdict is INCONCLUSIVE
+  AT 100K SCALE (Section 30), not a gateway failure. Per-resource
+  extrapolation may be reported as a production inference but must not
+  silently convert an untested 100k target into measured ACCEPT.
+
 Event correctness:
   missing_canonical_sequences == 0 (across all clients, all runs)
   duplicates == 0 (across all clients, all runs)
@@ -843,7 +965,8 @@ Nchan restart:
   nchan_restart_missing_sequences == 0
 
 Slow client:
-  slow_consumer_disconnects > 0 (Nchan must disconnect slow consumers)
+  Nchan handles slow/backpressured consumers without unbounded memory growth
+  slow_consumer_disconnects > 0 (backpressure mechanism observed)
   non_sustainable consumer impact on non-slow p95 <= 5% degradation
 
 Resource health:
@@ -864,9 +987,13 @@ Consistency:
 ANY of the following is REJECT:
 
 ```text
+Blanket failure:
+  Any mandatory ACCEPT criterion (Section 28) not met maps to REJECT
+  unless the specific criterion's definition explicitly produces a
+  different result (e.g., INCONCLUSIVE for generator saturation).
+
 Fan-out latency:
-  p95 > 2.0 seconds during steady state (indicates fundamental Nchan/Redis
-  fan-out cannot keep up at the tested scale)
+  p95 > 500ms during steady state (fails ACCEPT threshold)
 
 Late-join history catch-up:
   p95 > 2.0 seconds (Nchan + Redis cannot serve retained history within the
@@ -875,17 +1002,29 @@ Late-join history catch-up:
 Event correctness:
   missing_canonical_sequences > 0 in any run (Nchan/Redis lost events)
   out_of_order_sequences > 0 in any run (ordering broken)
+  duplicates > 0 in any run (Nchan/Redis delivered duplicates)
 
 Reconnect:
   reconnect_gaps_detected > 0 (Redis-backed history resume is broken)
+  reconnect_duplicates_detected > 0
 
 Nchan restart:
   nchan_restart_history_replay_correct == false (Redis-backed history does
   not survive Nchan process restart)
+  nchan_restart_missing_sequences > 0
+
+Slow client:
+  Nchan unbounded memory growth under slow-consumer load
+  slow_consumer_disconnects == 0 (backpressure mechanism not observed, §N)
+  non_sustainable consumer impact on non-slow p95 > 5% degradation
 
 Resource exhaustion:
   nchan_memory unbounded growth (memory increases linearly with time
   under steady state, indicating a leak or unbounded buffer)
+  nchan_memory_mb_peak >= 3.5 GB
+  redis_memory_mb_peak >= 1.8 GB
+  container OOM kills observed
+  container CPU throttling events observed
 ```
 
 ---
@@ -926,6 +1065,14 @@ Measurement bug:
 Insufficient runs:
   Variance across runs > 15% even after 8 runs
   Report: "results unstable; no reliable conclusion"
+
+Slow-consumer backpressure not observed:
+  slow_consumer_disconnects == 0 during the slow-client scenario
+  Report: "slow-consumer backpressure not confirmed; bounded-memory result is inconclusive"
+
+Nchan restart clock incompatible:
+  Wall-clock offset between Nchan instances > 50ms during restart/replacement test (§AT)
+  Report: "cross-Nchan clock offset too large; restart/replacement result not trustworthy"
 ```
 
 ---

@@ -70,6 +70,7 @@ export class ConnectionPool {
     try {
       data = JSON.parse(eventData)
     } catch {
+      this.metrics.incrementJsonParseErrors()
       return
     }
 
@@ -81,9 +82,18 @@ export class ConnectionPool {
     if (data.publish_timestamp) {
       const publishTime = new Date(data.publish_timestamp).getTime()
       const recvTime = this.clock.now()
-      if (!isNaN(publishTime)) {
+      if (isNaN(publishTime)) {
+        this.metrics.incrementInvalidTimestampCount()
+      } else {
         const latency = recvTime - publishTime
-        if (latency >= 0 && latency < 30000) {
+        // §T: Do not silently discard latencies. Record all valid samples,
+        // count negative as timing-invalid, count >=30s as overflow.
+        if (latency < 0) {
+          this.metrics.incrementLatencyInvalid()
+        } else {
+          if (latency >= 30000) {
+            this.metrics.incrementLatencyOverflow()
+          }
           this.metrics.recordFanOutLatency(latency)
         }
       }
@@ -142,6 +152,7 @@ export class ConnectionPool {
           this.connectOne(stream, connId, matchId).then((entry) => {
             if (entry) {
               this.connections.push(entry)
+              this.metrics.setActiveConnections(this.connections.length)
               if (isSlow) onSlowConsumer?.(entry)
             }
           }),
@@ -160,7 +171,7 @@ export class ConnectionPool {
   ): Promise<ConnectionEntry | null> {
     try {
       const url = `${this.config.subUrl}/sub/${matchId}`
-      const subscription = await stream.connect(url)
+      const subscription = await stream.connect(url, undefined, () => this.metrics.incrementSseParseErrors())
       const tracker = this.createTracker()
       this.metrics.incrementConnectionsEstablished()
 
@@ -176,6 +187,9 @@ export class ConnectionPool {
         if (!this._running) return
         if (evt.type === "message") {
           this.handleMessage(entry, evt.event.data)
+        } else if (evt.type === "error") {
+          // §Z: Server-initiated or unexpected disconnect — count as unexpected drop
+          this.metrics.incrementConnectionsDropped()
         }
       })
 
@@ -195,11 +209,12 @@ export class ConnectionPool {
       try {
         conn.subscription.close()
       } catch {}
-      this.metrics.incrementConnectionsDropped()
+      // §Z: Deliberate teardown — do NOT count as unexpected drop
       const count = this.subscribersByChannel.get(conn.matchId) ?? 0
       this.subscribersByChannel.set(conn.matchId, Math.max(0, count - 1))
     }
     this.connections = []
+    this.metrics.setActiveConnections(0)
   }
 
   async reconnectAll(
@@ -220,8 +235,8 @@ export class ConnectionPool {
       this.metrics.incrementConnectionsAttempted()
 
       try {
-        const url = `${this.config.subUrl}/sub/${matchId}`
-        const subscription = await stream.connect(url, lastEventId)
+      const url = `${this.config.subUrl}/sub/${matchId}`
+      const subscription = await stream.connect(url, lastEventId, () => this.metrics.incrementSseParseErrors())
         const tracker = this.createTracker()
 
         const entry: ConnectionEntry = {
@@ -246,5 +261,7 @@ export class ConnectionPool {
         this.metrics.incrementConnectionFailures()
       }
     }
+    // §R: Update active connection count after reconnect completes
+    this.metrics.setActiveConnections(this.connections.length)
   }
 }

@@ -117,14 +117,41 @@ export class NchanRestartScenario implements Scenario {
         })
       })
 
-      ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup}`)
+      // §BG: Record canonical start/end, resume transport ID, and classification
+      let firstReplaySeq: number | null = null
+      let lastReplaySeq: number | null = null
+      for (const raw of replayEvents) {
+        try {
+          const data = JSON.parse(raw)
+          if (typeof data.canonical_seq === "number") {
+            if (firstReplaySeq === null) firstReplaySeq = data.canonical_seq
+            lastReplaySeq = data.canonical_seq
+          }
+        } catch {}
+      }
 
-      const passed = replayResult.ok && !replayResult.gap && !replayResult.dup
+      const outOfOrder = (() => {
+        let prev: number | null = null
+        for (const raw of replayEvents) {
+          try {
+            const data = JSON.parse(raw)
+            if (typeof data.canonical_seq === "number") {
+              if (prev !== null && data.canonical_seq < prev) return true
+              prev = data.canonical_seq
+            }
+          } catch {}
+        }
+        return false
+      })()
+
+      ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq}`)
+
+      const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
 
       return {
         name: this.name,
         passed,
-        detail: `events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} lastSeq1=${lastSeq1}`,
+        detail: `events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}]`,
       }
     } catch (err) {
       ctx.log(`Nchan restart test failed: ${err}`)

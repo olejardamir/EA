@@ -67,14 +67,14 @@ export function padToSize(payload: string, targetBytes: number): string {
   return "A".repeat(targetBytes - currentBytes)
 }
 
-export function createEventPayload(matchId: string, seq: number, eventType: string, score: { home: number; away: number }, clock: { period: string; elapsed_seconds: number }): MatchEvent {
+export function createEventPayload(matchId: string, seq: number, eventType: string, score: { home: number; away: number }, clock: { period: string; elapsed_seconds: number }, publishTimestamp?: string): MatchEvent {
   const descs = DESCRIPTIONS[eventType] ?? ["Event occurred"]
   const description = descs[seq % descs.length]
   const event: MatchEvent = {
     match_id: matchId,
     canonical_seq: seq,
     event_type: eventType,
-    publish_timestamp: new Date().toISOString(),
+    publish_timestamp: publishTimestamp ?? new Date().toISOString(),
     score: { ...score },
     clock: { ...clock },
     description,

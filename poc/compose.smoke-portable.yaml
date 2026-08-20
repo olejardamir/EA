@@ -1,0 +1,83 @@
+# §6.16: Portable smoke profile for Docker Desktop (Mac/Windows).
+# Uses bridge networking with explicit port mappings instead of network_mode: host.
+# Requires nchan-portable.conf which binds publisher/subscriber ports to 0.0.0.0
+# and resolves Redis via Docker service name "redis" instead of 127.0.0.1.
+#
+# Usage:
+#   docker compose -f compose.smoke-portable.yaml up --build --abort-on-container-exit
+#
+# Port mappings:
+#   redis:6379 (host) -> redis:6379 (container)
+#   nchan:8080 (host) -> nchan:8080 (container) — publisher
+#   nchan:8081 (host) -> nchan:8081 (container) — subscriber
+
+services:
+  redis:
+    image: redis:7.2-bookworm
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nchan:
+    build:
+      context: ./nchan
+    # §6.16: Override default nchan.conf with portable config that uses
+    # Docker service name "redis" for cross-container connectivity.
+    command: ["nginx", "-c", "/etc/nginx/nchan-portable.conf", "-g", "daemon off;"]
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/pub/healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  runner:
+    build:
+      context: ./runner
+    depends_on:
+      nchan:
+        condition: service_healthy
+    environment:
+      # §6.16: With bridge networking, use localhost host-ports mapped to containers.
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      TARGET_CONNECTIONS: "100"
+      WARMUP_SECONDS: "5"
+      MEASURE_SECONDS: "10"
+      BURST_SECONDS: "5"
+      COOLDOWN_SECONDS: "3"
+      SLOW_SECONDS: "15"
+      RUN_PROFILE: "smoke"
+    deploy:
+      resources:
+        limits:
+          cpus: "8"
+          memory: 8G
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000

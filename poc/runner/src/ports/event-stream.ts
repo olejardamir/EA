@@ -19,5 +19,5 @@ export interface Subscription {
 }
 
 export interface EventStream {
-  connect(url: string, lastEventId?: string | null): Promise<Subscription>
+  connect(url: string, lastEventId?: string | null, onParseError?: () => void): Promise<Subscription>
 }

@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Download Nginx source
 RUN cd /tmp && \
-    wget -q http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    wget -q https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
     tar xzf nginx-${NGINX_VERSION}.tar.gz
 
 # Download Nchan source
@@ -52,6 +52,7 @@ COPY --from=builder /etc/nginx/ /etc/nginx/
 
 COPY nchan.conf /etc/nginx/nginx.conf
 COPY nchan-2.conf /etc/nginx/nchan-2.conf
+COPY nchan-portable.conf /etc/nginx/nchan-portable.conf
 
 EXPOSE 8080 8081 18080 18081
 

@@ -25,6 +25,13 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementConnectionsEstablished: () => inc("connections_established"),
     incrementConnectionFailures: () => inc("connection_failures"),
     incrementConnectionsDropped: () => inc("connections_dropped"),
+    setActiveConnections() {},
+    incrementLatencyInvalid() {},
+    incrementLatencyOverflow() {},
+    setBacklog() {},
+    incrementSseParseErrors() {},
+    incrementJsonParseErrors() {},
+    incrementInvalidTimestampCount() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -34,6 +41,10 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         reconnect_order_violations: 0, slow_consumer_disconnects: 0,
         connections_attempted: 0, connections_established: 0,
         connection_failures: 0, connections_dropped: 0,
+        active_connections_peak: 0,
+        latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
+        generator_backlog_peak: 0,
+        sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
       }
     },
   }
