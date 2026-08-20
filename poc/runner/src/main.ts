@@ -179,17 +179,27 @@ async function main(): Promise<void> {
     const steadyResult = await steady.execute(ctx)
     log(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
 
-    // Phase 2.5: Late-join (during steady)
+    // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
+    const connectionSurge = new ConnectionSurgeScenario(pool)
+    const surgeResult = await connectionSurge.execute(ctx)
+    log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+
+    // Phase 4: Post-surge stabilization
+    log(`--- PHASE: POST-SURGE STABILIZATION (${config.cooldownSeconds}s) ---`)
+    await sleep(config.cooldownSeconds * 1000)
+    log("Post-surge stabilization complete")
+
+    // Phase 5: Late-join under peak load
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
 
-    // Phase 3: Burst
+    // Phase 6: Burst at peak
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
     log(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
 
-    // Phase 4: Post-burst steady
+    // Phase 7: Post-burst steady
     log(`--- PHASE: POST-BURST STEADY (${config.cooldownSeconds}s) ---`)
     await publisher.drain()
     publisher.burstMode = false
@@ -197,22 +207,17 @@ async function main(): Promise<void> {
     await sleep(config.cooldownSeconds * 1000)
     log("Post-burst steady complete")
 
-    // Phase 5: Reconnect
+    // Phase 8: Reconnect while publishing
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
     log(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
 
-    // Phase 6: Slow consumer
+    // Phase 9: Slow consumer / backpressure at frozen concurrency
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
 
-    // Phase 7: Connection surge (+40%)
-    const connectionSurge = new ConnectionSurgeScenario(pool)
-    const surgeResult = await connectionSurge.execute(ctx)
-    log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
-
-    // Phase 8: Nchan restart (cross-node Redis history or literal process restart)
+    // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
     const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
@@ -313,12 +318,17 @@ async function main(): Promise<void> {
       targetConnections: config.targetConnections,
       seed: config.seed,
       runProfile: config.runProfile,
+      runMode: config.runMode,
       warmupSeconds: config.warmupSeconds,
       measureSeconds: config.measureSeconds,
       burstSeconds: config.burstSeconds,
       cooldownSeconds: config.cooldownSeconds,
       slowConsumerFraction: config.slowConsumerFraction,
       lobbyFraction: config.lobbyFraction,
+      nchanPubUrl: config.nchanPubUrl,
+      nchanSubUrl: config.nchanSubUrl,
+      redisUrl: config.redisUrl,
+      nchanControlUrl: config.nchanControlUrl,
     })
 
     log("=== POC Runner Complete ===")

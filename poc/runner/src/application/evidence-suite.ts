@@ -204,42 +204,47 @@ export async function runSingleExperiment(
 
     checkTimeout()
 
-    // Phase 2.5: Late-join
+    // Phase 3: Connection surge 60% -> 100% (§4.4: surge before peak scenarios)
+    const connectionSurge = new ConnectionSurgeScenario(pool)
+    const surgeResult = await connectionSurge.execute(ctx)
+    logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+
+    checkTimeout()
+
+    // Phase 4: Post-surge stabilization
+    await sleep(config.cooldownSeconds * 1000)
+
+    // Phase 5: Late-join under peak load
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
     logger(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
 
     checkTimeout()
 
-    // Phase 3: Burst
+    // Phase 6: Burst at peak
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
     logger(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
 
     checkTimeout()
 
-    // Phase 4: Post-burst steady
+    // Phase 7: Post-burst steady
     await publisher.drain()
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
 
-    // Phase 5: Reconnect
+    // Phase 8: Reconnect while publishing
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
     logger(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
 
-    // Phase 6: Slow consumer
+    // Phase 9: Slow consumer / backpressure at frozen concurrency
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
     logger(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
 
-    // Phase 7: Connection surge
-    const connectionSurge = new ConnectionSurgeScenario(pool)
-    const surgeResult = await connectionSurge.execute(ctx)
-    logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
-
-    // Phase 8: Nchan restart
+    // Phase 10: Nchan restart
     const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     logger(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)

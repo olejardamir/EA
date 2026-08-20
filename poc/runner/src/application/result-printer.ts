@@ -141,13 +141,14 @@ export function emitMachineReadableResult(
   metrics: AggregatedMetrics,
   eventsPublished: number,
   verdictResult: VerdictResult,
-  config: { targetConnections: number; seed: number; runProfile: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number },
+  config: { targetConnections: number; seed: number; runProfile: string; runMode?: string; warmupSeconds: number; measureSeconds: number; burstSeconds: number; cooldownSeconds: number; slowConsumerFraction: number; lobbyFraction: number; nchanPubUrl?: string; nchanSubUrl?: string; redisUrl?: string; nchanControlUrl?: string },
 ): void {
   metrics.events_published = eventsPublished
 
   const result = {
     contract_version: "v2.0.2",
     run_profile: config.runProfile,
+    run_mode: config.runMode ?? "single",
     seed: config.seed,
     resolved_config: {
       target_connections: config.targetConnections,
@@ -157,6 +158,19 @@ export function emitMachineReadableResult(
       cooldown_seconds: config.cooldownSeconds,
       slow_consumer_fraction: config.slowConsumerFraction,
       lobby_fraction: config.lobbyFraction,
+    },
+    // §4.18: Environment and preflight
+    environment: {
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      pid: process.pid,
+    },
+    preflight: {
+      nchan_pub_url: config.nchanPubUrl,
+      nchan_sub_url: config.nchanSubUrl,
+      redis_url: config.redisUrl,
+      nchan_control_url: config.nchanControlUrl || null,
     },
     scenario_results: verdictResult.checks.map((c) => ({
       name: c.name,
