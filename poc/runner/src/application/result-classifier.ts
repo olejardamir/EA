@@ -290,6 +290,28 @@ export function classifyResult(
     detail: `${metrics.surge_fan_out_p95_ms}ms <= 500ms`,
   })
 
+  // §4.17: Disconnect attribution — unexpected/server-initiated/network failures must be zero
+  checks.push({
+    name: "unexpected_client_disconnects",
+    passed: metrics.unexpected_client_disconnects === 0,
+    detail: `${metrics.unexpected_client_disconnects} == 0`,
+  })
+
+  checks.push({
+    name: "server_initiated_disconnects",
+    passed: metrics.server_initiated_disconnects === 0,
+    detail: `${metrics.server_initiated_disconnects} == 0`,
+  })
+
+  checks.push({
+    name: "network_failures",
+    passed: metrics.network_failures === 0,
+    detail: `${metrics.network_failures} == 0`,
+  })
+
+  // §4.17: deliberate_disconnects and shutdown_cleanup_disconnects are informational only
+  // (not gating — deliberate disconnects are expected during slow-consumer test)
+
   const allPassed = checks.every((c) => c.passed)
   let verdict: Verdict
 
