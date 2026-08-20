@@ -3,6 +3,7 @@
 const http = require("http")
 const fs = require("fs")
 const { execFile } = require("child_process")
+const { execSync } = require("child_process")
 const PORT = parseInt(process.env.CONTROL_PORT || "18888", 10)
 
 function readCgroupFile(path) {
@@ -82,6 +83,90 @@ const server = http.createServer((req, res) => {
     const metrics = getNchanMetrics()
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify(metrics))
+  } else if (req.method === "GET" && req.url === "/preflight") {
+    // §4.24: Runtime nginx capacity preflight
+    const result = {
+      worker_processes: null,
+      worker_connections: null,
+      nginx_active: null,
+      nginx_reading: null,
+      nginx_writing: null,
+      fd_soft_limit: null,
+      fd_hard_limit: null,
+      cpu_quota: null,
+      worker_connections_total: null,
+      sufficient: false,
+      reason: null,
+    }
+
+    // Read worker_processes from nginx config
+    try {
+      const conf = fs.readFileSync("/etc/nginx/nginx.conf", "utf-8")
+      const wpMatch = conf.match(/worker_processes\s+(\d+)/)
+      if (wpMatch) result.worker_processes = parseInt(wpMatch[1], 10)
+      const wcMatch = conf.match(/worker_connections\s+(\d+)/)
+      if (wcMatch) result.worker_connections = parseInt(wcMatch[1], 10)
+    } catch {}
+
+    // Query stub_status
+    try {
+      const status = execSync("curl -sf http://127.0.0.1:8080/nginx_status 2>/dev/null", { encoding: "utf-8", timeout: 3000 })
+      const lines = status.trim().split("\n")
+      // Active connections: N
+      const activeMatch = lines[0]?.match(/Active connections:\s+(\d+)/)
+      if (activeMatch) result.nginx_active = parseInt(activeMatch[1], 10)
+      // server accepts handled requests
+      //  reading: N writing: N waiting: N
+      const rwMatch = lines[2]?.match(/reading:\s+(\d+)\s+writing:\s+(\d+)/)
+      if (rwMatch) {
+        result.nginx_reading = parseInt(rwMatch[1], 10)
+        result.nginx_writing = parseInt(rwMatch[2], 10)
+      }
+    } catch {}
+
+    // Read FD limits from /proc/self/limits
+    try {
+      const limits = fs.readFileSync("/proc/self/limits", "utf-8")
+      for (const line of limits.split("\n")) {
+        if (line.includes("Max open files")) {
+          const parts = line.trim().split(/\s+/)
+          result.fd_soft_limit = parseInt(parts[3], 10)
+          result.fd_hard_limit = parseInt(parts[4], 10)
+        }
+      }
+    } catch {}
+
+    // Read CPU quota from cgroup
+    try {
+      const cpuMax = fs.readFileSync("/sys/fs/cgroup/cpu.max", "utf-8").trim()
+      const [quota, period] = cpuMax.split(" ")
+      if (quota !== "max") {
+        result.cpu_quota = Math.floor(parseInt(quota, 10) / parseInt(period, 10))
+      }
+    } catch {}
+
+    // Compute total capacity
+    if (result.worker_processes && result.worker_connections) {
+      result.worker_connections_total = result.worker_processes * result.worker_connections
+    }
+
+    // Assess sufficiency
+    const reasons = []
+    if (result.worker_connections_total && result.worker_connections_total < 100000) {
+      reasons.push(`worker_connections_total=${result.worker_connections_total} < 100000`)
+    }
+    if (result.fd_soft_limit && result.fd_soft_limit < 200000) {
+      reasons.push(`fd_soft_limit=${result.fd_soft_limit} < 200000`)
+    }
+    if (result.cpu_quota && result.cpu_quota < 2) {
+      reasons.push(`cpu_quota=${result.cpu_quota} < 2 (need >= 4 for DUT)`)
+    }
+
+    result.sufficient = reasons.length === 0
+    result.reason = reasons.length > 0 ? reasons.join("; ") : "OK"
+
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify(result))
   } else {
     res.writeHead(404)
     res.end("not found")

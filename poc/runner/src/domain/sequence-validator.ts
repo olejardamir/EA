@@ -6,19 +6,27 @@ export type SequenceClassification =
 
 export interface SequenceTracker {
   readonly lastSeq: number
+  readonly totalReceived: number
   classify(incomingSeq: number): SequenceClassification
   reset(newSeq?: number): void
 }
 
 export function createSequenceTracker(initialSeq = 0): SequenceTracker {
   let lastSeq = initialSeq
+  let totalReceived = 0
 
   return {
     get lastSeq() {
       return lastSeq
     },
 
+    get totalReceived() {
+      return totalReceived
+    },
+
     classify(incomingSeq: number): SequenceClassification {
+      totalReceived++
+
       if (lastSeq === 0) {
         lastSeq = incomingSeq
         return { kind: "NEXT" }

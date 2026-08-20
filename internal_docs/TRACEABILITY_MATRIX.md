@@ -16,8 +16,8 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | AC-8 | Contract §28 | reconnect_gaps == 0 | SequenceTracker (reconnect) | result-classifier.test.ts | reconnect_gaps | evidence | REJECT | PASS |
 | AC-9 | Contract §28 | reconnect_duplicates == 0 | SequenceTracker (reconnect) | result-classifier.test.ts | reconnect_duplicates | evidence | REJECT | PASS |
 | AC-10 | Contract §28 | reconnect_order_violations == 0 | SequenceTracker (reconnect) | result-classifier.test.ts | reconnect_order_violations | evidence | REJECT | PASS |
-| AC-11 | Contract §28 | nchan history replay correct | NchanRestartScenario | result-classifier.test.ts | nchan_restart_history_replay_correct | evidence | REJECT | PASS |
-| AC-12 | Contract §28 | slow_consumer_disconnects > 0 | SlowConsumerScenario | result-classifier.test.ts | slow_consumer_disconnects | evidence | REJECT | PASS |
+| AC-11 | Contract §28 | nchan history replay correct | NchanRestartScenario | result-classifier.test.ts | nchan_restart_history_replay_correct | evidence | REJECT (skipped → INCONCLUSIVE §4.11) | PASS |
+| AC-12 | Contract §28 §N §30 | slow consumer: bounded behavior, backpressure evidence is informational | SlowConsumerScenario → ThrottledSubscription | result-classifier.test.ts, slow-consumer.test.ts | slow_consumer_metrics.evidence_server_side_backpressure_reached | evidence | INCONCLUSIVE if no backpressure (§30), REJECT if non_slow_p95 > 5% | PASS |
 | AC-13 | Contract §28 | non_slow_p95_degradation <= 5% | SlowConsumerScenario compare | result-classifier.test.ts | non_slow_p95_degradation_pct | evidence | REJECT | PASS |
 | AC-14 | Contract §28 §4.11 | nchan_memory < 3.5 GB | CgroupResourceMonitor (external) | result-classifier.test.ts | nchan_memory_mb_peak | evidence | REJECT (null → INCONCLUSIVE) | PASS |
 | AC-15 | Contract §28 §4.11 | redis_memory < 1.8 GB | Redis INFO memory poll | result-classifier.test.ts | redis_memory_mb_peak | evidence | REJECT (null → INCONCLUSIVE) | PASS |
@@ -36,6 +36,12 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | INC-6 | Contract §30 §4.11 | publisher definite failures > 0 | NchanHttpPublisher | publisher_definite_failures | PASS |
 | INC-7 | Contract §30 §4.11 | nchan_memory unavailable (evidence) | CgroupResourceMonitor null check | nchan_memory_mb_peak | PASS |
 | INC-8 | Contract §30 §4.11 | redis_memory unavailable (evidence) | Redis INFO null check | redis_memory_mb_peak | PASS |
+| INC-9 | Contract §30 §4.11 | mandatory scenario skipped (restart in evidence mode) | nchan_restart_skipped field + classifier early return | nchan_restart_skipped | PASS |
+| INC-10 | Contract §30 §4.11 | host CPU throttling | CgroupResourceMonitor → cpu.stat nr_throttled | cpu_throttled_count | PASS |
+| INC-11 | Contract §30 §4.11 | Nchan DUT OOM kills | Nchan container cgroup → memory.events oom_kill | nchan_memory_oom_kill_events | PASS |
+| INC-12 | Contract §30 §4.11 | Nchan DUT CPU throttling | Nchan container cgroup → cpu.stat nr_throttled | nchan_cpu_throttled_count | PASS |
+| INC-13 | Contract §30 §4.8 | slow consumer: no server-side backpressure reached | SlowConsumerScenario + classifier early return | slow_consumer_metrics.evidence_server_side_backpressure_reached | PASS |
+| INC-14 | Contract §30 §4.11 | connection failure rate > 10% (FD/port exhaustion) | ConnectionPool failures in evidence mode | connection_failures | PASS |
 
 ## Scenario justification (§BP)
 
@@ -133,8 +139,8 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 |---|---|---|---|---|
 | Nginx | nginx:mainline-alpine (HTTPS download) | Dockerfile | build: in compose | PASS |
 | Nchan | github.com/slact/nchan.git (HTTPS) | Dockerfile | build: in compose | PASS |
-| Redis | redis:7-alpine | compose.yaml | build: from image | PASS |
-| Node.js | node:20-slim | Dockerfile | build: from image | PASS |
+| Redis | redis:7.2-bookworm | compose.yaml | build: from image | PASS |
+| Node.js | node:22-bookworm | Dockerfile | build: from image | PASS |
 | npm deps | package-lock.json + npm ci | Dockerfile | lock file pinned | PASS |
 
 ## §L clarity (updated §4.12)
@@ -155,6 +161,86 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | redis | 2 | 2 GB | PASS |
 | runner | 8 | 8 GB | PASS |
 | **Total evidence topology** | **18** | **18 GB** | **PASS (§4.10 reconciled in contract §O)** |
+
+## §4.3 Active connection lifecycle
+
+| Rule | Implementation | Test | Status |
+|---|---|---|---|
+| Dead connections removed from active pool on error | connection-pool.ts removeEntry() | defect-publisher-correctness.test.ts | PASS |
+| Per-channel subscriber count decremented on disconnect | connection-pool.ts removeEntry() | defect-publisher-correctness.test.ts | PASS |
+| active_connections_peak is high-water-mark, never decreases | metrics-recorder.ts setActiveConnections | defect-classifier.test.ts | PASS |
+| Cumulative reconnect cannot satisfy active target | active_connections_peak (high-water) | result-classifier.test.ts | PASS |
+
+## §4.2/§4.24 Topology and capacity preflight
+
+| Check | Implementation | Field | Status |
+|---|---|---|---|
+| FD soft/hard limits | topology-preflight.ts readNoFileLimits | host_limits.fd_soft_limit | PASS |
+| Ephemeral port range | topology-preflight.ts readSysctl | host_limits.ephemeral_port_count | PASS |
+| Nginx capacity (workers × conns) | topology-preflight.ts | generator_topology.nginx_max_sse_capacity | PASS |
+| Capacity sufficiency | topology-preflight.ts | generator_topology.capacity_sufficient | PASS |
+
+## §4.19 Schema validation error accounting
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| schema_validation_errors | metrics-recorder.ts | schema_validation_errors | PASS |
+| missing_transport_id | metrics-recorder.ts | missing_transport_id | PASS |
+
+## §4.18 Machine-readable output completeness
+
+| Section | Field | Status |
+|---|---|---|
+| host_limits | fd_soft/hard, ephemeral_port_range/count | PASS |
+| generator_topology | source_ip_count, tuple_capacity, nginx capacity | PASS |
+| clock_validity | method, note, max_skew_estimate_ms | PASS |
+| claim_provenance | measured_at_scale, direct_accept_eligible | PASS |
+| viewer_model | viewer_count, sse_connection_count, connections_per_viewer | PASS |
+| validity.reasons | structured inconclusive override details | PASS |
+
+## §4.14 Literal restart execution
+
+| Rule | Implementation | Test | Status |
+|---|---|---|---|
+| Evidence mode executes literal restart AND cross-node when both available | nchan-restart.ts execute() | nchan-restart.test.ts | PASS |
+| Literal restart via control server stop/restart | nchan-restart.ts literalRestartTest() | nchan-restart.test.ts | PASS |
+| Cross-node via nchan-1 → nchan-2 with shared Redis | nchan-restart.ts crossNodeTest() | nchan-restart.test.ts | PASS |
+| Restart skipped in evidence mode → INCONCLUSIVE (not REJECT) | nchan_restart_skipped field + classifier early return | result-classifier.test.ts §4.11 test | PASS |
+
+## §4.6 Phase duration measurement
+
+| Phase | Implementation | Duration Source | Status |
+|---|---|---|---|
+| warmup | main.ts, evidence-suite.ts | config.warmupSeconds * 1000 | PASS |
+| steady | main.ts, evidence-suite.ts | config.measureSeconds * 1000 | PASS |
+| surge | main.ts, evidence-suite.ts | ctx._surgeHealth.surge_elapsed_ms | PASS |
+| late-join | main.ts, evidence-suite.ts | ctx.clock.now() delta | PASS |
+| burst | main.ts, evidence-suite.ts | config.burstSeconds * 1000 | PASS |
+| post-burst | main.ts, evidence-suite.ts | config.cooldownSeconds * 1000 | PASS |
+| reconnect | main.ts, evidence-suite.ts | ctx.clock.now() delta | PASS |
+| slow-consumer | main.ts, evidence-suite.ts | ctx.clock.now() delta | PASS |
+| nchan-restart | main.ts, evidence-suite.ts | ctx.clock.now() delta | PASS |
+
+## §4.8 Slow consumer verdict early return
+
+| Rule | Implementation | Test | Status |
+|---|---|---|---|
+| No backpressure → INCONCLUSIVE (early return, not REJECT) | result-classifier.ts return statement | result-classifier.test.ts §4.8 INCONCLUSIVE test | PASS |
+| Backpressure reached + healthy degradation ≤5% → ACCEPT | result-classifier.ts bounded check | result-classifier.test.ts ACCEPT test | PASS |
+
+## §4.20 Type erasure removal
+
+| Location | Before | After | Status |
+|---|---|---|---|
+| connection-pool.ts handleMessage | `let data: any` | Typed message interface | PASS |
+| late-join.ts publishPrefillEvents | `@ts-ignore` + `as any` | publishRaw() typed method | PASS |
+| Test files | `as any` for mocks | Acceptable — test infrastructure only | PASS |
+
+## §4.9 Redis connected-client peak
+
+| Metric | Source File | Classifier Field | Status |
+|---|---|---|---|
+| redis_connected_clients_peak | cgroup-resource-monitor.ts | redis_connected_clients_peak | PASS |
 
 ## Blocking status
 

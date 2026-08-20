@@ -16,8 +16,7 @@ function makeEntry(id: number) {
     lastEventId: `evt-${id}`,
     onEvent(h: (event: SubscriptionEvent) => void) {
       handler = h
-      // Expose handler so the scenario can capture it for ThrottledSubscription
-      mockSub._lastHandler = h
+      // §3.17: getEventHandler() exposes the handler — no _lastHandler needed
       // Simulate event delivery: emit 10 events at 10ms intervals
       let count = 0
       const emit = () => {
@@ -31,6 +30,7 @@ function makeEntry(id: number) {
     },
     pause() { /* pretend to pause */ },
     resume() {},
+    getEventHandler() { return handler },
     close() {
       if (eventTimer) clearTimeout(eventTimer)
       handler = null
@@ -78,6 +78,8 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
       incrementServerInitiatedDisconnects() {},
       incrementNetworkFailures() {},
       incrementShutdownCleanup() {},
+      incrementSchemaValidationErrors() {},
+      incrementMissingTransportId() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -95,6 +97,8 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           schema_validation_errors: 0, missing_transport_id: 0,
+          fan_out_sample_count: 0, fan_out_overflow_count: 0,
+          late_join_sample_count: 0, late_join_overflow_count: 0,
         }
       },
     },
@@ -104,10 +108,10 @@ function mockCtx(entries: any[], slowFraction = 0.05): ScenarioContext {
     },
     resourceMonitor: {
       measureCpu() {},
-      snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, memory_max_bytes: null } },
+      snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchan_memory_current_bytes: null, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, memory_max_bytes: null } },
       startEventLoopMonitor() {}, stopEventLoopMonitor() {}, dispose() {},
     },
-    headTracker: { getHead: () => 0, updateHead() {} },
+    headTracker: { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } },
     config: {
       nchanPubUrl: "http://localhost:8080", nchanSubUrl: "http://localhost:8081",
       nchan2SubUrl: "", nchanControlUrl: "", redisUrl: "redis://localhost:6379",

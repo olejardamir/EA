@@ -67,7 +67,7 @@ export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSE
 class SSESubscription implements Subscription {
   private _connected = false
   private _lastEventId: string | null = null
-  private _handler: ((event: SubscriptionEvent) => void) | null = null
+  private _handlers: Array<(event: SubscriptionEvent) => void> = []
   private _res: http.IncomingMessage | null = null
   private _buffer = ""
   private _frame: ParsedFrame = { data: [] }
@@ -87,8 +87,15 @@ class SSESubscription implements Subscription {
     return this._lastEventId
   }
 
+  // §3.17: Support multiple handlers — each onEvent call adds a handler.
+  // This allows the pool and ThrottledSubscription to both receive events.
   onEvent(handler: (event: SubscriptionEvent) => void): void {
-    this._handler = handler
+    this._handlers.push(handler)
+  }
+
+  // §3.17: Return the last-registered handler (for backwards compatibility)
+  getEventHandler(): ((event: SubscriptionEvent) => void) | null {
+    return this._handlers.length > 0 ? this._handlers[this._handlers.length - 1] : null
   }
 
   pause(): void {
@@ -111,7 +118,7 @@ class SSESubscription implements Subscription {
     this._connected = true
 
     res.on("data", (chunk: Buffer) => {
-      if (this._closed || !this._handler) return
+      if (this._closed || this._handlers.length === 0) return
 
       try {
         // §AF: use TextDecoder with stream:true to handle multibyte chars
@@ -132,7 +139,10 @@ class SSESubscription implements Subscription {
           if (frame.id !== undefined && frame.id !== null) {
             this._lastEventId = frame.id
           }
-          this._handler({ type: "message", event: frame })
+          // §3.17: Dispatch to all registered handlers
+          for (const handler of this._handlers) {
+            handler({ type: "message", event: frame })
+          }
         }
       } catch {
         // §BJ: Parse failure — invoke error callback
@@ -142,15 +152,19 @@ class SSESubscription implements Subscription {
 
     res.on("end", () => {
       this._connected = false
-      if (!this._closed && this._handler) {
-        this._handler({ type: "error", error: new Error("stream ended") })
+      if (!this._closed) {
+        for (const handler of this._handlers) {
+          handler({ type: "error", error: new Error("stream ended") })
+        }
       }
     })
 
     res.on("error", (err) => {
       this._connected = false
-      if (!this._closed && this._handler) {
-        this._handler({ type: "error", error: err })
+      if (!this._closed) {
+        for (const handler of this._handlers) {
+          handler({ type: "error", error: err })
+        }
       }
     })
   }

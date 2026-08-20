@@ -66,6 +66,8 @@ function mockMetrics(): MetricsRecorder {
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         schema_validation_errors: 0, missing_transport_id: 0,
+        fan_out_sample_count: 0, fan_out_overflow_count: 0,
+        late_join_sample_count: 0, late_join_overflow_count: 0,
       }
     },
   }
@@ -87,6 +89,7 @@ function mockSubscription(): Subscription {
     pause() {},
     resume() {},
     close() {},
+    getEventHandler() { return null },
   }
 }
 
@@ -168,7 +171,7 @@ describe("Phase snapshot and reset (Defects 14-15)", () => {
   it("MatchEventPublisher snapshotAndReset captures and clears state", async () => {
     const { MatchEventPublisher } = await import("../adapters/match-event-publisher.js")
     const random = createPRNG(42)
-    const headTracker = { getHead: () => 0, updateHead() {} }
+    const headTracker = { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } }
 
     let publishCount = 0
     const publisher = new MatchEventPublisher({

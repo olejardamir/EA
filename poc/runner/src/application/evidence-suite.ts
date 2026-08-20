@@ -17,6 +17,7 @@ import { SlowConsumerScenario } from "../scenarios/slow-consumer.js"
 import { ConnectionSurgeScenario } from "../scenarios/connection-surge.js"
 import { NchanRestartScenario } from "../scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./result-classifier.js"
+import { runTopologyPreflight } from "../adapters/topology-preflight.js"
 import type { ScenarioContext } from "../scenarios/scenario.js"
 import type { AggregatedMetrics, VerdictResult } from "../domain/result.js"
 import type { ExperimentConfig } from "../config/experiment-config.js"
@@ -69,7 +70,7 @@ function deriveSeed(baseSeed: number, runIndex: number): number {
 }
 
 // §4.13: Run isolation — flush Redis between runs to prevent cross-run contamination
-async function flushRedis(redisUrl: string, logger: (msg: string) => void): Promise<void> {
+async function flushRedis(redisUrl: string, logger: (msg: string) => void): Promise<boolean> {
   try {
     const url = new URL(redisUrl)
     const host = url.hostname || "127.0.0.1"
@@ -102,8 +103,40 @@ async function flushRedis(redisUrl: string, logger: (msg: string) => void): Prom
     })
 
     logger(`§4.13 Redis FLUSHALL result: ${result.trim()}`)
+
+    // §4.13: Verify flush by checking DBSIZE
+    const verifyClient = net.createConnection({ host, port }, () => {
+      verifyClient.write("*1\r\n$6\r\nDBSIZE\r\n")
+    })
+    const verifyResult = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        verifyClient.destroy()
+        reject(new Error("Redis DBSIZE timeout"))
+      }, 5000)
+      let data = ""
+      verifyClient.on("data", (chunk) => {
+        data += chunk.toString()
+        clearTimeout(timeout)
+        verifyClient.destroy()
+        resolve(data)
+      })
+      verifyClient.on("error", (err) => {
+        clearTimeout(timeout)
+        reject(err)
+      })
+    })
+    logger(`§4.13 Redis DBSIZE after flush: ${verifyResult.trim()}`)
+
+    // If DBSIZE > 0 after FLUSHALL, the flush may have failed
+    const sizeMatch = verifyResult.match(/\:(\d+)/)
+    if (sizeMatch && parseInt(sizeMatch[1], 10) > 0) {
+      logger(`§4.13 WARNING: DBSIZE=${sizeMatch[1]} after FLUSHALL — stale data risk`)
+      return false
+    }
+    return true
   } catch (err) {
     logger(`§4.13 Redis FLUSHALL failed: ${err} (continuing with stale data risk)`)
+    return false
   }
 }
 
@@ -194,6 +227,8 @@ export async function runSingleExperiment(
     const warmup = new WarmupScenario(pool)
     const warmupResult = await warmup.execute(ctx)
     logger(`  ${warmupResult.passed ? "PASS" : "FAIL"} ${warmupResult.name}: ${warmupResult.detail}`)
+    const warmupSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "warmup", eventsPublished: warmupSnap.eventsPublished, byMatch: warmupSnap.byMatch, durationMs: config.warmupSeconds * 1000 })
 
     checkTimeout()
 
@@ -201,6 +236,8 @@ export async function runSingleExperiment(
     const steady = new SteadyScenario(pool)
     const steadyResult = await steady.execute(ctx)
     logger(`  ${steadyResult.passed ? "PASS" : "FAIL"} ${steadyResult.name}: ${steadyResult.detail}`)
+    const steadySnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "steady", eventsPublished: steadySnap.eventsPublished, byMatch: steadySnap.byMatch, durationMs: config.measureSeconds * 1000 })
 
     checkTimeout()
 
@@ -208,6 +245,8 @@ export async function runSingleExperiment(
     const connectionSurge = new ConnectionSurgeScenario(pool)
     const surgeResult = await connectionSurge.execute(ctx)
     logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
+    const surgeSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "surge", eventsPublished: surgeSnap.eventsPublished, byMatch: surgeSnap.byMatch, durationMs: ctx._surgeHealth?.surge_elapsed_ms ?? 0 })
 
     checkTimeout()
 
@@ -215,9 +254,13 @@ export async function runSingleExperiment(
     await sleep(config.cooldownSeconds * 1000)
 
     // Phase 5: Late-join under peak load
+    const lateJoinStart = ctx.clock.now()
     const lateJoin = new LateJoinScenario(pool)
     const lateJoinResult = await lateJoin.execute(ctx)
+    const lateJoinDuration = ctx.clock.now() - lateJoinStart
     logger(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
+    const lateJoinSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "late-join", eventsPublished: lateJoinSnap.eventsPublished, byMatch: lateJoinSnap.byMatch, durationMs: lateJoinDuration })
 
     checkTimeout()
 
@@ -225,6 +268,8 @@ export async function runSingleExperiment(
     const burst = new BurstScenario()
     const burstResult = await burst.execute(ctx)
     logger(`  ${burstResult.passed ? "PASS" : "FAIL"} ${burstResult.name}: ${burstResult.detail}`)
+    const burstSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "burst", eventsPublished: burstSnap.eventsPublished, byMatch: burstSnap.byMatch, durationMs: config.burstSeconds * 1000 })
 
     checkTimeout()
 
@@ -233,21 +278,42 @@ export async function runSingleExperiment(
     publisher.burstMode = false
     publisher.start(true)
     await sleep(config.cooldownSeconds * 1000)
+    const postBurstSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "post-burst", eventsPublished: postBurstSnap.eventsPublished, byMatch: postBurstSnap.byMatch, durationMs: config.cooldownSeconds * 1000 })
 
     // Phase 8: Reconnect while publishing
+    const reconnectStart = ctx.clock.now()
     const reconnect = new ReconnectScenario(pool)
     const reconnectResult = await reconnect.execute(ctx)
+    const reconnectDuration = ctx.clock.now() - reconnectStart
     logger(`  ${reconnectResult.passed ? "PASS" : "FAIL"} ${reconnectResult.name}: ${reconnectResult.detail}`)
+    const reconnectSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration })
 
     // Phase 9: Slow consumer / backpressure at frozen concurrency
+    const slowConsumerStart = ctx.clock.now()
     const slowConsumer = new SlowConsumerScenario(pool)
     const slowResult = await slowConsumer.execute(ctx)
+    const slowConsumerDuration = ctx.clock.now() - slowConsumerStart
     logger(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
+    const slowSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration })
 
-    // Phase 10: Nchan restart
-    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
-    const nchanResult = await nchanRestart.execute(ctx)
+    // Phase 10: Nchan restart — §6.37 step 9: once-per-campaign scenario
+    // Only execute on the first run; subsequent runs reuse the first run's result.
+    let nchanResult: { name: string; passed: boolean; detail: string }
+    const restartStart = ctx.clock.now()
+    if (runIndex === 0) {
+      const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
+      nchanResult = await nchanRestart.execute(ctx)
+    } else {
+      // §6.37 step 9: Skip on subsequent runs — the restart scenario is once-per-campaign
+      nchanResult = { name: "nchan-restart", passed: true, detail: "skipped (once-per-campaign, run 0 only)" }
+    }
+    const restartDuration = ctx.clock.now() - restartStart
     logger(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
+    const restartSnap = publisher.snapshotAndReset()
+    ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration })
 
     // Collect metrics
     resourceMonitor.stopEventLoopMonitor()
@@ -282,6 +348,10 @@ export async function runSingleExperiment(
     aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
     aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events
     aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
+    aggregated.redis_connected_clients_peak = resourceSnap.redis_connected_clients_peak
+    // §4.2: Topology capacity
+    const topologyPreflight = runTopologyPreflight(config.targetConnections)
+    aggregated.topology_capacity_sufficient = topologyPreflight.capacity_sufficient
     aggregated.generator_backlog_peak = metrics.snapshot().generator_backlog_peak
     aggregated.publisher_attempts = nchanPublisher.stats.attempts
     aggregated.publisher_successes = nchanPublisher.stats.successes
@@ -298,6 +368,7 @@ export async function runSingleExperiment(
 
     aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
     aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
+    aggregated.nchan_restart_skipped = nchanResult.detail.includes("skipped")
 
     if (ctx._surgeHealth) {
       aggregated.surge_fan_out_p95_ms = ctx._surgeHealth.fan_out_p95_ms
@@ -305,12 +376,33 @@ export async function runSingleExperiment(
       aggregated.surge_duplicates = ctx._surgeHealth.duplicates
       aggregated.surge_out_of_order = ctx._surgeHealth.out_of_order
       aggregated.surge_events_received = ctx._surgeHealth.events_received
+      // §4.5: Surge timing metrics
+      aggregated.surge_target_additions = ctx._surgeHealth.surge_target_additions
+      aggregated.surge_attempted = ctx._surgeHealth.surge_attempted
+      aggregated.surge_established = ctx._surgeHealth.surge_established
+      aggregated.surge_failures = ctx._surgeHealth.surge_failures
+      aggregated.surge_start_time = ctx._surgeHealth.surge_start_time
+      aggregated.surge_end_time = ctx._surgeHealth.surge_end_time
+      aggregated.surge_elapsed_ms = ctx._surgeHealth.surge_elapsed_ms
+      aggregated.surge_timing_error_ms = ctx._surgeHealth.surge_timing_error_ms
+      aggregated.attempt_rate_peak = ctx._surgeHealth.attempt_rate_peak
+      aggregated.establishment_rate_peak = ctx._surgeHealth.establishment_rate_peak
+      aggregated.scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
+      aggregated.scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
+      aggregated.active_population_start = ctx._surgeHealth.active_population_start
+      aggregated.active_population_end = ctx._surgeHealth.active_population_end
+      aggregated.active_population_peak = ctx._surgeHealth.active_population_peak
     }
+
+    // §R: Wire active connections peak from metrics recorder
+    aggregated.active_connections_peak = metrics.snapshot().active_connections_peak ?? 0
+    // §4.7: Wire slow-consumer metrics from scenario
+    aggregated.slow_consumer_metrics = slowConsumer.slowMetrics
 
     const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
-    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid)
+    const verdictResult = classifyResult(aggregated, generatorHealthy, timingValid, topologyPreflight)
 
     logger(`=== Run ${runIndex} complete: ${verdictResult.verdict} ===`)
 
@@ -425,6 +517,9 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.sse_parse_errors = runs.reduce((s, r) => s + r.aggregated.sse_parse_errors, 0)
   aggregate.json_parse_errors = runs.reduce((s, r) => s + r.aggregated.json_parse_errors, 0)
   aggregate.invalid_timestamp_count = runs.reduce((s, r) => s + r.aggregated.invalid_timestamp_count, 0)
+  // §4.19: Schema validation error accounting
+  aggregate.schema_validation_errors = runs.reduce((s, r) => s + r.aggregated.schema_validation_errors, 0)
+  aggregate.missing_transport_id = runs.reduce((s, r) => s + r.aggregated.missing_transport_id, 0)
   aggregate.surge_missing_sequences = runs.reduce((s, r) => s + r.aggregated.surge_missing_sequences, 0)
   aggregate.surge_duplicates = runs.reduce((s, r) => s + r.aggregated.surge_duplicates, 0)
   aggregate.surge_out_of_order = runs.reduce((s, r) => s + r.aggregated.surge_out_of_order, 0)
@@ -447,6 +542,10 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.generator_backlog_peak = Math.max(...runs.map((r) => r.aggregated.generator_backlog_peak))
   aggregate.memory_mb_peak = Math.max(...runs.map((r) => r.aggregated.memory_mb_peak))
   aggregate.generator_cpu_percent_peak = Math.max(...runs.map((r) => r.aggregated.generator_cpu_percent_peak))
+  // §3.23: Active connections peak and scheduler lag must also use max across runs
+  aggregate.active_connections_peak = Math.max(...runs.map((r) => r.aggregated.active_connections_peak))
+  aggregate.scheduler_lag_p95 = Math.max(...runs.map((r) => r.aggregated.scheduler_lag_p95))
+  aggregate.surge_failures = Math.max(...runs.map((r) => r.aggregated.surge_failures))
 
   return aggregate
 }
@@ -463,10 +562,23 @@ export async function runEvidenceSuite(
   log(`§6.37 Evidence-suite orchestrator starting (min=${MIN_RUNS}, max=${maxRuns})`)
 
   for (let i = 0; i < maxRuns; i++) {
-    // §4.13: Run isolation — flush Redis before each run (except the first)
-    if (i > 0) {
-      log(`§4.13 Flushing Redis for run isolation...`)
-      await flushRedis(config.redisUrl, log)
+    // §3.10: Run isolation — flush Redis before EVERY qualifying run (including first)
+    {
+      log(`§4.13 Flushing Redis for run isolation (run ${i})...`)
+      const flushOk = await flushRedis(config.redisUrl, log)
+      if (!flushOk) {
+        log(`§4.13 Redis flush verification FAILED — run isolation compromised, aborting suite`)
+        return {
+          runs,
+          aggregate: runs.length > 0 ? aggregateRuns(runs) : ({} as AggregatedMetrics),
+          crossRun: { keyMetricCVs: {}, worstCV: 0, worstMetric: "", dispersionExceeds15Pct: true },
+          finalVerdict: "INCONCLUSIVE",
+          totalRuns: runs.length,
+          dispersionStable: false,
+          perRunVerdicts: [],
+          oncePerCampaignRun: null,
+        }
+      }
     }
 
     const seed = deriveSeed(config.seed, i)
@@ -506,8 +618,8 @@ export async function runEvidenceSuite(
   }))
 
   // §6.37 step 9: Once-per-campaign scenarios (nchan-restart)
-  // Run once, mark as campaign-only in the aggregate
-  const oncePerCampaignRun = 0 // First run includes nchan-restart
+  // The restart scenario only executes on the first run (runIndex=0)
+  const oncePerCampaignRun = 0
 
   // Final verdict
   let finalVerdict: "ACCEPT" | "REJECT" | "INCONCLUSIVE"

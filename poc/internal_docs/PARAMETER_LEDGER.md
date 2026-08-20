@@ -14,7 +14,8 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | MEASURE_SECONDS (smoke) | 10 | s | PLANNING_ASSUMPTION | Proportional reduction for smoke | compose.yaml |
 | BURST_SECONDS (evidence) | 30 | s | PLANNING_ASSUMPTION | Sufficient burst duration to saturate fan-out | compose.evidence.yaml |
 | BURST_SECONDS (smoke) | 5 | s | PLANNING_ASSUMPTION | Proportional reduction for smoke | compose.yaml |
-| COOLDOWN_SECONDS | 10 | s | PLANNING_ASSUMPTION | Post-burst drain before reconnect phase | compose.evidence.yaml, experiment-config.ts |
+| COOLDOWN_SECONDS (evidence) | 10 | s | PLANNING_ASSUMPTION | Post-burst drain before reconnect phase | compose.evidence.yaml, experiment-config.ts |
+| COOLDOWN_SECONDS (smoke) | 3 | s | PLANNING_ASSUMPTION | Proportional reduction for smoke | compose.yaml, experiment-config.ts |
 | Backpressure duration | 15 | s | PLANNING_ASSUMPTION | Duration of slow-consumer backpressure observation | slow-consumer.ts (BACKPRESSURE_DURATION_MS constant) |
 | SEED | 42 | — | PLANNING_ASSUMPTION | Deterministic base seed; evidence suite derives 42+i | experiment-config.ts |
 | SLOW_CONSUMER_FRACTION | 0.05 | fraction | ASSIGNMENT_FACT | 5% of viewers as slow consumers (assignment §20) | experiment-config.ts, slow-consumer.ts |
@@ -76,6 +77,8 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Burst fan-out threshold | 1000 | ms | PLANNING_ASSUMPTION | Relaxed threshold for burst-phase peak load | result-classifier.ts:83 |
 | Latency histogram max | 30000 | ms | PLANNING_ASSUMPTION | Overflow bucket; ≥30s latencies counted but not discarded (§T) | connection-pool.ts:94 |
 | Latency invalid threshold | 0 | ms | PROTOCOL_REQUIREMENT | Negative latency → timing validity failure (§T) | connection-pool.ts:91 |
+| Fan-out sample count | dynamic | count | DERIVED_VALUE | Total valid fan-out samples; overflow counted separately (§4.25) | metrics-recorder.ts |
+| Late-join sample count | dynamic | count | DERIVED_VALUE | Total valid late-join samples; overflow counted separately (§4.25) | metrics-recorder.ts |
 
 ## Generator Health Thresholds
 

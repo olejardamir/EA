@@ -89,4 +89,9 @@ export interface MetricsSnapshot {
   server_initiated_disconnects: number
   network_failures: number
   shutdown_cleanup_disconnects: number
+  // §4.25: Histogram sample population metadata
+  fan_out_sample_count: number
+  fan_out_overflow_count: number
+  late_join_sample_count: number
+  late_join_overflow_count: number
 }

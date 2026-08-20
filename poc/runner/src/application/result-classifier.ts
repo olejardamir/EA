@@ -1,9 +1,11 @@
 import type { AggregatedMetrics, Verdict, VerdictResult, SlowConsumerMetrics } from "../domain/result.js"
+import type { TopologyPreflight } from "../adapters/topology-preflight.js"
 
 export function classifyResult(
   metrics: AggregatedMetrics,
   generatorHealthy: boolean,
   timingValid: boolean,
+  topologyPreflight?: TopologyPreflight,
 ): VerdictResult {
   const checks: Array<{ name: string; passed: boolean; detail: string }> = []
 
@@ -127,6 +129,74 @@ export function classifyResult(
     return { verdict: "INCONCLUSIVE", checks }
   }
 
+  // §4.11: Topology/FD/port capacity — must be structurally capable of 100k attempt
+  if (topologyPreflight && !topologyPreflight.capacity_sufficient) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `topology capacity insufficient — ${topologyPreflight.warnings.join("; ")}`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §4.11: Host FD exhaustion — runner soft limit must exceed target + overhead
+  if (metrics.run_profile === "evidence") {
+    const overheadFds = 100
+    const requiredFds = metrics.connections_target + overheadFds
+    // Check if we actually hit the FD ceiling during the run
+    if (metrics.connection_failures > 0 && metrics.connections_attempted > 0) {
+      const failureRate = metrics.connection_failures / metrics.connections_attempted
+      if (failureRate > 0.10) {
+        checks.push({
+          name: "inconclusive_override",
+          passed: false,
+          detail: `connection_failure_rate=${(failureRate * 100).toFixed(1)}% > 10% — possible FD/port exhaustion`,
+        })
+        return { verdict: "INCONCLUSIVE", checks }
+      }
+    }
+  }
+
+  // §4.11: Nchan CPU throttling — host capacity exceeded for the DUT
+  if (metrics.nchan_cpu_throttled_count !== null && metrics.nchan_cpu_throttled_count > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `nchan_cpu_throttled_count=${metrics.nchan_cpu_throttled_count} > 0 — Nchan host CPU throttled`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §4.11: Nchan OOM kills — DUT memory exhausted
+  if (metrics.nchan_memory_oom_kill_events !== null && metrics.nchan_memory_oom_kill_events > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `nchan_memory_oom_kill_events=${metrics.nchan_memory_oom_kill_events} > 0 — Nchan killed by OOM`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §3.9: Negative latency / invalid timing — measurement failure
+  if (metrics.latency_invalid_count > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `latency_invalid_count=${metrics.latency_invalid_count} > 0 — negative/invalid latency detected`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
+  // §3.9: Latency overflow — measurements exceeded histogram bounds
+  if (metrics.latency_overflow_count > 0) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: `latency_overflow_count=${metrics.latency_overflow_count} > 0 — latency measurements overflow`,
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
   // Required resource metrics must not be null in evidence mode
   if (metrics.run_profile === "evidence") {
     if (metrics.nchan_memory_mb_peak === null) {
@@ -214,6 +284,16 @@ export function classifyResult(
     detail: metrics.nchan_restart_history_replay_correct ? "replay correct" : "replay mismatch",
   })
 
+  // §4.11: Mandatory scenario skipped in evidence mode → INCONCLUSIVE (experiment incomplete)
+  if (metrics.run_profile === "evidence" && metrics.nchan_restart_skipped) {
+    checks.push({
+      name: "inconclusive_override",
+      passed: false,
+      detail: "mandatory nchan restart scenario skipped in evidence mode — experiment incomplete",
+    })
+    return { verdict: "INCONCLUSIVE", checks }
+  }
+
   // §4.8: Slow consumer check — resolved contradiction:
   // The scenario must demonstrate bounded behavior (healthy clients not degraded).
   // Server-side backpressure evidence is informational, not a pass/fail gate.
@@ -240,6 +320,7 @@ export function classifyResult(
         passed: false,
         detail: `§4.8: no server-side backpressure reached — test absorbed by kernel buffers`,
       })
+      return { verdict: "INCONCLUSIVE", checks }
     }
   } else {
     checks.push({
@@ -455,6 +536,9 @@ export function aggregateWorkerMetrics(
   let server_initiated_disconnects = 0
   let network_failures = 0
   let shutdown_cleanup_disconnects = 0
+  // §3.9: Latency validity counters
+  let latency_invalid_count = 0
+  let latency_overflow_count = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -495,6 +579,9 @@ export function aggregateWorkerMetrics(
     server_initiated_disconnects += s.server_initiated_disconnects
     network_failures += s.network_failures
     shutdown_cleanup_disconnects += s.shutdown_cleanup_disconnects
+    // §3.9: Latency validity counters
+    latency_invalid_count += s.latency_invalid_count
+    latency_overflow_count += s.latency_overflow_count
   }
 
   allFanOut.sort((a, b) => a - b)
@@ -549,6 +636,7 @@ export function aggregateWorkerMetrics(
     burst_fan_out_p95_ms: 0,
     nchan_restart_history_replay_correct: false,
     nchan_restart_missing_sequences: 0,
+    nchan_restart_skipped: false,
     non_slow_p95_degradation_pct: 0,
     nchan_memory_mb_peak: null,
     redis_memory_mb_peak: null,
@@ -589,8 +677,8 @@ export function aggregateWorkerMetrics(
     json_parse_errors,
     invalid_timestamp_count,
     // §4.19: Schema validation error accounting
-    schema_validation_errors: 0,
-    missing_transport_id: 0,
+    schema_validation_errors,
+    missing_transport_id,
     // §BH: surge health — defaults, wired from surge scenario in main.ts
     surge_fan_out_p95_ms: 0,
     surge_missing_sequences: 0,
@@ -632,5 +720,17 @@ export function aggregateWorkerMetrics(
     server_initiated_disconnects,
     network_failures,
     shutdown_cleanup_disconnects,
+    // §4.9: Redis connected-client peak — wired from resource monitor in main.ts
+    redis_connected_clients_peak: null,
+    // §4.2: Topology capacity — wired from preflight in main.ts
+    topology_capacity_sufficient: true,
+    // §4.25: Histogram sample population metadata — defaults
+    fan_out_sample_count: 0,
+    fan_out_overflow_count: 0,
+    late_join_sample_count: 0,
+    late_join_overflow_count: 0,
+    // §3.9: Latency validity counters
+    latency_invalid_count,
+    latency_overflow_count,
   }
 }

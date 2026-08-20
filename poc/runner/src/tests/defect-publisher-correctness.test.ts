@@ -415,7 +415,7 @@ describe("§6.24: Machine-readable JSON output", () => {
           slow_consumer_disconnects: 0, event_loop_delay_p99_ms: 5, memory_mb_peak: 100,
           connections_dropped: 0, expected_fan_deliveries: 50, received_fan_deliveries: 50,
           connections_target: 100, burst_fan_out_p95_ms: 20,
-          nchan_restart_history_replay_correct: true, nchan_restart_missing_sequences: 0,
+          nchan_restart_history_replay_correct: true, nchan_restart_missing_sequences: 0, nchan_restart_skipped: false,
           non_slow_p95_degradation_pct: 0, nchan_memory_mb_peak: null, redis_memory_mb_peak: null,
           timing_valid: true, generator_cpu_percent_peak: 30, generator_event_loop_p99_ms: 5,
           run_profile: "smoke", lobby_subscribers: 2, match_001_subscribers: 12,

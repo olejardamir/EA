@@ -1,5 +1,6 @@
 import type { Scenario, ScenarioContext } from "./scenario.js"
 import type { ConnectionPool } from "../application/connection-pool.js"
+import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 
 export class ConnectionSurgeScenario implements Scenario {
   name = "connection-surge"
@@ -24,15 +25,22 @@ export class ConnectionSurgeScenario implements Scenario {
       return { name: this.name, passed: true, detail: `skipped (pool ${baseCount} >= target ${totalTarget})` }
     }
 
-    const attemptsBefore = ctx.metrics.snapshot().connections_attempted
-    const establishedBefore = ctx.metrics.snapshot().connections_established
-    const failuresBefore = ctx.metrics.snapshot().connection_failures
+    // §3.4: Derived required ramp rate from the frozen target
+    const requiredRampRate = surgeCount / (surgeDurationMs / 1000)
+    ctx.log(`§3.4 required ramp rate: ${requiredRampRate.toFixed(2)} connections/s (surgeCount=${surgeCount} / ${surgeDurationMs / 1000}s)`)
 
     const snapBefore = ctx.metrics.snapshot()
+    const attemptsBefore = snapBefore.connections_attempted
+    const establishedBefore = snapBefore.connections_established
+    const failuresBefore = snapBefore.connection_failures
+    const droppedBefore = snapBefore.connections_dropped
     const missingBefore = snapBefore.missing_sequences
     const duplicatesBefore = snapBefore.duplicates
     const outOfOrderBefore = snapBefore.out_of_order
     const eventsReceivedBefore = snapBefore.events_received
+
+    // §3.4: Dedicated surge-phase histogram for fan-out latency
+    const surgeFanOutHist = new StreamingHistogram()
     const fanOutBefore = snapBefore.fan_out_latencies_ms.length
 
     // §4.5: Use monotonic clock for absolute deadline enforcement
@@ -41,17 +49,23 @@ export class ConnectionSurgeScenario implements Scenario {
     const batchSize = Math.ceil(surgeCount / 24)
     const batchIntervalMs = surgeDurationMs / 24
 
-    // §4.5: Rate tracking for peaks
+    // §4.5: Rate tracking for peaks — use ACTUAL deltas per batch, not requested count
     let attemptRatePeak = 0
     let establishmentRatePeak = 0
     let schedulerLagP95 = 0
     let schedulerLagMax = 0
     const schedulerLags: number[] = []
 
+    // §3.4: Per-bucket actual deltas
+    const bucketActualAttempts: number[] = []
+    const bucketActualEstablished: number[] = []
+    const bucketActualFailures: number[] = []
+
     let batch = 0
-    let totalAttempted = 0
-    let totalEstablished = 0
     let batchStartTime = performance.now()
+    let prevAttempts = attemptsBefore
+    let prevEstablished = establishedBefore
+    let prevFailures = failuresBefore
 
     while (batch < 24) {
       const remaining = surgeCount - (batch * batchSize)
@@ -62,7 +76,7 @@ export class ConnectionSurgeScenario implements Scenario {
       const targetTime = surgeStartTime + (batch + 1) * batchIntervalMs
       const actualStartTime = performance.now()
 
-      ctx.log(`Surge batch ${batch + 1}/24: adding ${count} connections (pool size: ${this.pool.size})`)
+      ctx.log(`Surge batch ${batch + 1}/24: requesting ${count} connections (pool size: ${this.pool.size})`)
       await this.pool.connectAll(ctx.eventStream, count, this.pool.size, undefined, ctx.config.lobbyFraction)
 
       const actualEndTime = performance.now()
@@ -71,17 +85,29 @@ export class ConnectionSurgeScenario implements Scenario {
       schedulerLags.push(schedulerLag)
       schedulerLagMax = Math.max(schedulerLagMax, Math.abs(schedulerLag))
 
-      // Calculate rates for this batch
+      // §3.4: Compute ACTUAL deltas from metrics, not requested count
+      const currentSnap = ctx.metrics.snapshot()
+      const actualAttempts = currentSnap.connections_attempted - prevAttempts
+      const actualEstablished = currentSnap.connections_established - prevEstablished
+      const actualFailures = currentSnap.connection_failures - prevFailures
+
+      bucketActualAttempts.push(actualAttempts)
+      bucketActualEstablished.push(actualEstablished)
+      bucketActualFailures.push(actualFailures)
+
+      prevAttempts = currentSnap.connections_attempted
+      prevEstablished = currentSnap.connections_established
+      prevFailures = currentSnap.connection_failures
+
+      // §3.4: Compute rates from actual deltas
       if (batchElapsed > 0) {
-        const batchAttemptRate = (count / batchElapsed) * 1000
-        const batchEstablishRate = (count / batchElapsed) * 1000
+        const batchAttemptRate = (actualAttempts / batchElapsed) * 1000
+        const batchEstablishRate = (actualEstablished / batchElapsed) * 1000
         attemptRatePeak = Math.max(attemptRatePeak, batchAttemptRate)
         establishmentRatePeak = Math.max(establishmentRatePeak, batchEstablishRate)
       }
 
       batch++
-      totalAttempted += count
-      totalEstablished += count
 
       // §4.5: Absolute deadline enforcement — break immediately if over
       const now = performance.now()
@@ -109,16 +135,21 @@ export class ConnectionSurgeScenario implements Scenario {
     const surgeEstablished = snap.connections_established - establishedBefore
     const surgeFailures = snap.connection_failures - failuresBefore
 
-    // §4.5: Surge-phase health for pre-existing viewers
+    // §3.4: Unexpected disconnects during surge
+    const surgeDropped = snap.connections_dropped - droppedBefore
+
+    // §3.4: Surge-phase health for pre-existing viewers
     const surgeMissing = snap.missing_sequences - missingBefore
     const surgeDupes = snap.duplicates - duplicatesBefore
     const surgeOoo = snap.out_of_order - outOfOrderBefore
     const surgeEvents = snap.events_received - eventsReceivedBefore
-    const surgeFanOutSamples = snap.fan_out_latencies_ms.slice(fanOutBefore)
-    surgeFanOutSamples.sort((a, b) => a - b)
-    const surgeFanOutP95 = surgeFanOutSamples.length > 0
-      ? surgeFanOutSamples[Math.ceil(0.95 * surgeFanOutSamples.length) - 1]
-      : 0
+
+    // §3.4: Populate dedicated surge-phase histogram from global snapshot
+    const allFanOutDuring = snap.fan_out_latencies_ms.slice(fanOutBefore)
+    for (const ms of allFanOutDuring) {
+      surgeFanOutHist.record(ms)
+    }
+    const surgeFanOutP95 = surgeFanOutHist.p95()
 
     // §4.5: Calculate scheduler lag percentiles
     if (schedulerLags.length > 0) {
@@ -152,28 +183,43 @@ export class ConnectionSurgeScenario implements Scenario {
     const attemptsPerSec = surgeElapsed > 0 ? surgeAttempted / (surgeElapsed / 1000) : 0
     const establishedPerSec = surgeElapsed > 0 ? surgeEstablished / (surgeElapsed / 1000) : 0
 
-    ctx.log(`Surge stats: attempted=${surgeAttempted} established=${surgeEstablished} failures=${surgeFailures}`)
+    ctx.log(`§3.4 surge stats: attempted=${surgeAttempted} established=${surgeEstablished} failures=${surgeFailures} dropped=${surgeDropped}`)
     ctx.log(`§BH surge health: missing=${surgeMissing} dupes=${surgeDupes} ooo=${surgeOoo} fan_out_p95=${surgeFanOutP95}ms events=${surgeEvents}`)
+    ctx.log(`§3.4 bucket deltas: attempts=[${bucketActualAttempts.join(",")}] established=[${bucketActualEstablished.join(",")}] failures=[${bucketActualFailures.join(",")}]`)
+    ctx.log(`§3.4 derived required_ramp=${requiredRampRate.toFixed(2)}/s actual_avg_established=${establishedPerSec.toFixed(2)}/s`)
     ctx.log(`§4.5 timing: elapsed=${surgeElapsed}ms error=${timingErrorMs}ms attempt_peak=${attemptRatePeak.toFixed(1)} est_peak=${establishmentRatePeak.toFixed(1)} lag_p95=${schedulerLagP95}ms lag_max=${schedulerLagMax}ms`)
 
-    // §4.5: Classify as INCONCLUSIVE if generator saturation prevented reaching the DUT
-    const generatorSaturated = attemptRatePeak < 100 || establishmentRatePeak < 100
+    // §3.4: Generator saturation — derived from required ramp rate, not ad hoc threshold
+    // The generator is saturated if it cannot sustain the required rate for the duration
+    const generatorSaturated = establishmentRatePeak < requiredRampRate * 0.5
     if (generatorSaturated) {
-      ctx.log(`§4.5 INCONCLUSIVE: generator saturation (attempt_peak=${attemptRatePeak.toFixed(1)}/s, est_peak=${establishmentRatePeak.toFixed(1)}/s)`)
+      ctx.log(`§3.4 INCONCLUSIVE: generator saturation (peak_rate=${establishmentRatePeak.toFixed(1)}/s < required=${(requiredRampRate * 0.5).toFixed(1)}/s)`)
       return {
         name: this.name,
         passed: false,
-        detail: `INCONCLUSIVE generator saturated: surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms attempt_peak=${attemptRatePeak.toFixed(1)} est_peak=${establishmentRatePeak.toFixed(1)} lag_p95=${schedulerLagP95}ms`,
+        detail: `INCONCLUSIVE generator saturated: surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms attempt_peak=${attemptRatePeak.toFixed(1)}/s est_peak=${establishmentRatePeak.toFixed(1)}/s required_ramp=${requiredRampRate.toFixed(2)}/s`,
+      }
+    }
+
+    // §3.4: Unexpected disconnects during surge — any drop is REJECT
+    if (surgeDropped > 0) {
+      ctx.log(`§3.4 REJECT: ${surgeDropped} unexpected disconnects during surge`)
+      return {
+        name: this.name,
+        passed: false,
+        detail: `REJECT: ${surgeDropped} disconnects during surge=${surgeEstablished}/${surgeCount} in ${surgeElapsed}ms`,
       }
     }
 
     const healthOk = surgeMissing === 0 && surgeDupes === 0 && surgeOoo === 0
-    const passCriteria = surgeEstablished >= surgeCount * 0.9 && healthOk
+    // §3.4: Exact target — PASS requires all requested additions established
+    const exactTargetReached = surgeEstablished >= surgeCount
+    const passCriteria = exactTargetReached && healthOk
 
     return {
       name: this.name,
       passed: passCriteria,
-      detail: `surge=${surgeEstablished}/${surgeCount} established in ${surgeElapsed}ms timing_error=${timingErrorMs}ms attempt_peak=${attemptRatePeak.toFixed(1)}/s est_peak=${establishmentRatePeak.toFixed(1)}/s lag_p95=${schedulerLagP95}ms lag_max=${schedulerLagMax}ms health_ok=${healthOk}`,
+      detail: `surge=${surgeEstablished}/${surgeCount} established in ${surgeElapsed}ms timing_error=${timingErrorMs}ms attempt_peak=${attemptRatePeak.toFixed(1)}/s est_peak=${establishmentRatePeak.toFixed(1)}/s required_ramp=${requiredRampRate.toFixed(2)}/s avg_established=${establishedPerSec.toFixed(2)}/s lag_p95=${schedulerLagP95}ms lag_max=${schedulerLagMax}ms dropped=${surgeDropped} fan_out_p95=${surgeFanOutP95}ms health_ok=${healthOk} exact_target=${exactTargetReached}`,
     }
   }
 }

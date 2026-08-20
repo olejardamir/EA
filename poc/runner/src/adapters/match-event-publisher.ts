@@ -25,6 +25,8 @@ export class MatchEventPublisher {
   private _eventsPublishedByMatch: Map<string, number> = new Map()
   // §BL: Track in-flight publish promises — backlog = number of unresolved tasks
   private _pendingPublishes = 0
+  // §3.5: Publisher scheduler lag tracking
+  private _schedulerLagSamples: number[] = []
   // §6.20: Per-match publish lock — prevents concurrent same-match publishes from overtaking canonical order
   private _matchBusy = new Map<string, boolean>()
 
@@ -48,6 +50,18 @@ export class MatchEventPublisher {
   // §BL: Number of publish tasks not yet resolved (in-flight to Nchan)
   get pendingPublishes(): number {
     return this._pendingPublishes
+  }
+
+  // §3.5: Publisher scheduler lag statistics
+  get schedulerLagP95(): number {
+    if (this._schedulerLagSamples.length === 0) return 0
+    const sorted = [...this._schedulerLagSamples].sort((a, b) => a - b)
+    const idx = Math.floor(sorted.length * 0.95)
+    return sorted[Math.min(idx, sorted.length - 1)]
+  }
+
+  get schedulerLagMax(): number {
+    return this._schedulerLagSamples.length > 0 ? Math.max(...this._schedulerLagSamples) : 0
   }
 
   get eventsPublishedByMatch(): ReadonlyMap<string, number> {
@@ -110,7 +124,11 @@ export class MatchEventPublisher {
       }
       advanceMatchState(candidate, eventType, random)
 
-      const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock)
+      // §3.5: Freeze T0 at creation time — this is what gets serialized and transmitted.
+      // publish_timestamp in the JSON body is the transmitted clock reference.
+      // Acceptance time is measured separately for scheduler lag computation.
+      const transmitTimestamp = new Date().toISOString()
+      const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock, transmitTimestamp)
       const body = JSON.stringify(event)
 
       const finalize = () => {
@@ -126,15 +144,21 @@ export class MatchEventPublisher {
       this.config.publisher.publish(matchId, body, eventType).then((ok) => {
         this._pendingPublishes--
         if (ok) {
-          // §AQ: Set publish_timestamp to Nchan acceptance time (post-POST)
-          event.publish_timestamp = new Date().toISOString()
+          // §3.5: Measure scheduler lag (acceptance - transmission), do NOT mutate event timestamp
+          const acceptanceTime = new Date().toISOString()
+          const transmitMs = new Date(transmitTimestamp).getTime()
+          const acceptMs = new Date(acceptanceTime).getTime()
+          const schedulerLagMs = acceptMs - transmitMs
+          this._schedulerLagSamples.push(schedulerLagMs)
           // §AS: Atomically commit candidate state only after Nchan acceptance
           state.seq = candidate.seq
           state.score = candidate.score
           state.clock = candidate.clock
           state.last_event_type = candidate.last_event_type
-          // §AS: Only commit head tracker and counters after Nchan acceptance
-          this.config.headTracker.updateHead(matchId, state.seq)
+          // §AS/§4.1: Only commit head tracker and counters after Nchan acceptance
+          // §4.1: Update head state with score/clock for late-join reconstruction verification
+          const clockNum = { period: state.clock.period === "2H" ? 2 : 1, elapsed: state.clock.elapsed_seconds }
+          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, clockNum)
           this._eventsPublished++
           this._totalPublished++
           const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
@@ -200,5 +224,10 @@ export class MatchEventPublisher {
   getMatchHead(matchId: string): number {
     const idx = MATCH_IDS.indexOf(matchId)
     return idx >= 0 ? this.matchStates[idx].seq : 0
+  }
+
+  // §4.1/§4.20: Direct publish for prefill events — bypasses normal event processing
+  publishRaw(channel: string, body: string, eventType: string): Promise<boolean> {
+    return this.config.publisher.publish(channel, body, eventType)
   }
 }

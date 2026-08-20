@@ -15,6 +15,13 @@ export interface TopologyPreflight {
   target_connections: number
   capacity_sufficient: boolean
   warnings: string[]
+  // §4.24: Enhanced capacity proof fields
+  non_viewer_fds: number
+  fd_headroom: number | null
+  subscribers_per_nchan_node: number
+  nchan_node_count: number
+  cpu_quota: number | null
+  cpu_count: number
 }
 
 function readSysctl(key: string): string | null {
@@ -40,7 +47,28 @@ function readNoFileLimits(): { soft: number | null; hard: number | null } {
   }
 }
 
-export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4, nginxWorkerConns = 32768): TopologyPreflight {
+// §4.24: Read CPU quota from cgroup v2
+function readCpuQuota(): number | null {
+  try {
+    const stat = readFileSync("/sys/fs/cgroup/cpu.stat", "utf-8")
+    const maxLine = stat.split("\n").find((l) => l.startsWith("cpu.max"))
+    if (!maxLine) return null
+    const parts = maxLine.split(/\s+/)
+    const quota = parseInt(parts[1], 10)
+    if (parts[1] === "max" || isNaN(quota)) return null
+    const period = parseInt(parts[2], 10) || 100000
+    return Math.floor(quota / period)
+  } catch {
+    return null
+  }
+}
+
+// §4.24: Non-viewer FD overhead — Redis connection, Nchan control, publisher POST,
+// event loop, stdin/stdout/stderr, listening sockets, internal nginx state.
+// Conservative: 60 for internal sockets/state + 20 for Redis/control + 20 headroom.
+const NON_VIEWER_FDS = 100
+
+export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4, nginxWorkerConns = 32768, nchanNodes = 2): TopologyPreflight {
   const warnings: string[] = []
 
   const { soft: fdSoft, hard: fdHard } = readNoFileLimits()
@@ -48,30 +76,47 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
   const portRange = readSysctl("net.ipv4.ip_local_port_range")
   const ephemeralCount = portRange
     ? (() => {
-        const [lo, hi] = portRange.split("-").map(Number)
-        return hi - lo + 1
+        const parts = portRange.split(/[\s\t-]+/).map(Number)
+        if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1]) || parts[0] > parts[1]) {
+          warnings.push(`Failed to parse ephemeral port range: "${portRange}"`)
+          return null
+        }
+        return parts[1] - parts[0] + 1
       })()
     : null
 
   // §4.2: Single source IP on host network — all connections share one source address
-  // On host network, the runner shares the host's network namespace
   const sourceIps = 1
 
   // §4.2: Destination tuples = source IPs × ephemeral ports
-  // Each SSE connection uses one ephemeral port from the runner's source
   const destTupleCapacity = sourceIps * (ephemeralCount ?? 28232)
 
   // §4.24: Nginx capacity = workers × connections_per_worker
   const nginxMaxSseCapacity = nginxWorkers * nginxWorkerConns
 
-  // §4.24: Check FD headroom — each SSE connection needs at least one FD
-  // Plus FDs for Redis, Nchan control, publisher, event loop, etc.
-  const overheadFds = 100 // Redis, control connections, stdin/stdout/stderr, event loop, etc.
-  const requiredFds = targetConnections + overheadFds
+  // §4.24: Non-viewer FD headroom
+  const nonViewerFds = NON_VIEWER_FDS
+  const requiredFds = targetConnections + nonViewerFds
+
+  // §4.24: Assigned subscribers per Nchan node (even split)
+  const subscribersPerNode = Math.ceil(targetConnections / nchanNodes)
+
+  // §4.24: CPU quota from cgroup
+  const cpuQuota = readCpuQuota()
+  const cpuCount = os.cpus().length
+
+  if (cpuQuota !== null && cpuQuota < nginxWorkers) {
+    warnings.push(`CPU quota ${cpuQuota} cores < nginx worker_processes ${nginxWorkers} — may starve workers`)
+  }
+
+  const fdHeadroom = fdSoft !== null ? fdSoft - requiredFds : null
+  if (fdHeadroom !== null && fdHeadroom < 0) {
+    warnings.push(`FD headroom negative: ${fdHeadroom} (soft=${fdSoft}, required=${requiredFds})`)
+  }
 
   const capacitySufficient = (() => {
     if (fdSoft !== null && fdSoft < requiredFds) {
-      warnings.push(`FD soft limit ${fdSoft} < required ${requiredFds} (target + overhead)`)
+      warnings.push(`FD soft limit ${fdSoft} < required ${requiredFds} (target + non-viewer overhead)`)
       return false
     }
     if (ephemeralCount !== null && ephemeralCount < targetConnections) {
@@ -80,6 +125,14 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     }
     if (nginxMaxSseCapacity < targetConnections) {
       warnings.push(`Nginx max capacity ${nginxMaxSseCapacity} < target ${targetConnections}`)
+      return false
+    }
+    if (destTupleCapacity < targetConnections) {
+      warnings.push(`Destination tuple capacity ${destTupleCapacity} (source_ips=${sourceIps} × ephemeral=${ephemeralCount ?? 28232}) < target ${targetConnections} — structurally insufficient for 100k`)
+      return false
+    }
+    if (subscribersPerNode * nchanNodes < targetConnections) {
+      warnings.push(`Subscriber capacity ${subscribersPerNode} × ${nchanNodes} nodes < target ${targetConnections}`)
       return false
     }
     return true
@@ -98,5 +151,11 @@ export function runTopologyPreflight(targetConnections: number, nginxWorkers = 4
     target_connections: targetConnections,
     capacity_sufficient: capacitySufficient,
     warnings,
+    non_viewer_fds: nonViewerFds,
+    fd_headroom: fdHeadroom,
+    subscribers_per_nchan_node: subscribersPerNode,
+    nchan_node_count: nchanNodes,
+    cpu_quota: cpuQuota,
+    cpu_count: cpuCount,
   }
 }

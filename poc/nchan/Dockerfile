@@ -1,7 +1,13 @@
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS builder
 
 ARG NGINX_VERSION=1.27.4
 ARG NCHAN_VERSION=1.3.8
+# §4.22: Pinned SHA-256 checksums for reproducible builds
+# To compute: curl -sL <url> | sha256sum | awk '{print $1}'
+# NGINX: https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz
+# NCHAN: https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz
+ARG NGINX_SHA256=294816f879b300e621fa4edd5353dd1ec00badb056399eceb30de7db64b753b2
+ARG NCHAN_SHA256=86e40f97bf380cb81d62c279aa0f992c2d8c93ebcfe242cf0be95e5b6ade9a98
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential libpcre3-dev libssl-dev zlib1g-dev \
@@ -9,15 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates wget && \
     rm -rf /var/lib/apt/lists/*
 
-# Download Nginx source
+# §4.22: Download Nginx source with SHA-256 verification
 RUN cd /tmp && \
     wget -q https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && \
+    echo "${NGINX_SHA256}  nginx-${NGINX_VERSION}.tar.gz" | sha256sum -c - && \
     tar xzf nginx-${NGINX_VERSION}.tar.gz
 
-# Download Nchan source
+# §4.22: Download Nchan source with SHA-256 verification
 RUN cd /tmp && \
-    curl -fsSL https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz \
-    | tar xz
+    curl -fsSL https://github.com/slact/nchan/archive/refs/tags/v${NCHAN_VERSION}.tar.gz -o nchan-${NCHAN_VERSION}.tar.gz && \
+    echo "${NCHAN_SHA256}  nchan-${NCHAN_VERSION}.tar.gz" | sha256sum -c - && \
+    tar xzf nchan-${NCHAN_VERSION}.tar.gz
 
 # Build Nginx with Nchan module
 RUN cd /tmp/nginx-${NGINX_VERSION} && \
@@ -43,10 +51,10 @@ RUN cd /tmp/nginx-${NGINX_VERSION} && \
 # The control server is a small isolated process inside the Nchan container
 # that allows the runner to trigger a literal Nginx/Nchan process restart
 # without mounting the Docker socket.
-FROM node:22-bookworm-slim AS nodejs
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS nodejs
 
 # Runtime stage
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcre3 libssl3 zlib1g libcurl4 libyajl2 \

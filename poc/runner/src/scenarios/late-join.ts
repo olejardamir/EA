@@ -167,7 +167,8 @@ export class LateJoinScenario implements Scenario {
     }
   }
 
-  // §4.1: Publish deterministic prefill events directly to Nchan via publisher
+  // §4.1: Publish deterministic prefill events through the publisher's publishRaw method
+  // Uses valid frozen event schema types and deterministic seq assignment
   private async publishPrefillEvents(
     ctx: ScenarioContext,
     matchId: string,
@@ -177,32 +178,39 @@ export class LateJoinScenario implements Scenario {
     const batchSize = PREFILL_BATCH_SIZE
     const batches = Math.ceil(count / batchSize)
 
+    // §4.1: Capture starting head deterministically before any publishes
+    const startHead = ctx.headTracker.getHead(matchId)
+
     for (let b = 0; b < batches; b++) {
       const batchCount = Math.min(batchSize, count - published)
       const promises: Promise<boolean>[] = []
 
       for (let i = 0; i < batchCount; i++) {
-        const seq = ctx.headTracker.getHead(matchId) + 1
+        // §4.1: Deterministic seq — computed from start head + global offset, not from getHead()
+        // This avoids the race condition where concurrent publishes read stale head values
+        const seq = startHead + published + i + 1
         const payload = {
           match_id: matchId,
           canonical_seq: seq,
-          event_type: "prefill",
+          // §3.1: Use a valid frozen event type — "corner" is the most common
+          event_type: "corner",
           score: { home: 0, away: 0 },
-          clock: { period: 1, elapsed: 0 },
+          clock: { period: "1", elapsed_seconds: 0 },
           publish_timestamp: new Date().toISOString(),
+          description: `Prefill event #${seq}`,
+          padding: "",
         }
 
-        // §4.1: Use publisher's publish method to send events to Nchan
-        // This ensures proper acceptance tracking and head updates
+        // §4.1: Use publisher's publishRaw method to send events to Nchan
         promises.push(
           (async () => {
             try {
-              // @ts-ignore - accessing publisher's internal method for direct publish
-              const publisher = ctx.publisher as any
-              if (publisher.publisher && typeof publisher.publisher.publish === "function") {
-                return await publisher.publisher.publish(matchId, JSON.stringify(payload), "prefill")
+              const result = await ctx.publisher.publishRaw(matchId, JSON.stringify(payload), "corner")
+              // §4.1: Update head tracker to reflect committed state
+              if (result) {
+                ctx.headTracker.updateHead(matchId, seq)
               }
-              return false
+              return result
             } catch {
               return false
             }
@@ -260,25 +268,39 @@ export class LateJoinScenario implements Scenario {
     return { missing, duplicates, outOfOrder }
   }
 
-  // §4.1: Compare reconstructed score with committed publisher state
+  // §4.1: Compare reconstructed score with committed publisher state at frozen head
   private compareScore(
     reconstructed: ReconstructedState | null,
     ctx: ScenarioContext,
     matchId: string,
   ): boolean {
     if (!reconstructed) return false
-    // The publisher state is tracked by headTracker; we can't directly access it
-    // but we can verify the reconstruction is internally consistent
-    return reconstructed.score.home >= 0 && reconstructed.score.away >= 0
+    // §4.1: Compare against the publisher's committed state at the frozen head position
+    const headState = ctx.headTracker.getHeadState(matchId)
+    if (!headState) {
+      // No committed state available — fall back to basic consistency check
+      return reconstructed.score.home >= 0 && reconstructed.score.away >= 0
+    }
+    // The reconstructed state is from the last event in history, which is the frozen head.
+    // Compare against the committed state at that position.
+    return reconstructed.score.home === headState.score.home
+      && reconstructed.score.away === headState.score.away
   }
 
-  // §4.1: Compare reconstructed clock with committed publisher state
+  // §4.1: Compare reconstructed clock with committed publisher state at frozen head
   private compareClock(
     reconstructed: ReconstructedState | null,
     ctx: ScenarioContext,
     matchId: string,
   ): boolean {
     if (!reconstructed) return false
-    return reconstructed.clock.period >= 1 && reconstructed.clock.elapsed >= 0
+    const headState = ctx.headTracker.getHeadState(matchId)
+    if (!headState) {
+      // No committed state available — fall back to basic consistency check
+      return reconstructed.clock.period >= 1 && reconstructed.clock.elapsed >= 0
+    }
+    // Compare period and elapsed against committed state
+    return reconstructed.clock.period === headState.clock.period
+      && reconstructed.clock.elapsed === headState.clock.elapsed
   }
 }

@@ -38,6 +38,8 @@ function mockCtx(overrides: Partial<{ eventStream: EventStream; nchan2SubUrl: st
       incrementServerInitiatedDisconnects() {},
       incrementNetworkFailures() {},
       incrementShutdownCleanup() {},
+      incrementSchemaValidationErrors() {},
+      incrementMissingTransportId() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -55,6 +57,8 @@ function mockCtx(overrides: Partial<{ eventStream: EventStream; nchan2SubUrl: st
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           schema_validation_errors: 0, missing_transport_id: 0,
+          fan_out_sample_count: 0, fan_out_overflow_count: 0,
+          late_join_sample_count: 0, late_join_overflow_count: 0,
         }
       },
     },
@@ -67,7 +71,7 @@ function mockCtx(overrides: Partial<{ eventStream: EventStream; nchan2SubUrl: st
       snapshot() { return { memoryMbPeak: 100, eventLoopDelayP99Ms: 10, cpuPercentPeak: 50, nchanMemoryMbPeak: null, redisMemoryMbPeak: 100, cpu_usage_usec: null, cpu_throttled_count: null, cpu_throttled_usec: null, memory_current_bytes: null, memory_peak_bytes: null, memory_oom_events: null, memory_oom_kill_events: null, cpu_max_quota: null, memory_max_bytes: null } },
       startEventLoopMonitor() {}, stopEventLoopMonitor() {}, dispose() {},
     },
-    headTracker: { getHead: () => 0, updateHead() {} },
+    headTracker: { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } },
     config: {
       nchanPubUrl: "http://localhost:8080", nchanSubUrl: "http://localhost:8081",
       nchan2SubUrl: overrides.nchan2SubUrl ?? "", nchanControlUrl: overrides.controlUrl ?? "",
@@ -127,6 +131,7 @@ describe("NchanRestartScenario", () => {
           pause() {},
           resume() {},
           close() { clearInterval(timer) },
+          getEventHandler() { return null },
         }
       },
     }

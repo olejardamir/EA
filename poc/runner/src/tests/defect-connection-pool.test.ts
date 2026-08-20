@@ -45,6 +45,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
     incrementServerInitiatedDisconnects() {},
     incrementNetworkFailures() {},
     incrementShutdownCleanup() {},
+    incrementSchemaValidationErrors() {},
+    incrementMissingTransportId() {},
     snapshot(): MetricsSnapshot {
       return {
         fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -65,6 +67,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         schema_validation_errors: 0, missing_transport_id: 0,
+        fan_out_sample_count: 0, fan_out_overflow_count: 0,
+        late_join_sample_count: 0, late_join_overflow_count: 0,
       }
     },
   }
@@ -80,6 +84,7 @@ function mockSubscription(opts: { fail?: boolean; lastEventId?: string | null } 
     connected: true,
     lastEventId: opts.lastEventId ?? null,
     onEvent(h: (event: SubscriptionEvent) => void) { handler = h },
+    getEventHandler() { return handler },
     pause() {},
     resume() {},
     close() { sub.connected = false },
@@ -145,8 +150,15 @@ describe("ConnectionPool defect fixes", () => {
     const entry = pool.entries[0]
 
     const pastTime = new Date(Date.now() - 50).toISOString()
-    const eventData = JSON.stringify({ canonical_seq: 1, publish_timestamp: pastTime })
-    pool.handleMessage(entry, eventData)
+    const eventData = JSON.stringify({
+      match_id: "match-001",
+      canonical_seq: 1,
+      event_type: "goal",
+      score: { home: 0, away: 0 },
+      clock: { period: "1H", elapsed_seconds: 0 },
+      publish_timestamp: pastTime,
+    })
+    pool.handleMessage(entry, eventData, "evt-1")
 
     assert.equal(metrics.counts["events_received"], 1)
   })

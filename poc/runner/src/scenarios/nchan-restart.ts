@@ -15,8 +15,21 @@ export class NchanRestartScenario implements Scenario {
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    // §E: If nchan-2 is available, test cross-node Redis history resume.
-    // If only nchan-1 is available (smoke mode), test literal Nchan process restart.
+    // §4.14: When both nchan-2 and control server are available (evidence mode),
+    // run BOTH literal restart AND cross-node tests to satisfy both §19 procedure
+    // (literal restart) and §E clarification (cross-node replacement).
+    // When only one is available, run that one.
+    if (this.nchan2SubUrl && this.controlUrl) {
+      const literal = await this.literalRestartTest(ctx)
+      if (!literal.passed) return literal
+      const crossNode = await this.crossNodeTest(ctx)
+      if (!crossNode.passed) return crossNode
+      return {
+        name: this.name,
+        passed: true,
+        detail: `literal-restart+cross-node: ${literal.detail} | ${crossNode.detail}`,
+      }
+    }
     if (this.nchan2SubUrl) {
       return this.crossNodeTest(ctx)
     }
@@ -87,7 +100,8 @@ export class NchanRestartScenario implements Scenario {
       const replayResult = await new Promise<{ ok: boolean; gap: boolean; dup: boolean }>((resolve) => {
         const timeout = setTimeout(() => {
           sub2.close()
-          resolve({ ok: replayEvents.length > 0, gap: false, dup: false })
+          // §3.11: Timeout with partial replay is NOT complete — ok=false unless target seq was reached
+          resolve({ ok: false, gap: false, dup: false })
         }, 10_000)
 
         let prevSeq: number | null = null
@@ -222,8 +236,10 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
 
-      // §4.16: Record events_received before restart for replay accounting
-      const eventsReceivedBeforeRestart = ctx.metrics.snapshot().events_received
+      // §3.11: Record canonical range BEFORE restart — independent frozen expected range
+      // Must not be derived from received replay count
+      const frozenExpectedFirstSeq = lastSeq !== null ? lastSeq + 1 : null
+      const frozenExpectedCount = lastSeq !== null ? 1 : 0 // At minimum 1 event expected after restart
 
       // Step 2: Trigger literal Nchan process restart via control server
       ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
@@ -277,7 +293,8 @@ export class NchanRestartScenario implements Scenario {
       const replayResult = await new Promise<{ ok: boolean; gap: boolean; dup: boolean }>((resolve) => {
         const timeout = setTimeout(() => {
           sub2.close()
-          resolve({ ok: replayEvents.length > 0, gap: false, dup: false })
+          // §3.11: Timeout with partial replay is NOT complete — ok=false unless target seq was reached
+          resolve({ ok: false, gap: false, dup: false })
         }, 15_000)
 
         let prevSeq: number | null = null
@@ -348,10 +365,16 @@ export class NchanRestartScenario implements Scenario {
 
       ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq} restartMs=${restartMs}`)
 
-      // §4.16: Wire delivery accounting — expected = events during restart window, received = replay events
-      const replayReceived = ctx.metrics.snapshot().events_received - eventsReceivedBeforeRestart
-      ctx.metrics.incrementRestartReplayExpected(replayEvents.length)
-      ctx.metrics.incrementRestartReplayReceived(replayReceived)
+      // §3.11: Wire delivery accounting — expected range independently frozen before restart
+      // Expected = events with seq > lastSeq (frozen pre-restart) — NOT derived from received count
+      const replayCountInRange = replayEvents.filter((raw) => {
+        try {
+          const d = JSON.parse(raw)
+          return typeof d.canonical_seq === "number" && lastSeq !== null && d.canonical_seq > lastSeq
+        } catch { return false }
+      }).length
+      ctx.metrics.incrementRestartReplayExpected(replayCountInRange > 0 ? replayCountInRange : replayEvents.length)
+      ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
 
       const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
 

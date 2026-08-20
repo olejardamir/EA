@@ -46,6 +46,12 @@ Purpose: Verify every required metric record from the frozen contract and Milest
 | latency_sample_count | BoundedMetricsRecorder | count | all | Incremented per valid sample | >= 0 | Informational | defect-measurement |
 | latency_invalid_count | BoundedMetricsRecorder | count | all | Incremented per parse/timestamp failure | >= 0 | Informational | defect-measurement |
 | latency_overflow_count | BoundedMetricsRecorder | count | all | Incremented per sample > max histogram range | >= 0 | Informational | defect-measurement |
+| fan_out_sample_count | BoundedMetricsRecorder | count | all | Incremented per valid fan-out latency sample | >= 0 | Informational | defect-measurement, milestone2-gap-closure |
+| fan_out_overflow_count | BoundedMetricsRecorder | count | all | Incremented per negative fan-out latency (overflow) | = 0 for ACCEPT | REJECT if > 0 | milestone2-gap-closure (§4.25) |
+| late_join_sample_count | BoundedMetricsRecorder | count | late-join | Incremented per valid late-join latency sample | >= 0 | Informational | defect-measurement, milestone2-gap-closure |
+| late_join_overflow_count | BoundedMetricsRecorder | count | late-join | Incremented per negative late-join latency (overflow) | = 0 for ACCEPT | REJECT if > 0 | milestone2-gap-closure (§4.25) |
+| schema_validation_errors | BoundedMetricsRecorder | count | all | Incremented per event failing schema validation (missing match_id/event_type/score/clock) | = 0 for ACCEPT | REJECT if > 0 (§4.19) | defect-classifier |
+| missing_transport_id | BoundedMetricsRecorder | count | all | Incremented per SSE event missing transport ID (event.id) | = 0 for ACCEPT | REJECT if > 0 (§4.19) | defect-classifier |
 | publisher_attempts | NchanHttpPublisher | count | all | Incremented per publish() call | >= 0 | Informational (§BM) | defect-classifier |
 | publisher_successes | NchanHttpPublisher | count | all | Incremented per 2xx response | >= 0 | Informational (§BM) | defect-classifier |
 | publisher_definite_failures | NchanHttpPublisher | count | all | Non-2xx or non-timeout error | >= 0 | Informational (§BM) | defect-classifier |
@@ -68,3 +74,5 @@ Purpose: Verify every required metric record from the frozen contract and Milest
 - **§BM**: Publisher acceptance stats track the Nchan HTTP publisher's attempts, successes, and failure modes. Definite failures are non-2xx responses or connection failures; ambiguous failures are timeouts-after-connect where the outcome is unknown.
 - **§BJ**: Parse error accounting covers SSE framing errors (`sse_parse_errors`), JSON payload parse failures (`json_parse_errors`), and invalid timestamps (`invalid_timestamp_count`). All must be 0 for ACCEPT verdict.
 - **§BH**: Surge health metrics capture the correctness impact on pre-existing viewers during the connection-surge phase. Deltas are computed by snapshotting counters before and after the surge, then computing p95 fan-out from the delta latency samples.
+- **§4.19**: Schema validation and transport-ID accounting. Events missing required fields (`match_id`, `event_type`, `score`, `clock`) increment `schema_validation_errors` and are rejected before reaching latency collectors. Events missing SSE `event.id` (transport ID) increment `missing_transport_id`. Both must be zero for ACCEPT verdict.
+- **§4.25**: Histogram sample count and overflow tracking. `fan_out_sample_count` and `late_join_sample_count` track total samples processed by the bounded recorder. Overflow counts (`fan_out_overflow_count`, `late_join_overflow_count`) track negative latencies, which are invalid and must be zero for ACCEPT. Very-high positive latencies are bucketed at the histogram max (not lost), so overflow only means invalid negative values.

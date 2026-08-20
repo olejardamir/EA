@@ -73,6 +73,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         schema_validation_errors: 0, missing_transport_id: 0,
+        fan_out_sample_count: 0, fan_out_overflow_count: 0,
+        late_join_sample_count: 0, late_join_overflow_count: 0,
       }
     },
   }
@@ -97,6 +99,7 @@ function mockSubscription(): Subscription {
     pause() {},
     resume() {},
     close() {},
+    getEventHandler() { return null },
   }
 }
 
@@ -120,10 +123,12 @@ function mockResourceMonitor(): ResourceMonitor {
         nchan_cpu_usage_usec: null, nchan_cpu_throttled_count: null, nchan_cpu_throttled_usec: null,
         nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
         nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
+        redis_connected_clients_peak: null,
       }
     },
     startEventLoopMonitor() {},
     stopEventLoopMonitor() {},
+    async preflight() { return null },
     dispose() {},
   }
 }
@@ -140,7 +145,7 @@ function mockCtx(overrides: Partial<ExperimentConfig> = {}): ScenarioContext {
     metrics: mockMetrics(),
     clock,
     resourceMonitor: mockResourceMonitor(),
-    headTracker: { getHead: () => 0, updateHead() {} },
+    headTracker: { getHead: () => 0, updateHead() {}, updateHeadState() {}, getHeadState() { return null } },
     config: {
       nchanPubUrl: "http://localhost:8080",
       nchanSubUrl: "http://localhost:8081",

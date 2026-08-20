@@ -26,13 +26,12 @@ export class ReconnectScenario implements Scenario {
       lastEventId: entry.subscription.lastEventId,
       headBefore: ctx.headTracker.getHead(entry.matchId),
       trackerLastSeq: entry.tracker.lastSeq,
+      // §3.13: Capture totalReceived before disconnect for delta calculation
+      trackerReceivedBefore: entry.tracker.totalReceived,
     }))
 
     ctx.log(`Reconnect cohort: ${cohortSize}/${all.length} connections`)
     ctx.log(`Pre-disconnect heads: ${saved.map((s) => `${s.entry.matchId}=${s.headBefore}`).join(", ")}`)
-
-    // Record events_received before disconnect for §4.16 replay accounting
-    const eventsReceivedBeforeDisconnect = ctx.metrics.snapshot().events_received
 
     for (const s of saved) {
       s.entry.subscription.close()
@@ -74,10 +73,24 @@ export class ReconnectScenario implements Scenario {
     ctx.log(`Reconnected ${newSubscriptions.length}/${cohortSize} connections, waiting for catch-up...`)
     await ctx.sleep(5000)
 
-    // §4.16: Wire delivery accounting
-    const replayReceived = ctx.metrics.snapshot().events_received - eventsReceivedBeforeDisconnect
-    ctx.metrics.incrementReconnectReplayExpected(eventsDuringDisconnect)
-    ctx.metrics.incrementReconnectReplayReceived(replayReceived)
+    // §3.13: Per-client expected replay — derive from each client's saved state + target head
+    let totalExpectedReplay = 0
+    for (const s of saved) {
+      const headAfter = ctx.headTracker.getHead(s.entry.matchId)
+      const expectedFromClient = Math.max(0, headAfter - (s.trackerLastSeq ?? 0))
+      totalExpectedReplay += expectedFromClient
+    }
+
+    // §3.13: Reconnect cohort-only received count — not global events_received
+    // Count actual replay messages delivered to reconnecting clients (delta from before disconnect)
+    let cohortReplayReceived = 0
+    for (const ns of newSubscriptions) {
+      // Delta = totalReceived after reconnect - totalReceived before disconnect
+      cohortReplayReceived += ns.entry.tracker.totalReceived - ns.saved.trackerReceivedBefore
+    }
+
+    ctx.metrics.incrementReconnectReplayExpected(totalExpectedReplay)
+    ctx.metrics.incrementReconnectReplayReceived(cohortReplayReceived)
 
     const snap = ctx.metrics.snapshot()
     const passed = snap.reconnect_gaps === 0 &&

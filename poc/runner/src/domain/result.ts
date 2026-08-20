@@ -48,6 +48,7 @@ export interface AggregatedMetrics {
   burst_fan_out_p95_ms: number
   nchan_restart_history_replay_correct: boolean
   nchan_restart_missing_sequences: number
+  nchan_restart_skipped: boolean
   non_slow_p95_degradation_pct: number
   nchan_memory_mb_peak: number | null
   redis_memory_mb_peak: number | null
@@ -131,6 +132,18 @@ export interface AggregatedMetrics {
   server_initiated_disconnects: number
   network_failures: number
   shutdown_cleanup_disconnects: number
+  // §4.9: Redis connected-client peak
+  redis_connected_clients_peak: number | null
+  // §4.2: Topology capacity sufficient
+  topology_capacity_sufficient: boolean
+  // §4.25: Histogram sample population metadata
+  fan_out_sample_count: number
+  fan_out_overflow_count: number
+  late_join_sample_count: number
+  late_join_overflow_count: number
+  // §3.9: Latency validity counters — negative/overflow latencies indicate measurement failure
+  latency_invalid_count: number
+  latency_overflow_count: number
 }
 
 // §4.7: Slow-consumer result metrics — computed in the scenario, consumed by classifier
@@ -146,6 +159,20 @@ export interface SlowConsumerMetrics {
   healthy_p95_during_slow_ms: number
   healthy_degradation_pct: number
   slow_disconnects: number
+  // §3.6: Dedicated healthy-cohort histograms
+  healthy_before_sample_count: number
+  healthy_during_sample_count: number
+  // §3.6: Nchan memory during slow phase
+  nchan_memory_baseline_bytes: number | null
+  nchan_memory_during_bytes: number | null
+  nchan_memory_end_bytes: number | null
+  nchan_memory_recovery_bytes: number | null
+  nchan_memory_samples_during: number[]
+  // §3.6: Throttle proof
+  slow_event_timestamps_ms: number[]
+  slow_achieved_read_rate_events_per_sec: number
+  slow_median_event_interval_ms: number
+  slow_p95_event_interval_ms: number
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

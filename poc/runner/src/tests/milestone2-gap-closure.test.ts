@@ -82,6 +82,8 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
         deliberate_disconnects: 0, unexpected_client_disconnects: 0,
         server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
         schema_validation_errors: 0, missing_transport_id: 0,
+        fan_out_sample_count: 0, fan_out_overflow_count: 0,
+        late_join_sample_count: 0, late_join_overflow_count: 0,
       }
     },
   }
@@ -97,6 +99,7 @@ function mockSubscription(): Subscription & { _emit: (e: SubscriptionEvent) => v
     connected: true,
     lastEventId: null,
     onEvent(h) { handler = h },
+    getEventHandler() { return handler },
     pause() {},
     resume() {},
     close() {},
@@ -147,12 +150,14 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     burst_fan_out_p95_ms: 200,
     nchan_restart_history_replay_correct: true,
     nchan_restart_missing_sequences: 0,
+    nchan_restart_skipped: false,
     non_slow_p95_degradation_pct: 1,
     nchan_memory_mb_peak: 200,
     redis_memory_mb_peak: 100,
     nchan_cpu_usage_usec: null, nchan_cpu_throttled_count: null, nchan_cpu_throttled_usec: null,
     nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
     nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
+    redis_connected_clients_peak: null,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -199,6 +204,13 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     shutdown_cleanup_disconnects: 0,
     schema_validation_errors: 0,
     missing_transport_id: 0,
+    fan_out_sample_count: 0,
+    fan_out_overflow_count: 0,
+    late_join_sample_count: 0,
+    late_join_overflow_count: 0,
+    latency_invalid_count: 0,
+    latency_overflow_count: 0,
+    topology_capacity_sufficient: true,
     surge_target_additions: 0,
     surge_attempted: 0,
     surge_established: 0,
@@ -362,9 +374,17 @@ describe("§T: Latency integrity — no valid sample silently discarded", () => 
       mode: "steady" as const,
     }
 
+    // §4.19: Event must pass schema validation to reach latency logic
     const futureTime = new Date(clockMs + 5000).toISOString()
-    const eventData = JSON.stringify({ canonical_seq: 1, publish_timestamp: futureTime })
-    pool.handleMessage(entry, eventData)
+    const eventData = JSON.stringify({
+      match_id: "match-001",
+      canonical_seq: 1,
+      event_type: "goal",
+      score: { home: 0, away: 0 },
+      clock: { period: "1H", elapsed_seconds: 0 },
+      publish_timestamp: futureTime,
+    })
+    pool.handleMessage(entry, eventData, "evt-1")
 
     const snap = metrics.snapshot()
     assert.equal(snap.latency_invalid_count, 1, "negative latency must be counted as invalid")
@@ -389,16 +409,24 @@ describe("§T: Latency integrity — no valid sample silently discarded", () => 
       mode: "steady" as const,
     }
 
+    // §4.19: Event must pass schema validation to reach latency logic
     const oldTime = new Date(1000).toISOString()
-    const eventData = JSON.stringify({ canonical_seq: 1, publish_timestamp: oldTime })
-    pool.handleMessage(entry, eventData)
+    const eventData = JSON.stringify({
+      match_id: "match-001",
+      canonical_seq: 1,
+      event_type: "goal",
+      score: { home: 0, away: 0 },
+      clock: { period: "1H", elapsed_seconds: 0 },
+      publish_timestamp: oldTime,
+    })
+    pool.handleMessage(entry, eventData, "evt-1")
 
     const snap = metrics.snapshot()
     assert.ok(snap.fan_out_latencies_ms.length > 0, "very large latency must still be recorded")
     assert.ok(snap.fan_out_latencies_ms[0] > 90000, "recorded latency should be very large")
   })
 
-  it("invalid timestamp increments invalid_timestamp_count", () => {
+  it("invalid timestamp increments schema validation errors", () => {
     const metrics = new BoundedMetricsRecorder()
     const clock = mockClock(5000)
     const pool = new ConnectionPool(
@@ -415,14 +443,16 @@ describe("§T: Latency integrity — no valid sample silently discarded", () => 
       mode: "steady" as const,
     }
 
+    // §4.19: Invalid timestamp rejected by schema validation before reaching latency logic
     const eventData = JSON.stringify({ canonical_seq: 1, publish_timestamp: "not-a-date" })
     pool.handleMessage(entry, eventData)
 
     const snap = metrics.snapshot()
-    assert.equal(snap.invalid_timestamp_count, 1, "invalid timestamp must be counted")
+    assert.equal(snap.schema_validation_errors, 1, "invalid timestamp must be caught by schema validation")
+    assert.equal(snap.events_received, 0, "rejected events must not increment events_received")
   })
 
-  it("event with no publish_timestamp still counts as received", () => {
+  it("event missing required fields rejected by schema validation", () => {
     const metrics = new BoundedMetricsRecorder()
     const clock = mockClock(5000)
     const pool = new ConnectionPool(
@@ -439,12 +469,13 @@ describe("§T: Latency integrity — no valid sample silently discarded", () => 
       mode: "steady" as const,
     }
 
+    // §4.19: Missing required fields rejected by schema validation
     const eventData = JSON.stringify({ canonical_seq: 1 })
     pool.handleMessage(entry, eventData)
 
     const snap = metrics.snapshot()
-    assert.equal(snap.events_received, 1, "event without timestamp still counted as received")
-    assert.equal(snap.fan_out_latencies_ms.length, 0, "no latency recorded when no timestamp")
+    assert.equal(snap.schema_validation_errors, 1, "missing fields must be caught by schema validation")
+    assert.equal(snap.events_received, 0, "rejected events must not increment events_received")
   })
 
   it("JSON parse error increments json_parse_errors", () => {
@@ -1137,6 +1168,54 @@ describe("§6.32: Bounded histogram — streaming histogram enforcement", () => 
       snap.fan_out_latencies_ms.length <= 10_000,
       `raw buffer length ${snap.fan_out_latencies_ms.length} should be bounded`,
     )
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+// §4.25: Histogram overflow behavior verification
+// ═══════════════════════════════════════════════════════════════
+describe("§4.25: Histogram overflow behavior", () => {
+  it("negative latency increments overflow count, not bucketed", () => {
+    const metrics = new BoundedMetricsRecorder()
+    metrics.recordFanOutLatency(-1)
+    metrics.recordFanOutLatency(-5)
+    metrics.recordFanOutLatency(100)
+
+    const snap = metrics.snapshot()
+    assert.equal(snap.fan_out_overflow_count, 2, "two negative latencies must be counted as overflows")
+    assert.equal(snap.fan_out_sample_count, 3, "total count includes overflows")
+  })
+
+  it("very-high latency is bucketed at max, not lost", () => {
+    const metrics = new BoundedMetricsRecorder()
+    metrics.recordFanOutLatency(50000)
+    metrics.recordFanOutLatency(99999)
+
+    const snap = metrics.snapshot()
+    assert.equal(snap.fan_out_overflow_count, 0, "positive latencies are not overflows")
+    assert.equal(snap.fan_out_sample_count, 2, "both positive samples counted")
+  })
+
+  it("late-join overflow counts are tracked separately", () => {
+    const metrics = new BoundedMetricsRecorder()
+    metrics.recordLateJoinLatency(-1)
+    metrics.recordLateJoinLatency(100)
+
+    const snap = metrics.snapshot()
+    assert.equal(snap.late_join_overflow_count, 1, "one negative late-join latency")
+    assert.equal(snap.late_join_sample_count, 2, "both late-join samples counted")
+  })
+
+  it("histogram populations appear in machine-readable output", () => {
+    const metrics = new BoundedMetricsRecorder()
+    for (let i = 0; i < 50; i++) metrics.recordFanOutLatency(i)
+    metrics.recordFanOutLatency(-1)
+    const snap = metrics.snapshot()
+
+    assert.equal(snap.fan_out_sample_count, 51, "sample count includes all")
+    assert.equal(snap.fan_out_overflow_count, 1, "overflow tracked")
+    assert.equal(snap.late_join_sample_count, 0, "no late-join yet")
+    assert.equal(snap.late_join_overflow_count, 0, "no late-join overflow")
   })
 })
 

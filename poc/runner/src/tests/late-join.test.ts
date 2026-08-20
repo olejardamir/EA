@@ -13,9 +13,7 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
     publisher: overrides.publisher ?? {
       start() {}, stop() {},
       snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-      publisher: {
-        async publish() { return true },
-      },
+      publishRaw: async () => true,
     } as unknown as MatchEventPublisher,
     eventStream: overrides.eventStream ?? { async connect() { return {} as Subscription } },
     metrics: {
@@ -42,6 +40,8 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
       incrementServerInitiatedDisconnects() {},
       incrementNetworkFailures() {},
       incrementShutdownCleanup() {},
+      incrementSchemaValidationErrors() {},
+      incrementMissingTransportId() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -59,6 +59,8 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           schema_validation_errors: 0, missing_transport_id: 0,
+          fan_out_sample_count: 0, fan_out_overflow_count: 0,
+          late_join_sample_count: 0, late_join_overflow_count: 0,
         }
       },
     },
@@ -74,6 +76,8 @@ function mockCtx(overrides: Partial<{ headTracker: any; eventStream: EventStream
     headTracker: overrides.headTracker ?? {
       getHead() { return head },
       updateHead(_matchId: string, seq: number) { head = Math.max(head, seq) },
+      updateHeadState() {},
+      getHeadState() { return null },
     },
     config: {
       nchanPubUrl: "http://localhost:8080", nchanSubUrl: "http://localhost:8081",
@@ -113,13 +117,13 @@ describe("LateJoinScenario", () => {
       headTracker: {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+        updateHeadState() {},
+        getHeadState() { return null },
       },
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        publisher: {
-          async publish() { publishCount++; return true },
-        },
+        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
       } as any,
       eventStream: {
         async connect(url: string) {
@@ -174,9 +178,7 @@ describe("LateJoinScenario", () => {
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        publisher: {
-          async publish() { publishCount++; return true },
-        },
+        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
       } as any,
       eventStream: {
         async connect() { throw new Error("connection refused") },
@@ -195,13 +197,13 @@ describe("LateJoinScenario", () => {
       headTracker: {
         getHead() { return publishCount },
         updateHead(_m: string, s: number) { publishCount = Math.max(publishCount, s) },
+        updateHeadState() {},
+        getHeadState() { return null },
       },
       publisher: {
         start() {}, stop() {},
         snapshotAndReset() { return { eventsPublished: 0, byMatch: new Map() } },
-        publisher: {
-          async publish() { publishCount++; return true },
-        },
+        async publishRaw(_ch: string, _body: string, _type: string) { publishCount++; return true },
       } as any,
       eventStream: {
         async connect() {

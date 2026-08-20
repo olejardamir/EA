@@ -2,7 +2,7 @@ import fs from "node:fs"
 import net from "node:net"
 import http from "node:http"
 import { monitorEventLoopDelay } from "node:perf_hooks"
-import type { ResourceMonitor, ResourceSnapshot } from "../ports/resource-monitor.js"
+import type { ResourceMonitor, ResourceSnapshot, NginxPreflight } from "../ports/resource-monitor.js"
 
 function readCgroupFile(path: string): string | null {
   try {
@@ -16,7 +16,7 @@ function redisInfo(redisUrl: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = new URL(redisUrl)
     const sock = net.connect(parseInt(url.port) || 6379, url.hostname, () => {
-      sock.write("INFO memory\r\n")
+      sock.write("INFO memory\r\nINFO clients\r\n")
     })
     let data = ""
     sock.on("data", (chunk) => {
@@ -36,6 +36,16 @@ function parseRedisUsedMemory(info: string): number | null {
     if (line.startsWith("used_memory:")) {
       const bytes = parseInt(line.split(":")[1], 10)
       if (!isNaN(bytes)) return bytes / (1024 * 1024)
+    }
+  }
+  return null
+}
+
+function parseRedisConnectedClients(info: string): number | null {
+  for (const line of info.split("\r\n")) {
+    if (line.startsWith("connected_clients:")) {
+      const val = parseInt(line.split(":")[1], 10)
+      if (!isNaN(val)) return val
     }
   }
   return null
@@ -91,6 +101,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private nchanMemoryPeakBytes: number | null = null
   private nchanMemoryOomEvents: number | null = null
   private nchanMemoryOomKillEvents: number | null = null
+  private redisConnectedClientsPeak: number | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private prevCpuTime = 0
   private prevWallTime = 0
@@ -130,6 +141,10 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       const memMb = parseRedisUsedMemory(info)
       if (memMb !== null && (this.redisMemoryMbPeak === null || memMb > this.redisMemoryMbPeak)) {
         this.redisMemoryMbPeak = memMb
+      }
+      const clients = parseRedisConnectedClients(info)
+      if (clients !== null && (this.redisConnectedClientsPeak === null || clients > this.redisConnectedClientsPeak)) {
+        this.redisConnectedClientsPeak = clients
       }
     } catch {
       // Redis unavailable — leave redisMemoryMbPeak as-is
@@ -317,7 +332,40 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       nchan_memory_peak_bytes: this.nchanMemoryPeakBytes,
       nchan_memory_oom_events: this.nchanMemoryOomEvents,
       nchan_memory_oom_kill_events: this.nchanMemoryOomKillEvents,
+      // §4.9: Redis connected-client peak
+      redis_connected_clients_peak: this.redisConnectedClientsPeak,
     }
+  }
+
+  // §4.24: Runtime nginx capacity preflight
+  async preflight(controlUrl: string): Promise<NginxPreflight | null> {
+    return new Promise((resolve) => {
+      try {
+        const url = new URL(controlUrl)
+        const req = http.request({
+          hostname: url.hostname,
+          port: url.port,
+          path: "/preflight",
+          method: "GET",
+          timeout: 5000,
+        }, (res) => {
+          let data = ""
+          res.on("data", (chunk) => { data += chunk })
+          res.on("end", () => {
+            try {
+              resolve(JSON.parse(data))
+            } catch {
+              resolve(null)
+            }
+          })
+        })
+        req.on("error", () => resolve(null))
+        req.on("timeout", () => { req.destroy(); resolve(null) })
+        req.end()
+      } catch {
+        resolve(null)
+      }
+    })
   }
 
   dispose(): void {

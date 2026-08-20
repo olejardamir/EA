@@ -3,6 +3,7 @@ import type { EventStream } from "../ports/event-stream.js"
 import type { MetricsRecorder } from "../ports/metrics.js"
 import type { Clock } from "../ports/clock.js"
 import { createSequenceTracker, type SequenceTracker } from "../domain/sequence-validator.js"
+import { validateMatchEventPayload, type ValidMatchEvent } from "../domain/event-validator.js"
 
 export interface ConnectionEntry {
   id: number
@@ -72,40 +73,52 @@ export class ConnectionPool {
     return createSequenceTracker(0)
   }
 
-  handleMessage(entry: ConnectionEntry, eventData: string): void {
+  handleMessage(entry: ConnectionEntry, eventData: string, transportId?: string | null): void {
     if (!this._running) return
 
-    let data: any
+    let raw: unknown
     try {
-      data = JSON.parse(eventData)
+      raw = JSON.parse(eventData)
     } catch {
       this.metrics.incrementJsonParseErrors()
       return
     }
 
-    if (!data || typeof data.canonical_seq !== "number") return
+    // §3.16: Schema validation — validate required fields before influencing any metrics
+    const validation = validateMatchEventPayload(raw)
+    if (!validation.valid) {
+      this.metrics.incrementSchemaValidationErrors()
+      return
+    }
 
-    const seq = data.canonical_seq as number
+    const data = raw as ValidMatchEvent
+
+    // §3.16: Missing transport ID — SSE events must carry an id field
+    if (transportId === undefined || transportId === null || transportId === "") {
+      this.metrics.incrementMissingTransportId()
+    }
+
+    const seq = data.canonical_seq
     this.metrics.incrementEventsReceived()
 
-    if (data.publish_timestamp) {
-      const publishTime = new Date(data.publish_timestamp).getTime()
-      const recvTime = this.clock.now()
-      if (isNaN(publishTime)) {
-        this.metrics.incrementInvalidTimestampCount()
-      } else {
-        const latency = recvTime - publishTime
-        // §T: Do not silently discard latencies. Record all valid samples,
-        // count negative as timing-invalid, count >=30s as overflow.
-        if (latency < 0) {
-          this.metrics.incrementLatencyInvalid()
-        } else {
-          if (latency >= 30000) {
-            this.metrics.incrementLatencyOverflow()
-          }
-          this.metrics.recordFanOutLatency(latency)
-        }
+    // §4.16: Live delivery accounting — each event received by a connection in steady mode
+    // is one expected delivery and one actual delivery for that subscriber
+    if (entry.mode === "steady") {
+      this.metrics.incrementLiveExpectedDeliveries(1)
+      this.metrics.incrementLiveReceivedDeliveries(1)
+    }
+
+    // §T: Latency measurement from transmitted publish_timestamp
+    const publishTime = new Date(data.publish_timestamp).getTime()
+    const recvTime = this.clock.now()
+    const latency = recvTime - publishTime
+    if (latency < 0) {
+      this.metrics.incrementLatencyInvalid()
+    } else {
+      if (latency >= 30000) {
+        this.metrics.incrementLatencyOverflow()
       }
+      this.metrics.recordFanOutLatency(latency)
     }
 
     const classification = entry.tracker.classify(seq)
@@ -195,15 +208,19 @@ export class ConnectionPool {
       subscription.onEvent((evt) => {
         if (!this._running) return
         if (evt.type === "message") {
-          this.handleMessage(entry, evt.event.data)
+          this.handleMessage(entry, evt.event.data, evt.event.id)
         } else if (evt.type === "error") {
           // §4.3: Terminal stream error — remove from active pool immediately
           // §4.17: Disconnect attribution — classify error by cause
           const msg = evt.error?.message ?? ""
           if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
             this.metrics.incrementNetworkFailures()
-          } else {
+          } else if (/stream ended/i.test(msg)) {
+            // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
             this.metrics.incrementServerInitiatedDisconnects()
+          } else {
+            // §4.17: Unexpected client-side stream termination
+            this.metrics.incrementUnexpectedClientDisconnects()
           }
           this.removeEntry(entry)
         }
@@ -230,6 +247,8 @@ export class ConnectionPool {
       const count = this.subscribersByChannel.get(conn.matchId) ?? 0
       this.subscribersByChannel.set(conn.matchId, Math.max(0, count - 1))
     }
+    // §4.17: Track shutdown cleanup — the full teardown itself is a cleanup action
+    this.metrics.incrementShutdownCleanup()
     this.connections = []
     this.metrics.setActiveConnections(0)
   }
@@ -267,7 +286,7 @@ export class ConnectionPool {
         subscription.onEvent((evt) => {
           if (!this._running) return
           if (evt.type === "message") {
-            this.handleMessage(entry, evt.event.data)
+            this.handleMessage(entry, evt.event.data, evt.event.id)
           }
         })
 

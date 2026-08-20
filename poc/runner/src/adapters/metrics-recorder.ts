@@ -172,6 +172,11 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       server_initiated_disconnects: this.serverInitiatedDisconnects,
       network_failures: this.networkFailures,
       shutdown_cleanup_disconnects: this.shutdownCleanupDisconnects,
+      // §4.25: Histogram sample population metadata
+      fan_out_sample_count: this.fanOutHistogram.count,
+      fan_out_overflow_count: this.fanOutHistogram.overflows,
+      late_join_sample_count: this.lateJoinHistogram.count,
+      late_join_overflow_count: this.lateJoinHistogram.overflows,
     }
   }
 }

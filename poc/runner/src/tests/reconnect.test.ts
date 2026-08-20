@@ -42,6 +42,7 @@ function mockCtx(entries: ConnectionEntry[], metricsOverrides: Partial<MetricsSn
           pause() {},
           resume() {},
           close() {},
+          getEventHandler() { return null },
         }
       },
     },
@@ -69,6 +70,8 @@ function mockCtx(entries: ConnectionEntry[], metricsOverrides: Partial<MetricsSn
       incrementServerInitiatedDisconnects() {},
       incrementNetworkFailures() {},
       incrementShutdownCleanup() {},
+      incrementSchemaValidationErrors() {},
+      incrementMissingTransportId() {},
       snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -86,6 +89,8 @@ function mockCtx(entries: ConnectionEntry[], metricsOverrides: Partial<MetricsSn
           deliberate_disconnects: 0, unexpected_client_disconnects: 0,
           server_initiated_disconnects: 0, network_failures: 0, shutdown_cleanup_disconnects: 0,
           schema_validation_errors: 0, missing_transport_id: 0,
+          fan_out_sample_count: 0, fan_out_overflow_count: 0,
+          late_join_sample_count: 0, late_join_overflow_count: 0,
           ...metricsOverrides,
         }
       },

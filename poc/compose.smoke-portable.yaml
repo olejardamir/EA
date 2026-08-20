@@ -13,7 +13,7 @@
 
 services:
   redis:
-    image: redis:7.2-bookworm
+    image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
     ports:
       - "6379:6379"
     deploy:
@@ -64,11 +64,12 @@ services:
       nchan:
         condition: service_healthy
     environment:
-      # §6.16: With bridge networking, use localhost host-ports mapped to containers.
-      NCHAN_PUB_URL: "http://host.docker.internal:8080"
-      NCHAN_SUB_URL: "http://host.docker.internal:8081"
-      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
-      REDIS_URL: "redis://host.docker.internal:6379"
+      # §3.20: Use Compose service DNS for inter-container connectivity.
+      # Works on Linux Docker Engine without host.docker.internal support.
+      NCHAN_PUB_URL: "http://nchan:8080"
+      NCHAN_SUB_URL: "http://nchan:8081"
+      NCHAN_CONTROL_URL: "http://nchan:18888"
+      REDIS_URL: "redis://redis:6379"
       TARGET_CONNECTIONS: "100"
       WARMUP_SECONDS: "5"
       MEASURE_SECONDS: "10"

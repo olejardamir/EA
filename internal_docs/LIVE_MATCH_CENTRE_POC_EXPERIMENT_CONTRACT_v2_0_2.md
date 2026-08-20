@@ -127,7 +127,7 @@ docker compose
 │   image: built from Dockerfile (nginx:1.27.4 + nchan 1.3.8)
 │   ports: 8080 (publisher) + 8081 (subscriber)
 │   depends_on: redis
-│   deploy.resources.limits: cpus=4, memory=4G
+│   deploy.resources.limits: cpus=4, memory=8G
 │
 ├── redis
 │   image: redis:7.2-bookworm
@@ -139,7 +139,7 @@ docker compose
     deploy.resources.limits: cpus=8, memory=8G
 ```
 
-Primary container resource envelope (nchan + redis + runner): **14 CPUs, 14 GB RAM**. The evidence topology also includes nchan-2 (4 CPUs, 4 GB RAM) for cross-node restart testing — see §O for the full auxiliary topology breakdown. The host must have at least 18 CPUs and 18 GB RAM available for the complete evidence topology.
+Primary container resource envelope (nchan + redis + runner): **14 CPUs, 18 GB RAM**. The evidence topology also includes nchan-2 (4 CPUs, 4 GB RAM) for cross-node restart testing — see §O for the full auxiliary topology breakdown. The host must have at least 18 CPUs and 22 GB RAM available for the complete evidence topology.
 
 The `runner` container spawns load-generator workers as child processes, each opening a portion of SSE connections. This avoids multi-container inter-communication overhead and simplifies metric collection.
 
@@ -651,12 +651,13 @@ Because shared Redis is specifically intended to make cross-node/history resume 
 
 If the topology includes `nchan-2` (Section 18), reconnecting clients may be routed to `nchan-2` during the restart window, directly testing cross-node Redis-backed history.
 
-> **§E clarification:** The current `nchan-restart` scenario performs cross-node
-> replacement (nchan-1 -> nchan-2), not a literal Nchan process restart. Both tests
-> are valuable: cross-node replacement tests Redis-backed history resume across
-> Nchan instances; literal restart tests process lifecycle and state recovery.
-> A literal restart test (docker stop/start on the same container) should be added
-> as a separate scenario or combined into this one.
+> **§E clarification (updated):** When both nchan-2 and the control server are
+> available (evidence mode), the `nchan-restart` scenario executes both tests:
+> first a literal Nchan process restart via the control server (stop/restart nginx),
+> then a cross-node Redis history resume test (nchan-1 -> nchan-2). Both tests
+> must pass for the scenario to return PASS. In smoke mode (control server only),
+> only the literal restart is executed. When only nchan-2 is available, only the
+> cross-node test is executed.
 >
 > **§AT clarification:** For any restart or cross-node replacement result to be
 > valid, the wall-clock offset between every participating Nchan instance must be
@@ -754,21 +755,33 @@ One lucky run is never sufficient for an ACCEPT decision.
 
 # 24. Container Resource Limits
 
+## Primary DUT envelope (nchan + redis + runner)
+
 | Container | CPUs | Memory |
 |---|---|---|
-| nchan | 4 | 4 GB |
+| nchan (DUT) | 4 | 8 GB |
 | redis | 2 | 2 GB |
 | runner | 8 | 8 GB |
-| **Total** | **14** | **14 GB** |
+| **Primary subtotal** | **14** | **18 GB** |
 
-These are Docker `deploy.resources.limits`. The host must have at least 16 CPUs and 16 GB RAM available for Docker.
+## Complete evidence topology (includes cross-node replacement)
+
+| Container | CPUs | Memory |
+|---|---|---|
+| nchan-primary (DUT) | 4 | 8 GB |
+| nchan-2 (replacement) | 4 | 4 GB |
+| redis | 2 | 2 GB |
+| runner | 8 | 8 GB |
+| **Evidence total** | **18** | **22 GB** |
+
+These are Docker `deploy.resources.limits`. The host must have at least **18 CPUs and 22 GB RAM** available for Docker (the complete evidence topology).
 
 ### §O: Auxiliary topology resource envelope
 
 The POC includes auxiliary containers beyond the primary DUT. Each component's resource envelope is frozen separately:
 
 ```text
-DUT (nchan-primary):       4 CPUs, 4 GB RAM — the architecture under test
+DUT (nchan-primary):       4 CPUs, 8 GB RAM — the architecture under test
 nchan-2 (replacement):     4 CPUs, 4 GB RAM — cross-node restart test only; not part of primary DUT capacity
 Redis:                     2 CPUs, 2 GB RAM — backing store for both Nchan nodes
 Runner (load generator):   8 CPUs, 8 GB RAM — measurement + load generation
@@ -787,8 +800,8 @@ The host running `docker compose up --build` must satisfy:
 ```text
 Docker version:           >= 24.0
 Docker Compose version:   >= 2.20
-Available CPUs:           >= 16
-Available RAM:            >= 16 GB
+Available CPUs:           >= 18
+Available RAM:            >= 22 GB
 File descriptor limit:    >= 1,000,000 (for high-connection tests)
 Ephemeral port range:     1024-65535
 tcp_tw_reuse:             enabled (for generator port recycling)
@@ -1027,8 +1040,9 @@ Nchan restart:
 
 Slow client:
   Nchan unbounded memory growth under slow-consumer load
-  slow_consumer_disconnects == 0 (backpressure mechanism not observed, §N)
   non_sustainable consumer impact on non-slow p95 > 5% degradation
+  NOTE: slow_consumer_disconnects == 0 maps to INCONCLUSIVE (§30), not REJECT.
+  Zero disconnects mean backpressure was not confirmed; §N and §30 govern this case.
 
 Resource exhaustion:
   nchan_memory unbounded growth (memory increases linearly with time

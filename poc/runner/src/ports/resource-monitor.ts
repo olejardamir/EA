@@ -22,6 +22,20 @@ export interface ResourceSnapshot {
   nchan_memory_peak_bytes: number | null
   nchan_memory_oom_events: number | null
   nchan_memory_oom_kill_events: number | null
+  // §4.9: Redis connected-client peak
+  redis_connected_clients_peak: number | null
+}
+
+export interface NginxPreflight {
+  worker_processes: number | null
+  worker_connections: number | null
+  nginx_active: number | null
+  fd_soft_limit: number | null
+  fd_hard_limit: number | null
+  cpu_quota: number | null
+  worker_connections_total: number | null
+  sufficient: boolean
+  reason: string
 }
 
 export interface ResourceMonitor {
@@ -29,5 +43,6 @@ export interface ResourceMonitor {
   snapshot(): ResourceSnapshot
   startEventLoopMonitor(): void
   stopEventLoopMonitor(): void
+  preflight(controlUrl: string): Promise<NginxPreflight | null>
   dispose(): void
 }

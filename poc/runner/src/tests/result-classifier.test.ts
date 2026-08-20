@@ -34,12 +34,14 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     burst_fan_out_p95_ms: 200,
     nchan_restart_history_replay_correct: true,
     nchan_restart_missing_sequences: 0,
+    nchan_restart_skipped: false,
     non_slow_p95_degradation_pct: 1,
     nchan_memory_mb_peak: 200,
     redis_memory_mb_peak: 100,
     nchan_cpu_usage_usec: null, nchan_cpu_throttled_count: null, nchan_cpu_throttled_usec: null,
     nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
     nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
+    redis_connected_clients_peak: null,
     timing_valid: true,
     generator_cpu_percent_peak: 75,
     generator_event_loop_p99_ms: 10,
@@ -86,6 +88,13 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     shutdown_cleanup_disconnects: 0,
     schema_validation_errors: 0,
     missing_transport_id: 0,
+    fan_out_sample_count: 0,
+    fan_out_overflow_count: 0,
+    late_join_sample_count: 0,
+    late_join_overflow_count: 0,
+    latency_invalid_count: 0,
+    latency_overflow_count: 0,
+    topology_capacity_sufficient: true,
     surge_target_additions: 0,
     surge_attempted: 0,
     surge_established: 0,
@@ -268,6 +277,47 @@ describe("classifyResult", () => {
     const result = classifyResult(baseMetrics({ non_slow_p95_degradation_pct: 6 }), true, true)
     assert.equal(result.verdict, "REJECT")
     assert.ok(result.checks.find((c) => c.name === "non_slow_impact")!.passed === false)
+  })
+
+  it("§4.8 INCONCLUSIVE when SlowConsumerMetrics present but backpressure not reached", () => {
+    const result = classifyResult(baseMetrics({
+      slow_consumer_metrics: {
+        slow_clients: 5,
+        healthy_clients: 95,
+        slow_offered_event_count: 500,
+        slow_application_read_count: 250,
+        slow_backlog_growth: 250,
+        backpressure_duration_ms: 0,
+        evidence_server_side_backpressure_reached: false,
+        healthy_p95_before_ms: 80,
+        healthy_p95_during_slow_ms: 82,
+        healthy_degradation_pct: 2.5,
+        slow_disconnects: 0,
+        healthy_before_sample_count: 0,
+        healthy_during_sample_count: 0,
+        nchan_memory_baseline_bytes: null,
+        nchan_memory_during_bytes: null,
+        nchan_memory_end_bytes: null,
+        nchan_memory_recovery_bytes: null,
+        nchan_memory_samples_during: [],
+        slow_event_timestamps_ms: [],
+        slow_achieved_read_rate_events_per_sec: 0,
+        slow_median_event_interval_ms: 0,
+        slow_p95_event_interval_ms: 0,
+      },
+    }), true, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("backpressure"))
+  })
+
+  it("§4.11 INCONCLUSIVE when mandatory restart scenario skipped in evidence mode", () => {
+    const result = classifyResult(baseMetrics({
+      run_profile: "evidence",
+      nchan_restart_skipped: true,
+      nchan_restart_history_replay_correct: false,
+    }), true, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("skipped"))
   })
 
   it("returns INCONCLUSIVE when timing_valid is false", () => {
