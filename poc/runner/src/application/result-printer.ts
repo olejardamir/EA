@@ -133,7 +133,7 @@ export function emitMachineReadableResult(
   metrics.events_published = eventsPublished
 
   const result = {
-    contract_version: "v2.0.1",
+    contract_version: "v2.0.2",
     run_profile: config.runProfile,
     seed: config.seed,
     resolved_config: {

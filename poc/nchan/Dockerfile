@@ -39,21 +39,38 @@ RUN cd /tmp/nginx-${NGINX_VERSION} && \
     make install && \
     rm -rf /tmp/nginx-${NGINX_VERSION} /tmp/nchan-${NCHAN_VERSION}
 
+# §E/§6.7: Extract Node.js binary for the test-only restart control server.
+# The control server is a small isolated process inside the Nchan container
+# that allows the runner to trigger a literal Nginx/Nchan process restart
+# without mounting the Docker socket.
+FROM node:22-bookworm-slim AS nodejs
+
 # Runtime stage
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcre3 libssl3 zlib1g libcurl4 libyajl2 \
-    curl ca-certificates && \
+    curl ca-certificates bash procps && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
 COPY --from=builder /etc/nginx/ /etc/nginx/
 
+# §E: Copy Node.js for the test-only restart control server
+COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
+
 COPY nchan.conf /etc/nginx/nginx.conf
 COPY nchan-2.conf /etc/nginx/nchan-2.conf
 COPY nchan-portable.conf /etc/nginx/nchan-portable.conf
 
-EXPOSE 8080 8081 18080 18081
+# §E/§6.7: Test-only restart control server and script
+COPY control-server.js /usr/local/bin/control-server.js
+COPY nchan-restart.sh /usr/local/bin/nchan-restart.sh
+RUN chmod +x /usr/local/bin/nchan-restart.sh
 
-CMD ["nginx", "-c", "/etc/nginx/nginx.conf", "-g", "daemon off;"]
+EXPOSE 8080 8081 18080 18081 18888
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

@@ -24,6 +24,7 @@ AGENTS.md                                             EXISTS
 EQC-AC architecture contract                         EXISTS
 POC experiment contract v2.0.0                        EXISTS (frozen)
 POC experiment contract v2.0.1                        EXISTS (corrected, supersedes v2.0.0)
+POC experiment contract v2.0.2                        EXISTS (corrected, supersedes v2.0.1 — resolves §B/§AA/§C)
 poc/                                                  EXISTS (built, tested, ACCEPT)
 proposal.md                                           NOT YET CREATED
 README.md                                             NOT YET CREATED
@@ -274,7 +275,7 @@ without making new architecture decisions.
 ## Artifact
 
 ```text
-LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_1.md
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_2.md
 ```
 
 ## Completion gate
@@ -283,7 +284,7 @@ LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_1.md
 PASS
 ```
 
-The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria.
+The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria. v2.0.2 resolves §B (lobby first_message), §AA (nchan_eventsource_event on match subscribers), and §C (buffer capacity prose) contradictions.
 
 ---
 
@@ -990,4 +991,4 @@ The earlier milestone list was fundamentally correct, but this audit makes three
 3. **Final delivery cleanup deserves separate milestones.**  
    The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
 
-Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md` and corrected to v2.0.1. M2 (Build the Smallest Runnable POC) is DONE with an ACCEPT verdict at 10,000 connections. The correct next task is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.
+Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`, corrected to v2.0.1, and further corrected to v2.0.2 (resolving §B/§AA/§C contradictions verified against Nchan 1.3.8 docs). M2 (Build the Smallest Runnable POC) is DONE with an ACCEPT verdict at 10,000 connections. The correct next task is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.

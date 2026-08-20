@@ -201,7 +201,7 @@ export async function runSingleExperiment(
     logger(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
 
     // Phase 8: Nchan restart
-    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchan2SubUrl)
+    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     logger(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
 

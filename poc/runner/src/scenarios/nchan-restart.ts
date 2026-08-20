@@ -3,18 +3,31 @@ import type { Scenario, ScenarioContext } from "./scenario.js"
 export class NchanRestartScenario implements Scenario {
   name = "nchan-restart"
   private nchan1SubUrl: string
+  private nchan1PubUrl: string
   private nchan2SubUrl: string
+  private controlUrl: string
 
-  constructor(nchan1SubUrl: string, nchan2SubUrl: string) {
+  constructor(nchan1SubUrl: string, nchan1PubUrl: string, nchan2SubUrl: string, controlUrl: string) {
     this.nchan1SubUrl = nchan1SubUrl
+    this.nchan1PubUrl = nchan1PubUrl
     this.nchan2SubUrl = nchan2SubUrl
+    this.controlUrl = controlUrl
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    if (!this.nchan2SubUrl) {
-      return { name: this.name, passed: true, detail: "skipped (single-node)" }
+    // §E: If nchan-2 is available, test cross-node Redis history resume.
+    // If only nchan-1 is available (smoke mode), test literal Nchan process restart.
+    if (this.nchan2SubUrl) {
+      return this.crossNodeTest(ctx)
     }
+    if (this.controlUrl) {
+      return this.literalRestartTest(ctx)
+    }
+    return { name: this.name, passed: true, detail: "skipped (no nchan-2 or control server)" }
+  }
 
+  // §E/§18: Cross-node Redis history resume test
+  private async crossNodeTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
     ctx.log("--- PHASE: NCHAN RESTART (cross-node Redis history) ---")
 
     const testMatch = ctx.matchIds[0]
@@ -117,7 +130,6 @@ export class NchanRestartScenario implements Scenario {
         })
       })
 
-      // §BG: Record canonical start/end, resume transport ID, and classification
       let firstReplaySeq: number | null = null
       let lastReplaySeq: number | null = null
       for (const raw of replayEvents) {
@@ -151,10 +163,197 @@ export class NchanRestartScenario implements Scenario {
       return {
         name: this.name,
         passed,
-        detail: `events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}]`,
+        detail: `cross-node events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}]`,
       }
     } catch (err) {
       ctx.log(`Nchan restart test failed: ${err}`)
+      return { name: this.name, passed: false, detail: `error: ${err}` }
+    }
+  }
+
+  // §E/§6.7: Literal Nchan process restart test
+  // Triggers a stop/restart of the nginx process inside the Nyan container
+  // via the test-only control server, then verifies Redis-backed history survives.
+  private async literalRestartTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+    ctx.log("--- PHASE: NCHAN RESTART (literal process restart) ---")
+
+    const testMatch = ctx.matchIds[0]
+    const recordedEvents: string[] = []
+    let lastEventId: string | null = null
+
+    // Step 1: Connect to nchan and record events + transport ID
+    ctx.log(`Connecting to nchan for ${testMatch}...`)
+    const subUrl = `${this.nchan1SubUrl}/sub/${testMatch}`
+
+    try {
+      const sub1 = await ctx.eventStream.connect(subUrl)
+
+      const received = await new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          sub1.close()
+          resolve(false)
+        }, 10_000)
+
+        sub1.onEvent((evt) => {
+          if (evt.type !== "message") return
+          recordedEvents.push(evt.event.data)
+          if (evt.event.id) lastEventId = evt.event.id
+
+          if (recordedEvents.length >= 3) {
+            clearTimeout(timeout)
+            sub1.close()
+            resolve(true)
+          }
+        })
+      })
+
+      if (!received || recordedEvents.length < 3) {
+        ctx.log("Nchan: failed to receive enough events before restart")
+        return { name: this.name, passed: false, detail: "insufficient events pre-restart" }
+      }
+
+      let lastSeq: number | null = null
+      for (const raw of recordedEvents) {
+        try {
+          const data = JSON.parse(raw)
+          if (typeof data.canonical_seq === "number") lastSeq = data.canonical_seq
+        } catch {}
+      }
+
+      ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
+
+      // Step 2: Trigger literal Nchan process restart via control server
+      ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
+      const restartStart = Date.now()
+      try {
+        const resp = await fetch(`${this.controlUrl}/restart`, {
+          method: "POST",
+          signal: AbortSignal.timeout(5000),
+        })
+        if (!resp.ok) {
+          ctx.log(`Control server returned ${resp.status}`)
+          return { name: this.name, passed: false, detail: `control server returned ${resp.status}` }
+        }
+      } catch (err) {
+        ctx.log(`Failed to reach control server: ${err}`)
+        return { name: this.name, passed: false, detail: `control server unreachable: ${err}` }
+      }
+
+      // Step 3: Wait for Nchan to recover (poll healthcheck)
+      ctx.log("Waiting for Nchan to recover...")
+      const healthUrl = `${this.nchan1PubUrl}/pub/healthcheck`
+      const recovered = await new Promise<boolean>((resolve) => {
+        const deadline = Date.now() + 30_000
+        const poll = async () => {
+          while (Date.now() < deadline) {
+            try {
+              const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) })
+              if (resp.ok) { resolve(true); return }
+            } catch {}
+            await ctx.sleep(500)
+          }
+          resolve(false)
+        }
+        poll()
+      })
+
+      const restartMs = Date.now() - restartStart
+      if (!recovered) {
+        ctx.log(`Nchan did not recover within 30s after restart`)
+        return { name: this.name, passed: false, detail: `restart recovery timeout (${restartMs}ms)` }
+      }
+      ctx.log(`Nchan recovered in ${restartMs}ms`)
+
+      // Step 4: Reconnect with Last-Event-ID and verify history replay
+      ctx.log(`Reconnecting with lastEventId=${lastEventId}...`)
+      const sub2 = await ctx.eventStream.connect(subUrl, lastEventId)
+
+      const replayEvents: string[] = []
+      let replayComplete = false
+
+      const replayResult = await new Promise<{ ok: boolean; gap: boolean; dup: boolean }>((resolve) => {
+        const timeout = setTimeout(() => {
+          sub2.close()
+          resolve({ ok: replayEvents.length > 0, gap: false, dup: false })
+        }, 15_000)
+
+        let prevSeq: number | null = null
+        const seenSeqs = new Set<number>()
+
+        sub2.onEvent((evt) => {
+          if (evt.type !== "message" || replayComplete) return
+          replayEvents.push(evt.event.data)
+
+          try {
+            const data = JSON.parse(evt.event.data)
+            if (typeof data.canonical_seq === "number") {
+              const seq = data.canonical_seq as number
+
+              if (prevSeq !== null && seq < prevSeq) {
+                clearTimeout(timeout)
+                sub2.close()
+                resolve({ ok: false, gap: true, dup: false })
+                return
+              }
+
+              if (seenSeqs.has(seq)) {
+                clearTimeout(timeout)
+                sub2.close()
+                resolve({ ok: false, gap: false, dup: true })
+                return
+              }
+
+              seenSeqs.add(seq)
+              prevSeq = seq
+
+              if (lastSeq !== null && seq >= lastSeq) {
+                replayComplete = true
+                clearTimeout(timeout)
+                sub2.close()
+                resolve({ ok: true, gap: false, dup: false })
+              }
+            }
+          } catch {}
+        })
+      })
+
+      let firstReplaySeq: number | null = null
+      let lastReplaySeq: number | null = null
+      for (const raw of replayEvents) {
+        try {
+          const data = JSON.parse(raw)
+          if (typeof data.canonical_seq === "number") {
+            if (firstReplaySeq === null) firstReplaySeq = data.canonical_seq
+            lastReplaySeq = data.canonical_seq
+          }
+        } catch {}
+      }
+
+      const outOfOrder = (() => {
+        let prev: number | null = null
+        for (const raw of replayEvents) {
+          try {
+            const data = JSON.parse(raw)
+            if (typeof data.canonical_seq === "number") {
+              if (prev !== null && data.canonical_seq < prev) return true
+              prev = data.canonical_seq
+            }
+          } catch {}
+        }
+        return false
+      })()
+
+      ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} firstSeq=${firstReplaySeq} lastSeq=${lastReplaySeq} restartMs=${restartMs}`)
+
+      const passed = replayResult.ok && !replayResult.gap && !replayResult.dup && !outOfOrder
+
+      return {
+        name: this.name,
+        passed,
+        detail: `literal-restart events=${replayEvents.length} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} resumeTransportId=${lastEventId} canonicalRange=[${firstReplaySeq},${lastReplaySeq}] restartMs=${restartMs}`,
+      }
+    } catch (err) {
+      ctx.log(`Nchan literal restart test failed: ${err}`)
       return { name: this.name, passed: false, detail: `error: ${err}` }
     }
   }

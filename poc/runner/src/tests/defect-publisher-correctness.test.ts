@@ -396,7 +396,7 @@ describe("§6.24: Machine-readable JSON output", () => {
     }
 
     const parsed = JSON.parse(jsonOutput)
-    assert.equal(parsed.contract_version, "v2.0.1")
+    assert.equal(parsed.contract_version, "v2.0.2")
     assert.equal(parsed.run_profile, "smoke")
     assert.equal(parsed.seed, 42)
     assert.ok(parsed.resolved_config, "resolved_config present")

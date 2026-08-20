@@ -21,6 +21,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    environment:
+      CONTROL_PORT: "18888"
     deploy:
       resources:
         limits:
@@ -47,6 +49,7 @@ services:
     environment:
       NCHAN_PUB_URL: "http://localhost:8080"
       NCHAN_SUB_URL: "http://localhost:8081"
+      NCHAN_CONTROL_URL: "http://localhost:18888"
       REDIS_URL: "redis://localhost:6379"
       TARGET_CONNECTIONS: "100"
       WARMUP_SECONDS: "5"

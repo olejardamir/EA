@@ -2,6 +2,7 @@ export interface ExperimentConfig {
   nchanPubUrl: string
   nchanSubUrl: string
   nchan2SubUrl: string
+  nchanControlUrl: string
   redisUrl: string
   targetConnections: number
   warmupSeconds: number
@@ -13,6 +14,7 @@ export interface ExperimentConfig {
   historyUrl: string
   seed: number
   runProfile: "smoke" | "evidence"
+  runMode: "single" | "evidence"
 }
 
 function requirePositiveInt(value: string | undefined, name: string, fallback?: number): number {
@@ -54,6 +56,7 @@ export function loadConfig(): ExperimentConfig {
     nchanPubUrl,
     nchanSubUrl,
     nchan2SubUrl: process.env.NCHAN2_SUB_URL ?? "",
+    nchanControlUrl: process.env.NCHAN_CONTROL_URL ?? "",
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
     targetConnections: requirePositiveInt(process.env.TARGET_CONNECTIONS, "TARGET_CONNECTIONS"),
     warmupSeconds: requirePositiveInt(process.env.WARMUP_SECONDS, "WARMUP_SECONDS", 30),
@@ -66,5 +69,6 @@ export function loadConfig(): ExperimentConfig {
     historyUrl: nchanSubUrl,
     seed: requirePositiveInt(process.env.SEED, "SEED", 42),
     runProfile: (process.env.RUN_PROFILE === "evidence" ? "evidence" : "smoke") as "smoke" | "evidence",
+    runMode: (process.env.RUN_MODE === "evidence" ? "evidence" : "single") as "single" | "evidence",
   }
 }

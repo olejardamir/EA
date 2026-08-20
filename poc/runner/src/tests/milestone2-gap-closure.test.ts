@@ -846,7 +846,6 @@ describe("§6.30: SSE first-frame handler race", () => {
       sub.close()
     } finally {
       if (keepAlive) clearInterval(keepAlive)
-      server.closeAllConnections()
       server.close()
     }
   })

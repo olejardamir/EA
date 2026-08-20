@@ -19,6 +19,8 @@ import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
 import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
 import { printSummary, emitMachineReadableResult } from "./application/result-printer.js"
+import { runEvidenceSuite } from "./application/evidence-suite.js"
+import crypto from "node:crypto"
 import type { ScenarioContext } from "./scenarios/scenario.js"
 
 function log(msg: string): void {
@@ -48,6 +50,36 @@ async function waitForNchan(pubUrl: string): Promise<void> {
 
 async function main(): Promise<void> {
   const config = loadConfig()
+
+  // §6.37: Evidence mode — delegate to repeated-run evidence suite
+  if (config.runMode === "evidence") {
+    log("§6.37 Evidence mode — running evidence suite")
+    const suiteResult = await runEvidenceSuite(config)
+    log(`§6.37 Evidence suite complete: ${suiteResult.finalVerdict} (${suiteResult.totalRuns} runs)`)
+
+    // §6.24: Emit machine-readable JSON for evidence suite
+    const suiteDigest = crypto.createHash("sha256").update(JSON.stringify({
+      totalRuns: suiteResult.totalRuns,
+      finalVerdict: suiteResult.finalVerdict,
+    })).digest("hex")
+
+    const machineReadable = {
+      contract_version: "v2.0.2",
+      run_profile: config.runProfile,
+      run_mode: "evidence",
+      total_runs: suiteResult.totalRuns,
+      final_verdict: suiteResult.finalVerdict,
+      dispersion_stable: suiteResult.dispersionStable,
+      worst_cv_pct: suiteResult.crossRun.worstCV * 100,
+      per_run_verdicts: suiteResult.perRunVerdicts,
+      aggregate: suiteResult.aggregate,
+      suite_digest: suiteDigest,
+    }
+    console.log(JSON.stringify(machineReadable))
+
+    process.exitCode = suiteResult.finalVerdict === "ACCEPT" ? 0 : 1
+    return
+  }
 
   const nchanPublisher = new NchanHttpPublisher(config.nchanPubUrl)
   const sseClient = new SSEHttpClient()
@@ -180,8 +212,8 @@ async function main(): Promise<void> {
     const surgeResult = await connectionSurge.execute(ctx)
     log(`  ${surgeResult.passed ? "PASS" : "FAIL"} ${surgeResult.name}: ${surgeResult.detail}`)
 
-    // Phase 8: Nchan restart (cross-node Redis history)
-    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchan2SubUrl)
+    // Phase 8: Nchan restart (cross-node Redis history or literal process restart)
+    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
     const nchanResult = await nchanRestart.execute(ctx)
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
 

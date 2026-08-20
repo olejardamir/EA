@@ -32,10 +32,13 @@ services:
       context: ./nchan
     # §6.16: Override default nchan.conf with portable config that uses
     # Docker service name "redis" for cross-container connectivity.
-    command: ["nginx", "-c", "/etc/nginx/nchan-portable.conf", "-g", "daemon off;"]
+    environment:
+      NGINX_CONF: "/etc/nginx/nchan-portable.conf"
+      CONTROL_PORT: "18888"
     ports:
       - "8080:8080"
       - "8081:8081"
+      - "18888:18888"
     depends_on:
       redis:
         condition: service_healthy
@@ -64,6 +67,7 @@ services:
       # §6.16: With bridge networking, use localhost host-ports mapped to containers.
       NCHAN_PUB_URL: "http://host.docker.internal:8080"
       NCHAN_SUB_URL: "http://host.docker.internal:8081"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       REDIS_URL: "redis://host.docker.internal:6379"
       TARGET_CONNECTIONS: "100"
       WARMUP_SECONDS: "5"

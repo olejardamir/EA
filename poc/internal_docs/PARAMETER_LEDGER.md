@@ -15,7 +15,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | BURST_SECONDS (evidence) | 30 | s | PLANNING_ASSUMPTION | Sufficient burst duration to saturate fan-out | compose.evidence.yaml |
 | BURST_SECONDS (smoke) | 5 | s | PLANNING_ASSUMPTION | Proportional reduction for smoke | compose.yaml |
 | COOLDOWN_SECONDS | 10 | s | PLANNING_ASSUMPTION | Post-burst drain before reconnect phase | compose.evidence.yaml, experiment-config.ts |
-| SLOW_SECONDS | 15 | s | PLANNING_ASSUMPTION | Duration of slow-consumer backpressure observation | compose.*.yaml |
+| Backpressure duration | 15 | s | PLANNING_ASSUMPTION | Duration of slow-consumer backpressure observation | slow-consumer.ts (BACKPRESSURE_DURATION_MS constant) |
 | SEED | 42 | — | PLANNING_ASSUMPTION | Deterministic base seed; evidence suite derives 42+i | experiment-config.ts |
 | SLOW_CONSUMER_FRACTION | 0.05 | fraction | ASSIGNMENT_FACT | 5% of viewers as slow consumers (assignment §20) | experiment-config.ts, slow-consumer.ts |
 | LOBBY_FRACTION | 0.02 | fraction | PLANNING_ASSUMPTION | ~2% of connections are lobby viewers | experiment-config.ts |
@@ -56,7 +56,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Redis connect timeout | 5s | seconds | PLANNING_ASSUMPTION | Reasonable Redis connection timeout | nchan.conf:24 |
 | Redis command timeout | 5s | seconds | PLANNING_ASSUMPTION | Reasonable Redis command timeout | nchan.conf:25 |
 | worker_processes | 4 | count | DERIVED_VALUE | Matches 4-CPU container quota (§BC) | nchan.conf:2 |
-| worker_connections | 20480 | count | DERIVED_VALUE | 4 workers × 20480 = 81920 max connections; headroom for 100k target with Redis/FD overhead | nchan.conf:8 |
+| worker_connections | 32768 | count | DERIVED_VALUE | 4 workers × 32768 = 131072 max connections; explicit headroom above 100k target (Redis/FD/control FDs consume non-viewer descriptors) | nchan.conf:7 |
 
 ## Resource Envelope
 
@@ -120,10 +120,10 @@ WARMUP_SECONDS: 5
 MEASURE_SECONDS: 10
 BURST_SECONDS: 5
 COOLDOWN_SECONDS: 3
-SLOW_SECONDS: 15
 SEED: 42
 SLOW_CONSUMER_FRACTION: 0.05
 LOBBY_FRACTION: 0.02
+BACKPRESSURE_DURATION_MS: 15000
 NCHAN_PUB_URL: http://localhost:8080
 NCHAN_SUB_URL: http://localhost:8081
 REDIS_URL: redis://localhost:6379
@@ -138,10 +138,10 @@ WARMUP_SECONDS: 30
 MEASURE_SECONDS: 120
 BURST_SECONDS: 30
 COOLDOWN_SECONDS: 10
-SLOW_SECONDS: 15
 SEED: 42
 SLOW_CONSUMER_FRACTION: 0.05
 LOBBY_FRACTION: 0.02
+BACKPRESSURE_DURATION_MS: 15000
 NCHAN_PUB_URL: http://localhost:8080
 NCHAN_SUB_URL: http://localhost:8081
 NCHAN2_SUB_URL: http://localhost:18081
