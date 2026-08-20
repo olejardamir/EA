@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   const sseClient = new SSEHttpClient()
   const metrics = new BoundedMetricsRecorder()
   const clock = new SystemClock()
-  const resourceMonitor = new CgroupResourceMonitor(config.redisUrl)
+  const resourceMonitor = new CgroupResourceMonitor(config.redisUrl, config.nchanControlUrl)
   const headTracker = createMatchHeadTracker()
 
   const random = createPRNG(config.seed)
@@ -240,6 +240,14 @@ async function main(): Promise<void> {
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
+    // §4.9: Wire Nchan container resource metrics
+    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec
+    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count
+    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec
+    aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
+    aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
+    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events
+    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
     // §BL: Wire publisher backlog peak
     aggregated.generator_backlog_peak = metrics.snapshot().generator_backlog_peak
     // §BM: Wire publisher acceptance stats
@@ -274,6 +282,22 @@ async function main(): Promise<void> {
       aggregated.surge_duplicates = ctx._surgeHealth.duplicates
       aggregated.surge_out_of_order = ctx._surgeHealth.out_of_order
       aggregated.surge_events_received = ctx._surgeHealth.events_received
+      // §4.5: Surge timing metrics
+      aggregated.surge_target_additions = ctx._surgeHealth.surge_target_additions
+      aggregated.surge_attempted = ctx._surgeHealth.surge_attempted
+      aggregated.surge_established = ctx._surgeHealth.surge_established
+      aggregated.surge_failures = ctx._surgeHealth.surge_failures
+      aggregated.surge_start_time = ctx._surgeHealth.surge_start_time
+      aggregated.surge_end_time = ctx._surgeHealth.surge_end_time
+      aggregated.surge_elapsed_ms = ctx._surgeHealth.surge_elapsed_ms
+      aggregated.surge_timing_error_ms = ctx._surgeHealth.surge_timing_error_ms
+      aggregated.attempt_rate_peak = ctx._surgeHealth.attempt_rate_peak
+      aggregated.establishment_rate_peak = ctx._surgeHealth.establishment_rate_peak
+      aggregated.scheduler_lag_p95 = ctx._surgeHealth.scheduler_lag_p95
+      aggregated.scheduler_lag_max = ctx._surgeHealth.scheduler_lag_max
+      aggregated.active_population_start = ctx._surgeHealth.active_population_start
+      aggregated.active_population_end = ctx._surgeHealth.active_population_end
+      aggregated.active_population_peak = ctx._surgeHealth.active_population_peak
     }
 
     const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100

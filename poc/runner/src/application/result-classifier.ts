@@ -364,6 +364,12 @@ export function aggregateWorkerMetrics(
   let reconnect_replay_received = 0
   let restart_replay_expected = 0
   let restart_replay_received = 0
+  // §4.17: Disconnect attribution
+  let deliberate_disconnects = 0
+  let unexpected_client_disconnects = 0
+  let server_initiated_disconnects = 0
+  let network_failures = 0
+  let shutdown_cleanup_disconnects = 0
 
   for (const wm of workerMetrics) {
     const s = wm.snapshot()
@@ -395,6 +401,12 @@ export function aggregateWorkerMetrics(
     reconnect_replay_received += s.reconnect_replay_received
     restart_replay_expected += s.restart_replay_expected
     restart_replay_received += s.restart_replay_received
+    // §4.17: Disconnect attribution
+    deliberate_disconnects += s.deliberate_disconnects
+    unexpected_client_disconnects += s.unexpected_client_disconnects
+    server_initiated_disconnects += s.server_initiated_disconnects
+    network_failures += s.network_failures
+    shutdown_cleanup_disconnects += s.shutdown_cleanup_disconnects
   }
 
   allFanOut.sort((a, b) => a - b)
@@ -452,6 +464,14 @@ export function aggregateWorkerMetrics(
     non_slow_p95_degradation_pct: 0,
     nchan_memory_mb_peak: null,
     redis_memory_mb_peak: null,
+    // §4.9: Nchan container resource metrics — wired from resource monitor in main.ts
+    nchan_cpu_usage_usec: null,
+    nchan_cpu_throttled_count: null,
+    nchan_cpu_throttled_usec: null,
+    nchan_memory_current_bytes: null,
+    nchan_memory_peak_bytes: null,
+    nchan_memory_oom_events: null,
+    nchan_memory_oom_kill_events: null,
     timing_valid: true,
     generator_cpu_percent_peak: 0,
     generator_event_loop_p99_ms: 0,
@@ -486,6 +506,22 @@ export function aggregateWorkerMetrics(
     surge_duplicates: 0,
     surge_out_of_order: 0,
     surge_events_received: 0,
+    // §4.5: Surge timing metrics — defaults
+    surge_target_additions: 0,
+    surge_attempted: 0,
+    surge_established: 0,
+    surge_failures: 0,
+    surge_start_time: 0,
+    surge_end_time: 0,
+    surge_elapsed_ms: 0,
+    surge_timing_error_ms: 0,
+    attempt_rate_peak: 0,
+    establishment_rate_peak: 0,
+    scheduler_lag_p95: 0,
+    scheduler_lag_max: 0,
+    active_population_start: 0,
+    active_population_end: 0,
+    active_population_peak: 0,
     // §R: active connections peak — wired from metrics recorder in main.ts
     active_connections_peak: 0,
     // §4.16: Live vs replay delivery accounting
@@ -499,5 +535,11 @@ export function aggregateWorkerMetrics(
     restart_replay_received,
     // §4.7: Slow-consumer metrics — wired from SlowConsumerScenario in main.ts
     slow_consumer_metrics: null,
+    // §4.17: Disconnect attribution
+    deliberate_disconnects,
+    unexpected_client_disconnects,
+    server_initiated_disconnects,
+    network_failures,
+    shutdown_cleanup_disconnects,
   }
 }

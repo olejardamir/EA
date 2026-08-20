@@ -1,5 +1,6 @@
 import fs from "node:fs"
 import net from "node:net"
+import http from "node:http"
 import { monitorEventLoopDelay } from "node:perf_hooks"
 import type { ResourceMonitor, ResourceSnapshot } from "../ports/resource-monitor.js"
 
@@ -40,10 +41,56 @@ function parseRedisUsedMemory(info: string): number | null {
   return null
 }
 
+function fetchNchanMetrics(controlUrl: string): Promise<{
+  memory_current_bytes: number | null
+  memory_peak_bytes: number | null
+  cpu_usage_usec: number | null
+  cpu_throttled_count: number | null
+  cpu_throttled_usec: number | null
+  memory_oom_events: number | null
+  memory_oom_kill_events: number | null
+} | null> {
+  return new Promise((resolve) => {
+    try {
+      const url = new URL(controlUrl)
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: "/metrics",
+        method: "GET",
+        timeout: 3000,
+      }, (res) => {
+        let data = ""
+        res.on("data", (chunk) => { data += chunk })
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data))
+          } catch {
+            resolve(null)
+          }
+        })
+      })
+      req.on("error", () => resolve(null))
+      req.on("timeout", () => { req.destroy(); resolve(null) })
+      req.end()
+    } catch {
+      resolve(null)
+    }
+  })
+}
+
 export class CgroupResourceMonitor implements ResourceMonitor {
   private memoryMbPeak = 0
   private cpuPercentPeak = 0
   private redisMemoryMbPeak: number | null = null
+  private nchanMemoryMbPeak: number | null = null
+  private nchanCpuUsageUsec: number | null = null
+  private nchanCpuThrottledCount: number | null = null
+  private nchanCpuThrottledUsec: number | null = null
+  private nchanMemoryCurrentBytes: number | null = null
+  private nchanMemoryPeakBytes: number | null = null
+  private nchanMemoryOomEvents: number | null = null
+  private nchanMemoryOomKillEvents: number | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private prevCpuTime = 0
   private prevWallTime = 0
@@ -62,10 +109,17 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private cgroupCpuMaxQuota: number | null = null
   private cgroupMemoryMaxBytes: number | null = null
 
-  constructor(redisUrl?: string) {
-    if (redisUrl) {
-      this.pollRedisMemory(redisUrl)
-      this.pollTimer = setInterval(() => this.pollRedisMemory(redisUrl), 5000)
+  private redisUrl?: string
+  private nchanControlUrl?: string
+
+  constructor(redisUrl?: string, nchanControlUrl?: string) {
+    this.redisUrl = redisUrl
+    this.nchanControlUrl = nchanControlUrl
+    if (redisUrl || nchanControlUrl) {
+      this.pollTimer = setInterval(() => {
+        if (this.redisUrl) this.pollRedisMemory(this.redisUrl)
+        if (this.nchanControlUrl) this.pollNchanMetrics(this.nchanControlUrl)
+      }, 5000)
     }
     this.readCgroupV2Stats()
   }
@@ -79,6 +133,43 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       }
     } catch {
       // Redis unavailable — leave redisMemoryMbPeak as-is
+    }
+  }
+
+  private async pollNchanMetrics(controlUrl: string): Promise<void> {
+    try {
+      const metrics = await fetchNchanMetrics(controlUrl)
+      if (metrics) {
+        if (metrics.memory_peak_bytes !== null) {
+          const memMb = metrics.memory_peak_bytes / (1024 * 1024)
+          if (this.nchanMemoryMbPeak === null || memMb > this.nchanMemoryMbPeak) {
+            this.nchanMemoryMbPeak = memMb
+          }
+        }
+        if (metrics.memory_current_bytes !== null) {
+          this.nchanMemoryCurrentBytes = metrics.memory_current_bytes
+        }
+        if (metrics.memory_peak_bytes !== null) {
+          this.nchanMemoryPeakBytes = metrics.memory_peak_bytes
+        }
+        if (metrics.cpu_usage_usec !== null) {
+          this.nchanCpuUsageUsec = metrics.cpu_usage_usec
+        }
+        if (metrics.cpu_throttled_count !== null) {
+          this.nchanCpuThrottledCount = metrics.cpu_throttled_count
+        }
+        if (metrics.cpu_throttled_usec !== null) {
+          this.nchanCpuThrottledUsec = metrics.cpu_throttled_usec
+        }
+        if (metrics.memory_oom_events !== null) {
+          this.nchanMemoryOomEvents = metrics.memory_oom_events
+        }
+        if (metrics.memory_oom_kill_events !== null) {
+          this.nchanMemoryOomKillEvents = metrics.memory_oom_kill_events
+        }
+      }
+    } catch {
+      // Nchan unavailable — leave metrics as-is
     }
   }
 
@@ -206,9 +297,9 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       memoryMbPeak: this.memoryMbPeak,
       eventLoopDelayP99Ms: p99,
       cpuPercentPeak: this.cpuPercentPeak,
-      nchanMemoryMbPeak: null,
+      nchanMemoryMbPeak: this.nchanMemoryMbPeak,
       redisMemoryMbPeak: this.redisMemoryMbPeak,
-      // §AC: cgroup v2 runtime signals
+      // §AC: cgroup v2 runtime signals (runner)
       cpu_usage_usec: this.cgroupCpuUsageUsec,
       cpu_throttled_count: this.cgroupCpuThrottledCount,
       cpu_throttled_usec: this.cgroupCpuThrottledUsec,
@@ -218,6 +309,14 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       memory_oom_kill_events: this.cgroupMemoryOomKillEvents,
       cpu_max_quota: this.cgroupCpuMaxQuota,
       memory_max_bytes: this.cgroupMemoryMaxBytes,
+      // §4.9: Nchan container resource metrics
+      nchan_cpu_usage_usec: this.nchanCpuUsageUsec,
+      nchan_cpu_throttled_count: this.nchanCpuThrottledCount,
+      nchan_cpu_throttled_usec: this.nchanCpuThrottledUsec,
+      nchan_memory_current_bytes: this.nchanMemoryCurrentBytes,
+      nchan_memory_peak_bytes: this.nchanMemoryPeakBytes,
+      nchan_memory_oom_events: this.nchanMemoryOomEvents,
+      nchan_memory_oom_kill_events: this.nchanMemoryOomKillEvents,
     }
   }
 

@@ -130,7 +130,7 @@ export async function runSingleExperiment(
   const sseClient = new SSEHttpClient()
   const metrics = new BoundedMetricsRecorder()
   const clock = new SystemClock()
-  const resourceMonitor = new CgroupResourceMonitor(config.redisUrl)
+  const resourceMonitor = new CgroupResourceMonitor(config.redisUrl, config.nchanControlUrl)
   const headTracker = createMatchHeadTracker()
   const random = createPRNG(seed)
 
@@ -269,6 +269,14 @@ export async function runSingleExperiment(
     aggregated.memory_peak_bytes = resourceSnap.memory_peak_bytes
     aggregated.cpu_max_quota = resourceSnap.cpu_max_quota
     aggregated.memory_max_bytes = resourceSnap.memory_max_bytes
+    // §4.9: Wire Nchan container resource metrics
+    aggregated.nchan_cpu_usage_usec = resourceSnap.nchan_cpu_usage_usec
+    aggregated.nchan_cpu_throttled_count = resourceSnap.nchan_cpu_throttled_count
+    aggregated.nchan_cpu_throttled_usec = resourceSnap.nchan_cpu_throttled_usec
+    aggregated.nchan_memory_current_bytes = resourceSnap.nchan_memory_current_bytes
+    aggregated.nchan_memory_peak_bytes = resourceSnap.nchan_memory_peak_bytes
+    aggregated.nchan_memory_oom_events = resourceSnap.nchan_memory_oom_events
+    aggregated.nchan_memory_oom_kill_events = resourceSnap.nchan_memory_oom_kill_events
     aggregated.generator_backlog_peak = metrics.snapshot().generator_backlog_peak
     aggregated.publisher_attempts = nchanPublisher.stats.attempts
     aggregated.publisher_successes = nchanPublisher.stats.successes
@@ -416,6 +424,12 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.surge_duplicates = runs.reduce((s, r) => s + r.aggregated.surge_duplicates, 0)
   aggregate.surge_out_of_order = runs.reduce((s, r) => s + r.aggregated.surge_out_of_order, 0)
   aggregate.surge_events_received = runs.reduce((s, r) => s + r.aggregated.surge_events_received, 0)
+  // §4.17: Disconnect attribution
+  aggregate.deliberate_disconnects = runs.reduce((s, r) => s + r.aggregated.deliberate_disconnects, 0)
+  aggregate.unexpected_client_disconnects = runs.reduce((s, r) => s + r.aggregated.unexpected_client_disconnects, 0)
+  aggregate.server_initiated_disconnects = runs.reduce((s, r) => s + r.aggregated.server_initiated_disconnects, 0)
+  aggregate.network_failures = runs.reduce((s, r) => s + r.aggregated.network_failures, 0)
+  aggregate.shutdown_cleanup_disconnects = runs.reduce((s, r) => s + r.aggregated.shutdown_cleanup_disconnects, 0)
 
   // §BA: §6.32: For percentiles, pool streaming histograms and recompute
   aggregate.fan_out_latency_p95_ms = poolPercentileFromHistograms(runs, (r) => r.rawFanOutHistogram, 95)

@@ -32,6 +32,21 @@ export interface ScenarioContext {
     duplicates: number
     out_of_order: number
     events_received: number
+    surge_target_additions: number
+    surge_attempted: number
+    surge_established: number
+    surge_failures: number
+    surge_start_time: number
+    surge_end_time: number
+    surge_elapsed_ms: number
+    surge_timing_error_ms: number
+    attempt_rate_peak: number
+    establishment_rate_peak: number
+    scheduler_lag_p95: number
+    scheduler_lag_max: number
+    active_population_start: number
+    active_population_end: number
+    active_population_peak: number
   }
 }
 

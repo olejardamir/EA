@@ -170,6 +170,12 @@ export function emitMachineReadableResult(
       connections_dropped: metrics.connections_dropped,
       connections_target: metrics.connections_target,
       active_connections_peak: metrics.active_connections_peak ?? 0,
+      // §4.17: Disconnect attribution
+      deliberate_disconnects: metrics.deliberate_disconnects ?? 0,
+      unexpected_client_disconnects: metrics.unexpected_client_disconnects ?? 0,
+      server_initiated_disconnects: metrics.server_initiated_disconnects ?? 0,
+      network_failures: metrics.network_failures ?? 0,
+      shutdown_cleanup_disconnects: metrics.shutdown_cleanup_disconnects ?? 0,
     },
     event_metrics: {
       events_published: metrics.events_published,
@@ -181,6 +187,15 @@ export function emitMachineReadableResult(
     live_delivery_accounting: {
       expected_fan_deliveries: metrics.expected_fan_deliveries,
       received_fan_deliveries: metrics.received_fan_deliveries,
+      // §4.16: Live vs replay separation
+      live_expected_deliveries: metrics.live_expected_deliveries,
+      live_received_deliveries: metrics.live_received_deliveries,
+      late_join_history_expected: metrics.late_join_history_expected,
+      late_join_history_received: metrics.late_join_history_received,
+      reconnect_replay_expected: metrics.reconnect_replay_expected,
+      reconnect_replay_received: metrics.reconnect_replay_received,
+      restart_replay_expected: metrics.restart_replay_expected,
+      restart_replay_received: metrics.restart_replay_received,
     },
     latency_metrics: {
       fan_out_p50_ms: metrics.fan_out_latency_p50_ms,
@@ -235,6 +250,14 @@ export function emitMachineReadableResult(
       memory_peak_bytes: metrics.memory_peak_bytes,
       cpu_max_quota: metrics.cpu_max_quota,
       memory_max_bytes: metrics.memory_max_bytes,
+      // §4.9: Nchan container resource metrics
+      nchan_cpu_usage_usec: metrics.nchan_cpu_usage_usec,
+      nchan_cpu_throttled_count: metrics.nchan_cpu_throttled_count,
+      nchan_cpu_throttled_usec: metrics.nchan_cpu_throttled_usec,
+      nchan_memory_current_bytes: metrics.nchan_memory_current_bytes,
+      nchan_memory_peak_bytes: metrics.nchan_memory_peak_bytes,
+      nchan_memory_oom_events: metrics.nchan_memory_oom_events,
+      nchan_memory_oom_kill_events: metrics.nchan_memory_oom_kill_events,
     },
     publisher_metrics: {
       attempts: metrics.publisher_attempts,
@@ -253,6 +276,22 @@ export function emitMachineReadableResult(
       duplicates: metrics.surge_duplicates,
       out_of_order: metrics.surge_out_of_order,
       events_received: metrics.surge_events_received,
+      // §4.5: Surge timing metrics
+      surge_target_additions: metrics.surge_target_additions,
+      surge_attempted: metrics.surge_attempted,
+      surge_established: metrics.surge_established,
+      surge_failures: metrics.surge_failures,
+      surge_start_time: metrics.surge_start_time,
+      surge_end_time: metrics.surge_end_time,
+      surge_elapsed_ms: metrics.surge_elapsed_ms,
+      surge_timing_error_ms: metrics.surge_timing_error_ms,
+      attempt_rate_peak: metrics.attempt_rate_peak,
+      establishment_rate_peak: metrics.establishment_rate_peak,
+      scheduler_lag_p95: metrics.scheduler_lag_p95,
+      scheduler_lag_max: metrics.scheduler_lag_max,
+      active_population_start: metrics.active_population_start,
+      active_population_end: metrics.active_population_end,
+      active_population_peak: metrics.active_population_peak,
     },
     phase_publish_rates: metrics.phase_publish_rates,
     viewer_concentration: {

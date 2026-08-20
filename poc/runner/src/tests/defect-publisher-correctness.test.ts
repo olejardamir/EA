@@ -192,6 +192,19 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
       incrementSseParseErrors() {},
       incrementJsonParseErrors() {},
       incrementInvalidTimestampCount() {},
+      incrementDeliberateDisconnects: () => inc("deliberate_disconnects"),
+      incrementUnexpectedClientDisconnects: () => inc("unexpected_client_disconnects"),
+      incrementServerInitiatedDisconnects: () => inc("server_initiated_disconnects"),
+      incrementNetworkFailures: () => inc("network_failures"),
+      incrementShutdownCleanup: () => inc("shutdown_cleanup_disconnects"),
+      incrementLiveExpectedDeliveries() {},
+      incrementLiveReceivedDeliveries() {},
+      incrementLateJoinHistoryExpected() {},
+      incrementLateJoinHistoryReceived() {},
+      incrementReconnectReplayExpected() {},
+      incrementReconnectReplayReceived() {},
+      incrementRestartReplayExpected() {},
+      incrementRestartReplayReceived() {},
       snapshot() {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -205,6 +218,13 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
           latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
           generator_backlog_peak: 0,
           sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          live_expected_deliveries: 0, live_received_deliveries: 0,
+          late_join_history_expected: 0, late_join_history_received: 0,
+          reconnect_replay_expected: 0, reconnect_replay_received: 0,
+          restart_replay_expected: 0, restart_replay_received: 0,
+          deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+          server_initiated_disconnects: 0, network_failures: 0,
+          shutdown_cleanup_disconnects: 0,
         }
       },
     }
@@ -265,6 +285,19 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
       incrementSseParseErrors() {},
       incrementJsonParseErrors() {},
       incrementInvalidTimestampCount() {},
+      incrementDeliberateDisconnects: () => inc("deliberate_disconnects"),
+      incrementUnexpectedClientDisconnects: () => inc("unexpected_client_disconnects"),
+      incrementServerInitiatedDisconnects: () => inc("server_initiated_disconnects"),
+      incrementNetworkFailures: () => inc("network_failures"),
+      incrementShutdownCleanup: () => inc("shutdown_cleanup_disconnects"),
+      incrementLiveExpectedDeliveries() {},
+      incrementLiveReceivedDeliveries() {},
+      incrementLateJoinHistoryExpected() {},
+      incrementLateJoinHistoryReceived() {},
+      incrementReconnectReplayExpected() {},
+      incrementReconnectReplayReceived() {},
+      incrementRestartReplayExpected() {},
+      incrementRestartReplayReceived() {},
       snapshot() {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -278,6 +311,13 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
           latency_sample_count: 0, latency_invalid_count: 0, latency_overflow_count: 0,
           generator_backlog_peak: 0,
           sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          live_expected_deliveries: 0, live_received_deliveries: 0,
+          late_join_history_expected: 0, late_join_history_received: 0,
+          reconnect_replay_expected: 0, reconnect_replay_received: 0,
+          restart_replay_expected: 0, restart_replay_received: 0,
+          deliberate_disconnects: 0, unexpected_client_disconnects: 0,
+          server_initiated_disconnects: 0, network_failures: 0,
+          shutdown_cleanup_disconnects: 0,
         }
       },
     }
@@ -292,9 +332,10 @@ describe("§Z: Deliberate teardown not counted as unexpected disconnect (§6.52)
     await pool.connectAll(mockStream as any, 1, 0)
     assert.equal(pool.size, 1)
 
+    ;(pool as any)._running = true
     capturedHandler.fn?.({ type: "error", error: new Error("stream ended") })
 
-    assert.equal(counts["connections_dropped"], 1, "unexpected disconnect must increment connections_dropped")
+    assert.equal(counts["server_initiated_disconnects"], 1, "unexpected disconnect must increment server_initiated_disconnects")
   })
 })
 

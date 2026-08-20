@@ -75,11 +75,12 @@ function mockMetrics(): MetricsRecorder & { counts: Record<string, number> } {
   }
 }
 
-function mockClock(): Clock & { time: number } {
+function mockClock(): Clock & { time: number; advance(ms: number): void } {
   let time = 1000
   return {
     get time() { return time },
     now: () => time,
+    advance(ms: number) { time += ms },
     hrtime: () => 0n,
   }
 }
@@ -113,6 +114,9 @@ function mockResourceMonitor(): ResourceMonitor {
         memory_current_bytes: null, memory_peak_bytes: null,
         memory_oom_events: null, memory_oom_kill_events: null,
         cpu_max_quota: null, memory_max_bytes: null,
+        nchan_cpu_usage_usec: null, nchan_cpu_throttled_count: null, nchan_cpu_throttled_usec: null,
+        nchan_memory_current_bytes: null, nchan_memory_peak_bytes: null,
+        nchan_memory_oom_events: null, nchan_memory_oom_kill_events: null,
       }
     },
     startEventLoopMonitor() {},
@@ -157,7 +161,11 @@ function mockCtx(overrides: Partial<ExperimentConfig> = {}): ScenarioContext {
       "match-005", "match-006", "match-007", "match-008"],
     phaseSnapshots: [],
     log: () => {},
-    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 10))),
+    sleep: (ms) => new Promise((r) => {
+      const actual = Math.min(ms, 10)
+      clock.advance(actual)
+      setTimeout(r, actual)
+    }),
   }
 }
 
@@ -195,12 +203,23 @@ describe("WarmupScenario (Defect 2/6)", () => {
 describe("ConnectionSurgeScenario (Defect 6)", () => {
   it("adds remaining 40% to reach target", async () => {
     const ctx = mockCtx({ targetConnections: 100 })
+    const establishedState = { count: 60 }
     const entries: any[] = Array.from({ length: 60 }, (_, i) => ({
       id: i, matchId: "match-001",
       subscription: mockSubscription(),
       tracker: { lastSeq: 0, classify() { return { kind: "NEXT" } }, reset() {} },
       mode: "steady",
     }))
+    // Override snapshot to return dynamic established count
+    const origSnapshot = ctx.metrics.snapshot.bind(ctx.metrics)
+    ctx.metrics = {
+      ...ctx.metrics,
+      snapshot() {
+        const s = origSnapshot()
+        s.connections_established = establishedState.count
+        return s
+      },
+    }
     const pool = {
       size: 60,
       entries,
@@ -208,14 +227,17 @@ describe("ConnectionSurgeScenario (Defect 6)", () => {
         for (let i = 0; i < count; i++) {
           entries.push({ id: offset + i, matchId: "match-001", subscription: mockSubscription(), tracker: { lastSeq: 0, classify() { return { kind: "NEXT" } }, reset() {} }, mode: "steady" })
         }
+        establishedState.count += count
         pool.size = entries.length
+        // Advance clock so batch elapsed > 0 (surge calculates rates from clock delta)
+        ;(ctx.clock as any).advance(10)
       },
       running: true,
     }
     const surge = new ConnectionSurgeScenario(pool as any)
     const result = await surge.execute(ctx)
     assert.equal(pool.size, 100)
-    assert.ok(result.passed)
+    assert.ok(result.passed, result.detail)
   })
 
   it("skips when already at target", async () => {

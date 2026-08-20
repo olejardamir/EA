@@ -51,6 +51,14 @@ export interface AggregatedMetrics {
   non_slow_p95_degradation_pct: number
   nchan_memory_mb_peak: number | null
   redis_memory_mb_peak: number | null
+  // §4.9: Nchan container resource metrics
+  nchan_cpu_usage_usec: number | null
+  nchan_cpu_throttled_count: number | null
+  nchan_cpu_throttled_usec: number | null
+  nchan_memory_current_bytes: number | null
+  nchan_memory_peak_bytes: number | null
+  nchan_memory_oom_events: number | null
+  nchan_memory_oom_kill_events: number | null
   timing_valid: boolean
   generator_cpu_percent_peak: number
   generator_event_loop_p99_ms: number
@@ -85,6 +93,22 @@ export interface AggregatedMetrics {
   surge_duplicates: number
   surge_out_of_order: number
   surge_events_received: number
+  // §4.5: Surge timing metrics
+  surge_target_additions: number
+  surge_attempted: number
+  surge_established: number
+  surge_failures: number
+  surge_start_time: number
+  surge_end_time: number
+  surge_elapsed_ms: number
+  surge_timing_error_ms: number
+  attempt_rate_peak: number
+  establishment_rate_peak: number
+  scheduler_lag_p95: number
+  scheduler_lag_max: number
+  active_population_start: number
+  active_population_end: number
+  active_population_peak: number
   // §R: active connections peak — separate from cumulative establishments
   active_connections_peak: number
   // §4.16: Live vs replay delivery accounting
