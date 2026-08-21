@@ -1,6 +1,7 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { MatchEventPublisher } from "../adapters/match-event-publisher.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 import { createMatchHeadTracker } from "../domain/match-state.js"
 import { createPRNG } from "../domain/prng.js"
 import type { EventPublisher } from "../ports/event-publisher.js"
@@ -445,7 +446,7 @@ describe("§6.24: Machine-readable JSON output", () => {
     }
 
     const parsed = JSON.parse(jsonOutput)
-    assert.equal(parsed.contract_version, "v2.0.3")
+    assert.equal(parsed.contract_version, ACTIVE_CONTRACT_VERSION)
     assert.equal(parsed.run_profile, "smoke")
     assert.equal(parsed.seed, 42)
     assert.ok(parsed.resolved_config, "resolved_config present")
@@ -455,5 +456,57 @@ describe("§6.24: Machine-readable JSON output", () => {
     assert.ok(parsed.classification, "classification present")
     assert.equal(parsed.classification.verdict, "NOT_APPLICABLE")
     assert.ok(Array.isArray(parsed.classification.checks), "checks is array")
+  })
+
+  // §M2-3.3D: A coordinated shard output can never claim global direct
+  // eligibility, even with 100k-scale numbers and a sufficient topology.
+  it("coordinated-shard output cannot claim global direct eligibility", async () => {
+    const { emitMachineReadableResult } = await import("../application/result-printer.js")
+
+    let jsonOutput = ""
+    const originalLog = console.log
+    console.log = (msg: string) => { jsonOutput = msg }
+
+    try {
+      emitMachineReadableResult(
+        {
+          connections_attempted: 25000, connections_established: 25000, connection_failures: 0,
+          events_published: 50000, events_received: 50000, missing_sequences: 0,
+          duplicates: 0, out_of_order: 0,
+          fan_out_latency_p50_ms: 5, fan_out_latency_p95_ms: 10, fan_out_latency_p99_ms: 15, fan_out_latency_max_ms: 20,
+          late_join_p50_ms: 100, late_join_p95_ms: 150, late_join_p99_ms: 200, late_join_max_ms: 250,
+          reconnect_gaps: 0, reconnect_duplicates: 0, reconnect_order_violations: 0,
+          slow_consumer_disconnects: 0, event_loop_delay_p99_ms: 5, memory_mb_peak: 100,
+          connections_dropped: 0, expected_fan_deliveries: 50, received_fan_deliveries: 50,
+          connections_target: 25000, burst_fan_out_p95_ms: 20,
+          nchan_restart_history_replay_correct: true, nchan_restart_missing_sequences: 0, nchan_restart_skipped: false,
+          non_slow_p95_degradation_pct: 0, nchan_memory_mb_peak: null, redis_memory_mb_peak: null,
+          timing_valid: true, generator_cpu_percent_peak: 30, generator_event_loop_p99_ms: 5,
+          run_profile: "evidence", lobby_subscribers: 2, match_001_subscribers: 12,
+          match_002_subscribers: 0, match_003_subscribers: 0, match_004_subscribers: 0,
+          match_005_subscribers: 0, match_006_subscribers: 0, match_007_subscribers: 0,
+          match_008_subscribers: 0,
+          phase_publish_rates: [], cpu_usage_usec: null, cpu_throttled_count: null,
+          cpu_throttled_usec: null, memory_oom_events: null, memory_oom_kill_events: null,
+          memory_current_bytes: null, memory_peak_bytes: null, cpu_max_quota: null, cpu_max_period: null, memory_max_bytes: null,
+          generator_backlog_peak: 0, publisher_attempts: 50, publisher_successes: 50,
+          publisher_definite_failures: 0, publisher_ambiguous_failures: 0,
+          sse_parse_errors: 0, json_parse_errors: 0, invalid_timestamp_count: 0,
+          surge_fan_out_p95_ms: 0, surge_missing_sequences: 0, surge_duplicates: 0,
+          surge_out_of_order: 0, surge_events_received: 0, active_connections_peak: 100000,
+        } as any,
+        50000,
+        { verdict: "ACCEPT", checks: [{ name: "gate", passed: true, detail: "ok" }] },
+        { targetConnections: 25000, seed: 42, runProfile: "evidence", runMode: "coordinated-shard", warmupSeconds: 30, measureSeconds: 120, burstSeconds: 30, cooldownSeconds: 10, slowConsumerFraction: 0.05, lobbyFraction: 0.02 },
+      )
+    } finally {
+      console.log = originalLog
+    }
+
+    const parsed = JSON.parse(jsonOutput)
+    assert.equal(parsed.scope, "shard")
+    assert.equal(parsed.aggregate_scope, "shard")
+    assert.equal(parsed.global_direct_accept_eligible, false, "shard output must never claim global direct eligibility")
+    assert.equal(parsed.contract_version, ACTIVE_CONTRACT_VERSION)
   })
 })

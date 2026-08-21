@@ -4,6 +4,89 @@ import type { RestartPathResult, Scenario, ScenarioContext } from "./scenario.js
 // prevents a vacuous restart PASS when the publisher happens to be between ticks.
 const RESTART_REPLAY_DEPTH = 8
 
+export interface RestartRangeEvaluationInput {
+  transportResumeId: string | null
+  expectedFirstSeq: number
+  expectedLastSeq: number
+  receivedSequences: number[]
+  recoveryMs: number
+}
+
+/**
+ * Evaluate only membership in the independently frozen canonical interval.
+ * Out-of-range frames can never increase received_required_count or repair a
+ * missing canonical sequence. Both restart paths use this same predicate.
+ */
+export function evaluateRestartRequiredRange(input: RestartRangeEvaluationInput): RestartPathResult {
+  const expectedCount = input.expectedLastSeq - input.expectedFirstSeq + 1
+  const requiredReceived = new Set<number>()
+  let requiredDuplicates = 0
+  let requiredOutOfOrder = 0
+  let outOfRangeBefore = 0
+  let outOfRangeAfter = 0
+  let previousRequired: number | null = null
+  let firstRequired: number | null = null
+
+  for (const seq of input.receivedSequences) {
+    if (seq < input.expectedFirstSeq) {
+      outOfRangeBefore++
+      continue
+    }
+    if (seq > input.expectedLastSeq) {
+      outOfRangeAfter++
+      continue
+    }
+    if (firstRequired === null) firstRequired = seq
+    if (previousRequired !== null && seq < previousRequired) requiredOutOfOrder++
+    if (requiredReceived.has(seq)) requiredDuplicates++
+    requiredReceived.add(seq)
+    previousRequired = seq
+  }
+
+  const missingRequiredSequences: number[] = []
+  if (expectedCount > 0) {
+    for (let seq = input.expectedFirstSeq; seq <= input.expectedLastSeq; seq++) {
+      if (!requiredReceived.has(seq)) missingRequiredSequences.push(seq)
+    }
+  }
+  const exactSetComplete = expectedCount > 0 && missingRequiredSequences.length === 0
+  const missingPrefix = firstRequired !== input.expectedFirstSeq
+
+  return {
+    transport_resume_id: input.transportResumeId,
+    expected_first_seq: input.expectedFirstSeq,
+    expected_last_seq: input.expectedLastSeq,
+    received_first_seq: input.receivedSequences[0] ?? null,
+    received_last_seq: input.receivedSequences.at(-1) ?? null,
+    expected_count: Math.max(0, expectedCount),
+    received_required_count: requiredReceived.size,
+    missing_required: missingRequiredSequences.length,
+    missing_required_sequences: missingRequiredSequences,
+    duplicates: requiredDuplicates,
+    out_of_order: requiredOutOfOrder,
+    out_of_range_before_count: outOfRangeBefore,
+    out_of_range_after_count: outOfRangeAfter,
+    missing_prefix: missingPrefix,
+    target_reached: exactSetComplete,
+    recovery_ms: input.recoveryMs,
+    passed: exactSetComplete
+      && requiredDuplicates === 0
+      && requiredOutOfOrder === 0
+      && outOfRangeBefore === 0
+      && outOfRangeAfter === 0
+      && !missingPrefix,
+  }
+}
+
+function canonicalSequences(frames: string[]): number[] {
+  return frames.flatMap((raw) => {
+    try {
+      const seq = JSON.parse(raw).canonical_seq
+      return typeof seq === "number" && Number.isInteger(seq) ? [seq] : []
+    } catch { return [] }
+  })
+}
+
 export class NchanRestartScenario implements Scenario {
   name = "nchan-restart"
   private nchan1SubUrl: string
@@ -113,19 +196,34 @@ export class NchanRestartScenario implements Scenario {
       const sub2Url = `${this.nchan2SubUrl}/sub/${testMatch}`
       const sub2 = await ctx.eventStream.connect(sub2Url, lastEventId)
 
+      // §3.2.C: Build the frozen expected set for exact-range membership tracking
+      const frozenExpectedSet = new Set<number>()
+      for (let s = frozenExpectedFirstSeq1; s <= headAtReplacement; s++) frozenExpectedSet.add(s)
+
       const replayEvents: string[] = []
       let replayComplete = false
 
-      const replayResult = await new Promise<{ ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null }>((resolve) => {
-        const timeout = setTimeout(() => {
-          sub2.close()
-          resolve({ ok: false, gap: false, dup: false, firstSeq: null, lastSeq: null })
-        }, 10_000)
-
+      const replayResult = await new Promise<{
+        ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null;
+        requiredReceived: Set<number>; outOfRangeBefore: number; outOfRangeAfter: number;
+        duplicateRequired: number; requiredOutOfOrder: boolean;
+      }>((resolve) => {
         let prevSeq: number | null = null
         const seenSeqs = new Set<number>()
+        const requiredReceived = new Set<number>()
         let firstSeq: number | null = null
         let lastSeq: number | null = null
+        let outOfRangeBefore = 0
+        let outOfRangeAfter = 0
+        let duplicateRequired = 0
+        let requiredOutOfOrder = false
+
+        const timeout = setTimeout(() => {
+          sub2.close()
+          resolve({ ok: false, gap: false, dup: false, firstSeq, lastSeq,
+            requiredReceived, outOfRangeBefore, outOfRangeAfter,
+            duplicateRequired, requiredOutOfOrder })
+        }, 10_000)
 
         sub2.onEvent((evt) => {
           if (evt.type !== "message" || replayComplete) return
@@ -141,84 +239,87 @@ export class NchanRestartScenario implements Scenario {
               if (prevSeq !== null && seq < prevSeq) {
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq })
+                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder: true })
                 return
               }
 
               if (seenSeqs.has(seq)) {
+                if (frozenExpectedSet.has(seq)) duplicateRequired++
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq })
+                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
                 return
               }
 
               seenSeqs.add(seq)
+
+              // §3.2.C: Only count canonical sequences within the frozen expected range
+              if (frozenExpectedSet.has(seq)) {
+                requiredReceived.add(seq)
+                // §3.2.C: Track out-of-order within required set
+                if (requiredReceived.size > 1) {
+                  const prevRequired = seq - 1
+                  if (frozenExpectedSet.has(prevRequired) && !requiredReceived.has(prevRequired)) {
+                    requiredOutOfOrder = true
+                  }
+                }
+              } else if (seq < frozenExpectedFirstSeq1) {
+                outOfRangeBefore++
+              } else {
+                outOfRangeAfter++
+                clearTimeout(timeout)
+                sub2.close()
+                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
+                return
+              }
+
               prevSeq = seq
 
-              // §3.9.C: Cross-node completion — must receive all events in the frozen expected range
-              if (headAtReplacement !== null && seq >= headAtReplacement) {
+              // §3.2.C: Completion requires ALL required sequences, not just seq >= target
+              if (requiredReceived.size === frozenExpectedCount1) {
                 replayComplete = true
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq })
+                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
               }
             }
           } catch {}
         })
       })
 
-      const outOfOrder = (() => {
-        let prev: number | null = null
-        for (const raw of replayEvents) {
-          try {
-            const data = JSON.parse(raw)
-            if (typeof data.canonical_seq === "number") {
-              if (prev !== null && data.canonical_seq < prev) return true
-              prev = data.canonical_seq
-            }
-          } catch {}
-        }
-        return false
-      })()
-
       // §3.9.E: Missing prefix detection
       const missingPrefix = frozenExpectedFirstSeq1 !== null
         && replayResult.firstSeq !== null
         && replayResult.firstSeq !== frozenExpectedFirstSeq1
 
-      ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq}`)
+      ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} requiredOutOfOrder=${replayResult.requiredOutOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} requiredReceived=${replayResult.requiredReceived.size}/${frozenExpectedCount1} outOfRangeBefore=${replayResult.outOfRangeBefore} outOfRangeAfter=${replayResult.outOfRangeAfter} duplicateRequired=${replayResult.duplicateRequired}`)
 
-      // §3.9: Compute missing required sequences
-      const receivedRequired = Math.min(replayEvents.length, frozenExpectedCount1)
-      const missingRequired = Math.max(0, frozenExpectedCount1 - receivedRequired)
-
-      // §3.9.F: Required structured result
-      const pathResult: RestartPathResult = {
-        transport_resume_id: lastEventId,
-        expected_first_seq: frozenExpectedFirstSeq1,
-        expected_last_seq: headAtReplacement,
-        received_first_seq: replayResult.firstSeq,
-        received_last_seq: replayResult.lastSeq,
-        expected_count: frozenExpectedCount1,
-        received_required_count: receivedRequired,
-        missing_required: missingRequired,
-        duplicates: replayResult.dup ? 1 : 0,
-        out_of_order: outOfOrder ? 1 : 0,
-        missing_prefix: missingPrefix,
-        target_reached: replayResult.ok,
-        recovery_ms: 0,
-        passed: frozenExpectedCount1 > 0 && replayResult.ok && !replayResult.gap && !replayResult.dup &&
-          !outOfOrder && !missingPrefix && receivedRequired === frozenExpectedCount1 && missingRequired === 0,
-      }
+      // §3.2.E/§3.9.F: The exact-set evaluator is the sole producer of
+      // structured values and PASS for both restart paths.
+      const pathResult = evaluateRestartRequiredRange({
+        transportResumeId: lastEventId,
+        expectedFirstSeq: frozenExpectedFirstSeq1,
+        expectedLastSeq: headAtReplacement,
+        receivedSequences: canonicalSequences(replayEvents),
+        recoveryMs: 0,
+      })
       ctx._restartReplay ??= {}
       ctx._restartReplay.cross_node = pathResult
 
       // §3.9.E: Wire delivery accounting — separate from literal restart
       ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount1)
-      ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
+      ctx.metrics.incrementRestartReplayReceived(pathResult.received_required_count)
       // §3.9: Separated cross-node metrics
       ctx.metrics.incrementCrossNodeExpected(frozenExpectedCount1)
-      ctx.metrics.incrementCrossNodeReceived(replayEvents.length)
+      ctx.metrics.incrementCrossNodeReceived(pathResult.received_required_count)
 
       return {
         name: this.name,
@@ -226,16 +327,20 @@ export class NchanRestartScenario implements Scenario {
         detail: [
           `type=cross-node`,
           `events=${replayEvents.length}`,
-          `gap=${replayResult.gap}`,
-          `dup=${replayResult.dup}`,
-          `outOfOrder=${outOfOrder}`,
-          `missingPrefix=${missingPrefix}`,
+          `gap=${pathResult.missing_required > 0}`,
+          `dup=${pathResult.duplicates}`,
+          `outOfOrder=${pathResult.out_of_order}`,
+          `missingPrefix=${pathResult.missing_prefix}`,
+          `missing=${pathResult.missing_required_sequences.join(",")}`,
+          `outBefore=${pathResult.out_of_range_before_count}`,
+          `outAfter=${pathResult.out_of_range_after_count}`,
+          `targetReached=${pathResult.target_reached}`,
           `resumeTransportId=${lastEventId}`,
           `expectedFirstSeq=${frozenExpectedFirstSeq1}`,
-          `receivedFirstSeq=${replayResult.firstSeq}`,
-          `receivedLastSeq=${replayResult.lastSeq}`,
+          `receivedFirstSeq=${pathResult.received_first_seq}`,
+          `receivedLastSeq=${pathResult.received_last_seq}`,
           `expectedCount=${frozenExpectedCount1}`,
-          `receivedCount=${replayEvents.length}`,
+          `receivedCount=${pathResult.received_required_count}`,
           `recoveryMs=N/A`,
         ].join(" "),
       }
@@ -354,19 +459,34 @@ export class NchanRestartScenario implements Scenario {
       ctx.log(`Reconnecting with lastEventId=${lastEventId}...`)
       const sub2 = await ctx.eventStream.connect(subUrl, lastEventId)
 
+      // §3.2.C: Build the frozen expected set for exact-range membership tracking
+      const frozenExpectedSet = new Set<number>()
+      for (let s = frozenExpectedFirstSeq; s <= headAtRestart; s++) frozenExpectedSet.add(s)
+
       const replayEvents: string[] = []
       let replayComplete = false
 
-      const replayResult = await new Promise<{ ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null }>((resolve) => {
-        const timeout = setTimeout(() => {
-          sub2.close()
-          resolve({ ok: false, gap: false, dup: false, firstSeq: null, lastSeq: null })
-        }, 15_000)
-
+      const replayResult = await new Promise<{
+        ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null;
+        requiredReceived: Set<number>; outOfRangeBefore: number; outOfRangeAfter: number;
+        duplicateRequired: number; requiredOutOfOrder: boolean;
+      }>((resolve) => {
         let prevSeq: number | null = null
         const seenSeqs = new Set<number>()
+        const requiredReceived = new Set<number>()
         let firstSeq: number | null = null
         let lastSeq: number | null = null
+        let outOfRangeBefore = 0
+        let outOfRangeAfter = 0
+        let duplicateRequired = 0
+        let requiredOutOfOrder = false
+
+        const timeout = setTimeout(() => {
+          sub2.close()
+          resolve({ ok: false, gap: false, dup: false, firstSeq, lastSeq,
+            requiredReceived, outOfRangeBefore, outOfRangeAfter,
+            duplicateRequired, requiredOutOfOrder })
+        }, 15_000)
 
         sub2.onEvent((evt) => {
           if (evt.type !== "message" || replayComplete) return
@@ -382,85 +502,85 @@ export class NchanRestartScenario implements Scenario {
               if (prevSeq !== null && seq < prevSeq) {
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq })
+                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder: true })
                 return
               }
 
               if (seenSeqs.has(seq)) {
+                if (frozenExpectedSet.has(seq)) duplicateRequired++
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq })
+                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
                 return
               }
 
               seenSeqs.add(seq)
+
+              // §3.2.C: Only count canonical sequences within the frozen expected range
+              if (frozenExpectedSet.has(seq)) {
+                requiredReceived.add(seq)
+                // §3.2.C: Track out-of-order within required set
+                if (requiredReceived.size > 1) {
+                  const prevRequired = seq - 1
+                  if (frozenExpectedSet.has(prevRequired) && !requiredReceived.has(prevRequired)) {
+                    requiredOutOfOrder = true
+                  }
+                }
+              } else if (seq < frozenExpectedFirstSeq) {
+                outOfRangeBefore++
+              } else {
+                outOfRangeAfter++
+                clearTimeout(timeout)
+                sub2.close()
+                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
+                return
+              }
+
               prevSeq = seq
 
-              // §3.9.A: Completion boundary — must receive ALL events in frozen expected range
-              // Must reach headAtRestart, not just seq > lastSeq
-              if (seq >= headAtRestart) {
+              // §3.2.D: Completion requires ALL required sequences, not just seq >= target
+              if (requiredReceived.size === frozenExpectedCount) {
                 replayComplete = true
                 clearTimeout(timeout)
                 sub2.close()
-                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq })
+                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq,
+                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
+                  duplicateRequired, requiredOutOfOrder })
               }
             }
           } catch {}
         })
       })
 
-      const outOfOrder = (() => {
-        let prev: number | null = null
-        for (const raw of replayEvents) {
-          try {
-            const data = JSON.parse(raw)
-            if (typeof data.canonical_seq === "number") {
-              if (prev !== null && data.canonical_seq < prev) return true
-              prev = data.canonical_seq
-            }
-          } catch {}
-        }
-        return false
-      })()
-
       // §3.9.B: Missing prefix detection
       const missingPrefix = frozenExpectedFirstSeq !== null
         && replayResult.firstSeq !== null
         && replayResult.firstSeq !== frozenExpectedFirstSeq
 
-      ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} outOfOrder=${outOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} restartMs=${restartMs}`)
+      ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} requiredOutOfOrder=${replayResult.requiredOutOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} restartMs=${restartMs} requiredReceived=${replayResult.requiredReceived.size}/${frozenExpectedCount} outOfRangeBefore=${replayResult.outOfRangeBefore} outOfRangeAfter=${replayResult.outOfRangeAfter} duplicateRequired=${replayResult.duplicateRequired}`)
 
-      // §3.9: Compute missing required sequences
-      const receivedRequired = Math.min(replayEvents.length, frozenExpectedCount)
-      const missingRequired = Math.max(0, frozenExpectedCount - receivedRequired)
-
-      // §3.9.F: Required structured result
-      const pathResult: RestartPathResult = {
-        transport_resume_id: lastEventId,
-        expected_first_seq: frozenExpectedFirstSeq,
-        expected_last_seq: headAtRestart,
-        received_first_seq: replayResult.firstSeq,
-        received_last_seq: replayResult.lastSeq,
-        expected_count: frozenExpectedCount,
-        received_required_count: receivedRequired,
-        missing_required: missingRequired,
-        duplicates: replayResult.dup ? 1 : 0,
-        out_of_order: outOfOrder ? 1 : 0,
-        missing_prefix: missingPrefix,
-        target_reached: replayResult.ok,
-        recovery_ms: restartMs,
-        passed: frozenExpectedCount > 0 && replayResult.ok && !replayResult.gap && !replayResult.dup &&
-          !outOfOrder && !missingPrefix && receivedRequired === frozenExpectedCount && missingRequired === 0,
-      }
+      const pathResult = evaluateRestartRequiredRange({
+        transportResumeId: lastEventId,
+        expectedFirstSeq: frozenExpectedFirstSeq,
+        expectedLastSeq: headAtRestart,
+        receivedSequences: canonicalSequences(replayEvents),
+        recoveryMs: restartMs,
+      })
       ctx._restartReplay ??= {}
       ctx._restartReplay.literal_restart = pathResult
 
       // §3.11/§3.13: Wire delivery accounting — frozen expected range from pre-restart head observation
       ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount)
-      ctx.metrics.incrementRestartReplayReceived(replayEvents.length)
+      ctx.metrics.incrementRestartReplayReceived(pathResult.received_required_count)
       // §3.9: Separated literal restart metrics
       ctx.metrics.incrementLiteralRestartExpected(frozenExpectedCount)
-      ctx.metrics.incrementLiteralRestartReceived(replayEvents.length)
+      ctx.metrics.incrementLiteralRestartReceived(pathResult.received_required_count)
 
       return {
         name: this.name,
@@ -468,16 +588,20 @@ export class NchanRestartScenario implements Scenario {
         detail: [
           `type=literal-restart`,
           `events=${replayEvents.length}`,
-          `gap=${replayResult.gap}`,
-          `dup=${replayResult.dup}`,
-          `outOfOrder=${outOfOrder}`,
-          `missingPrefix=${missingPrefix}`,
+          `gap=${pathResult.missing_required > 0}`,
+          `dup=${pathResult.duplicates}`,
+          `outOfOrder=${pathResult.out_of_order}`,
+          `missingPrefix=${pathResult.missing_prefix}`,
+          `missing=${pathResult.missing_required_sequences.join(",")}`,
+          `outBefore=${pathResult.out_of_range_before_count}`,
+          `outAfter=${pathResult.out_of_range_after_count}`,
+          `targetReached=${pathResult.target_reached}`,
           `resumeTransportId=${lastEventId}`,
           `expectedFirstSeq=${frozenExpectedFirstSeq}`,
-          `receivedFirstSeq=${replayResult.firstSeq}`,
-          `receivedLastSeq=${replayResult.lastSeq}`,
+          `receivedFirstSeq=${pathResult.received_first_seq}`,
+          `receivedLastSeq=${pathResult.received_last_seq}`,
           `expectedCount=${frozenExpectedCount}`,
-          `receivedCount=${replayEvents.length}`,
+          `receivedCount=${pathResult.received_required_count}`,
           `restartMs=${restartMs}`,
           `active_start=${ctx._activePopulationStart ?? 0}`,
           `active_peak=${ctx._activePopulationStart ?? 0}`,

@@ -1,5 +1,7 @@
 import type { AggregatedMetrics, VerdictResult } from "../domain/result.js"
 import { runTopologyPreflight, type TopologyPreflight } from "../adapters/topology-preflight.js"
+import { resolveRuntimeContainerLimits } from "../adapters/runtime-container-limits.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 
 export function printSummary(
   metrics: AggregatedMetrics,
@@ -156,7 +158,7 @@ export function emitMachineReadableResult(
   const preflight = topologyPreflight ?? runTopologyPreflight(config.targetConnections)
 
   const result = {
-    contract_version: config.runMode === "coordinated-shard" ? "v2.0.4" : "v2.0.3",
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: config.runMode === "coordinated-shard" ? "shard" : "single_run",
     scope: config.runMode === "coordinated-shard" ? "shard" : "single_run",
     global_direct_accept_eligible: false,
@@ -195,18 +197,18 @@ export function emitMachineReadableResult(
       ephemeral_port_range: preflight.ephemeral_port_range,
       ephemeral_port_count: preflight.ephemeral_port_count,
     },
-    // §4.18: Runtime container resource limits (from compose deployment)
-    runtime_container_limits: {
-      nchan: { cpus: 4, memory_gb: 8, nofile_soft: 200000, nofile_hard: 200000 },
-      nchan_2: { cpus: 4, memory_gb: 4, nofile_soft: 200000, nofile_hard: 200000 },
-      redis: { cpus: 2, memory_gb: 2 },
-      runner: { cpus: 8, memory_gb: 8, nofile_soft: 100000, nofile_hard: 100000 },
-    },
+    // §4.18: Runtime container resource limits — resolved from the actual
+    // launched topology (runner: live /proc + self cgroup; DUT services:
+    // launcher-provided env), never stale hard-coded constants. Unknown
+    // values are null rather than plausible-but-wrong numbers.
+    runtime_container_limits: resolveRuntimeContainerLimits(),
     generator_topology: {
       source_ip_count: preflight.source_ip_count,
       destination_tuple_capacity: preflight.destination_tuple_capacity,
       nginx_worker_processes: preflight.nginx_worker_processes,
       nginx_worker_connections: preflight.nginx_worker_connections,
+      nginx_worker_fd_soft: preflight.nginx_worker_fd_soft,
+      nginx_worker_fd_hard: preflight.nginx_worker_fd_hard,
       nginx_max_sse_capacity: preflight.nginx_max_sse_capacity,
       capacity_sufficient: preflight.capacity_sufficient,
       warnings: preflight.warnings,

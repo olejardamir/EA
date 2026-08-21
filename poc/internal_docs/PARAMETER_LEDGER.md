@@ -1,5 +1,7 @@
 # Parameter Explainability Ledger (§AI / §6.44)
 
+Active contract: `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (both v2.0.4 documents are historical/superseded).
+
 Every result-affecting non-assignment constant has a value, unit, classification, rationale, and usage location.
 
 ## Frozen Experiment Parameters
@@ -8,7 +10,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 |---|---|---|---|---|---|
 | GLOBAL_TARGET (coordinated evidence) | 100000 | connections | ASSIGNMENT_FACT | 100,000 simultaneous global viewers | compose.evidence-100k.yaml, global-coordinator.ts |
 | TARGET_CONNECTIONS (coordinated shard) | 25000 | connections/shard | DERIVED_VALUE | 4 × 25,000 = 100,000 while preserving frozen source-port reserves | compose.evidence-100k.yaml, topology-preflight.ts |
-| TARGET_CONNECTIONS (legacy repeated single-runner evidence) | 100000 | connections | HISTORICAL_CONTRACT | v2.0.3 cross-run path; it is not direct global v2.0.4 eligibility | compose.evidence.yaml, evidence-suite.ts |
+| TARGET_CONNECTIONS (legacy repeated single-runner evidence) | 100000 | connections | HISTORICAL_CONTRACT | v2.0.3 cross-run path; it is not direct global eligibility under the active v2.0.5 contract | compose.evidence.yaml, evidence-suite.ts |
 | TARGET_CONNECTIONS (smoke) | 100 | connections | PLANNING_ASSUMPTION | Scaled-down for fast iteration; exercises same logic | compose.yaml, experiment-config.ts |
 | WARMUP_SECONDS (evidence) | 30 | s | PLANNING_ASSUMPTION | Sufficient for 60k connections + events to stabilize | compose.evidence.yaml |
 | WARMUP_SECONDS (smoke) | 5 | s | PLANNING_ASSUMPTION | Proportional reduction for 100-connection smoke | compose.yaml |
@@ -128,12 +130,25 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Live shard sample interval | 250 | ms | PLANNING_ASSUMPTION | Supplies several observations per aligned bucket | coordinator-client.ts |
 | Publisher owners | exactly 1 | shard | PROTOCOL_REQUIREMENT | Preserves one authoritative logical event workload | global-coordinator.ts, main.ts |
 | Restart replay depth | 8 | accepted events/path | PLANNING_ASSUMPTION | Small deterministic non-empty range for literal and replacement paths | nchan-restart.ts |
+| Restart required membership | every integer in `[expected_first_seq, expected_last_seq]` exactly once and in order | canonical sequence set/path | PROTOCOL_REQUIREMENT | Prevents later/out-of-range frames from substituting for a missing frozen event; total frame count is not completeness proof | nchan-restart.ts (`evaluateRestartRequiredRange`) |
+| Restart out-of-range allowance | 0 before; 0 after | events/path | PROTOCOL_REQUIREMENT | An out-of-range event invalidates the path and cannot increase `received_required_count` | nchan-restart.ts, restart-exact-range.test.ts |
 | Late-join deterministic prefill | 500 | accepted events | PLANNING_ASSUMPTION | Meaningful deterministic retained-history extension | late-join.ts |
 | Late-join live margin | 120 | events | DERIVED_VALUE | 60 events/s × 2-second catch-up bound | late-join.ts |
 | Late-join safety margin | 256 | events | PLANNING_ASSUMPTION | Guards live-arrival and scheduling variation | late-join.ts |
 | Scenario active minimum | 100% target; reconnect 90% | percentage | PROTOCOL_REQUIREMENT | Peak claims remain at target; reconnect permits its deliberate 10% cohort outage | global-coordinator.ts |
 | Coordinated campaign runs | 3 minimum, 8 maximum | global runs | PLANNING_ASSUMPTION | Repeats complete simultaneous-global experiments without mixing shard/run dimensions | run-evidence-100k.sh, global-campaign.ts |
 | Coordinated campaign dispersion | 15% | sample coefficient of variation (`n-1`) | PLANNING_ASSUMPTION | Frozen stability bound across global active peak and latency p95 metrics | global-campaign.ts |
+
+## Machine Provenance Sources
+
+| Field | Resolved source | Validity rule | Where Emitted |
+|---|---|---|---|
+| `contract_version` | `ACTIVE_CONTRACT_VERSION` in `domain/active-contract.ts` | every single/shard/global/campaign output must equal canonical v2.0.5 | result-printer, evidence-suite, main shard result, global coordinator, campaign |
+| runner nofile soft/hard | current process `/proc/self/limits` | parsed actual values; unknown is explicit `null`, never a stale profile constant | `runtime_container_limits.runner`, shard generator resources |
+| service CPU/memory/nofile envelope | launch-profile environment populated beside Compose service limits | selected profile and emitted values must agree; unavailable values are explicit `null` | `runtime_container_limits.nchan`, `.nchan2`, `.redis` |
+| Nginx worker nofile soft/hard | Nchan control process scan of `/proc/<worker>/limits` | actual worker values required for Nginx capacity proof | Nginx preflight, shard Nchan resources |
+| source commit | launch script `git rev-parse HEAD` | non-null full 40-hex SHA and identical across coordinated inputs | every result scope |
+| target/topology/scope | resolved run config and coordinator registration | 25,000 × 4 = 100,000; one publisher owner; shard/global/campaign scopes cannot be confused | shard/global/campaign provenance |
 
 ## Publisher Parameters
 

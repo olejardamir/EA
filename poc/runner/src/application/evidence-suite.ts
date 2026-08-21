@@ -21,6 +21,7 @@ import { runTopologyPreflight } from "../adapters/topology-preflight.js"
 import type { ScenarioContext } from "../scenarios/scenario.js"
 import type { AggregatedMetrics, VerdictResult, PhaseHistogramResult } from "../domain/result.js"
 import type { ExperimentConfig } from "../config/experiment-config.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 import fs from "node:fs"
 import crypto from "node:crypto"
 
@@ -48,6 +49,7 @@ export interface CrossRunStats {
 }
 
 export interface EvidenceSuiteResult {
+  contract_version: typeof ACTIVE_CONTRACT_VERSION
   runs: SingleRunResult[]
   aggregate: AggregatedMetrics
   crossRun: CrossRunStats
@@ -453,7 +455,8 @@ export async function runSingleExperiment(
     aggregated.non_slow_p95_degradation_pct = degradationMatch ? parseFloat(degradationMatch[1]) : 0
 
     aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
-    aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
+    aggregated.nchan_restart_missing_sequences = Object.values(ctx._restartReplay ?? {})
+      .reduce((sum, path) => sum + (path?.missing_required ?? 0), 0)
     aggregated.nchan_restart_skipped = nchanResult.detail.includes("skipped")
 
     if (ctx._surgeHealth) {
@@ -838,6 +841,7 @@ export async function runEvidenceSuite(
       if (!flushOk) {
         log(`§4.13 Redis flush verification FAILED — run isolation compromised, aborting suite`)
         return {
+          contract_version: ACTIVE_CONTRACT_VERSION,
           runs,
           aggregate: runs.length > 0 ? aggregateRuns(runs) : ({} as AggregatedMetrics),
           crossRun: { keyMetricCVs: {}, worstCV: 0, worstMetric: "", dispersionExceeds15Pct: true },
@@ -919,6 +923,7 @@ export async function runEvidenceSuite(
   log(`§6.37 Evidence suite complete: ${finalVerdict} (${runs.length} runs, dispersion=${(crossRun.worstCV * 100).toFixed(1)}%)`)
 
   return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
     runs,
     aggregate,
     crossRun,
@@ -940,6 +945,7 @@ export function persistEvidenceSuite(result: EvidenceSuiteResult, path: string):
 
 export function computeSuiteDigest(result: EvidenceSuiteResult): string {
   const canonical = JSON.stringify({
+    contract_version: result.contract_version,
     totalRuns: result.totalRuns,
     finalVerdict: result.finalVerdict,
     dispersionStable: result.dispersionStable,

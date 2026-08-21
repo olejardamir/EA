@@ -2,12 +2,14 @@ import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { aggregateGlobalCampaign } from "../application/global-campaign.js"
 import type { GlobalExperimentResult } from "../application/global-coordinator.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
+import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
 function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {}): GlobalExperimentResult {
   return {
-    contract_version: "v2.0.4",
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "simultaneous_global_run",
     scope: "global",
     experiment_run_id: `run-${index}`,
@@ -34,7 +36,13 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
     correctness_counters: { missing_sequences: 0 },
     per_shard_generator_validity: [],
     resources: { nchan: {}, redis: {} },
-    scenario_results: [],
+    scenario_results: [{
+      name: "restart-replacement",
+      passed: true,
+      participant_shard_ids: [0],
+      active_population: null,
+      details: [{ shard_id: 0, detail: "exact restart paths", structured: validRestartStructuredEvidence() }],
+    }],
     shard_results: [],
     validity: { valid: true, reasons: [] },
     verdict: "ACCEPT",
@@ -47,11 +55,14 @@ describe("repeated simultaneous-global campaign aggregation", () => {
   it("keeps campaign, global-run, and shard dimensions distinct", () => {
     const result = aggregateGlobalCampaign([globalRun(0), globalRun(1), globalRun(2)])
     assert.equal(result.aggregate_scope, "campaign")
+    assert.equal(result.contract_version, ACTIVE_CONTRACT_VERSION)
     assert.equal(result.run_count, 3)
     assert.deepEqual(result.run_indices, [0, 1, 2])
     assert.equal(result.histograms.fan_out.count, 3)
     assert.equal(result.verdict, "ACCEPT")
     assert.equal(result.global_direct_accept_eligible, true)
+    assert.equal(result.global_target, 100_000)
+    assert.equal(result.source_commit, SHA)
     assert.ok(result.global_runs.every((run) => run.aggregate_scope === "simultaneous_global_run"))
   })
 
@@ -82,5 +93,36 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     const result = aggregateGlobalCampaign([globalRun(0), globalRun(1, { verdict: "REJECT", global_direct_accept_eligible: false }), globalRun(2)])
     assert.equal(result.dispersion.stable, true)
     assert.equal(result.verdict, "REJECT")
+  })
+
+  it("rejects missing global-run inputs", () => {
+    const result = aggregateGlobalCampaign([globalRun(0), globalRun(1)])
+    assert.equal(result.validity.valid, false)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.match(result.validity.reasons.join(" "), /outside frozen 3\.\.8 range/)
+  })
+
+  it("rejects a global run governed by a stale contract", () => {
+    const stale = { ...globalRun(1), contract_version: "v2.0.4" } as unknown as GlobalExperimentResult
+    const result = aggregateGlobalCampaign([globalRun(0), stale, globalRun(2)])
+    assert.equal(result.validity.valid, false)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.match(result.validity.reasons.join(" "), new RegExp(ACTIVE_CONTRACT_VERSION))
+  })
+
+  it("does not let stale global ACCEPT booleans bypass exact restart evidence", () => {
+    const stale = globalRun(1)
+    const structured = stale.scenario_results[0].details[0].structured as ReturnType<typeof validRestartStructuredEvidence>
+    structured.paths.cross_node.received_required_count = 7
+    structured.paths.cross_node.missing_required = 1
+    structured.paths.cross_node.missing_required_sequences = [17]
+    structured.paths.cross_node.target_reached = false
+    structured.paths.cross_node.passed = false
+
+    const result = aggregateGlobalCampaign([globalRun(0), stale, globalRun(2)])
+    assert.equal(result.validity.valid, false)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.equal(result.global_direct_accept_eligible, false)
+    assert.match(result.validity.reasons.join(" "), /missing exact restart structured evidence: 1/)
   })
 })

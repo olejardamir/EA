@@ -25,6 +25,16 @@ describe("Milestone 2 infrastructure contract", () => {
     assert.match(compose, /GLOBAL_TARGET: "100000"/)
   })
 
+  it("keeps coordinated runner FD metadata tied to the selected 120k profile", () => {
+    const compose = read("compose.evidence-100k.yaml")
+    assert.equal((compose.match(/soft: 120000/g) ?? []).length, 4)
+    assert.equal((compose.match(/hard: 120000/g) ?? []).length, 4)
+
+    const printer = read("runner/src/application/result-printer.ts")
+    assert.match(printer, /runtime_container_limits: resolveRuntimeContainerLimits\(\)/)
+    assert.doesNotMatch(printer, /nofile_(?:soft|hard):\s*100000/)
+  })
+
   it("makes source SHA automatic and mandatory on every normal launch", () => {
     for (const script of ["run-smoke.sh", "run-evidence.sh", "run-evidence-100k.sh"]) {
       const source = read(script)

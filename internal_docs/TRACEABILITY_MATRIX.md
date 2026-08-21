@@ -2,6 +2,8 @@
 
 Purpose: Map every POC requirement to implementation, test, metric, and classification effect.
 
+**Active contract:** `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (canonical successor; both v2.0.4 documents are historical/superseded). Requirement rows citing "Contract §N" refer to the active contract's section numbering.
+
 ## Contract acceptance criteria → implementation
 
 | Requirement ID | Source | Requirement Summary | Implementation Path | Test Path | Metric Field | Profile | Violation Effect | Status |
@@ -217,9 +219,12 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | Restart skipped in evidence mode → campaign-only (not INCONCLUSIVE for later runs) | nchan_restart_skipped + nchan_restart_campaign_only | result-classifier.test.ts §4.11 test | PASS |
 | Campaign classifier requires restart PASS | evidence-suite.ts campaign aggregate check | evidence-suite.test.ts | PASS |
 | Expected count from head tracker (not derived from received) | nchan-restart.ts headAtRestart | nchan-restart.test.ts | PASS |
-| Literal restart completion: seq > lastSeq (not >=, must receive post-restart event) | nchan-restart.ts literalRestartTest line 361 | nchan-restart.test.ts | PASS |
-| Cross-node completion: seq >= headAtReplacement (frozen expected range) | nchan-restart.ts crossNodeTest line 146 | nchan-restart.test.ts | PASS |
-| Expected replay count from head tracker, not from received replay count | nchan-restart.ts frozenExpectedCount/frozenExpectedCount1 | nchan-restart.test.ts | PASS |
+| Exact required-set predicate shared by BOTH paths: only unique in-range canonical sequences (expected_first_seq ≤ seq ≤ expected_last_seq) count toward received_required_count | nchan-restart.ts evaluateRestartRequiredRange() | restart-exact-range.test.ts (both-path matrix) | PASS |
+| Literal restart completion: exact required set complete (received_required_count == expected_count, missing_required == 0, first and last present) — never seq >= target | nchan-restart.ts literalRestartTest → evaluateRestartRequiredRange().target_reached | restart-exact-range.test.ts, nchan-restart.test.ts | PASS |
+| Cross-node completion: exact required set complete — a later seq > expected_last_seq while the set is incomplete fails immediately and can never substitute for a missing required sequence | nchan-restart.ts crossNodeTest → evaluateRestartRequiredRange().target_reached | restart-exact-range.test.ts, nchan-restart.test.ts | PASS |
+| Expected replay count from head tracker, not from received replay count; total frame count is never proof of completeness | nchan-restart.ts frozenExpectedCount/frozenExpectedCount1 | restart-exact-range.test.ts | PASS |
+| Structured per-path evidence reports exact-range values (missing_required_sequences, out_of_range_before_count, out_of_range_after_count, duplicates, out_of_order, target_reached) and path passed == exact-set complete AND all gates | scenario.ts RestartPathResult; nchan-restart.ts ctx._restartReplay.literal_restart / .cross_node | restart-exact-range.test.ts, nchan-restart.test.ts structured assertions | PASS |
+| Scenario result consumes the exact-range predicate (passed: pathResult.passed); no stale aggregate boolean bypasses it; global verdict requires every shard/scenario accept; campaign consumes global verdicts | nchan-restart.ts execute()/literalRestartTest()/crossNodeTest(); global-coordinator.ts; global-campaign.ts | nchan-restart.test.ts, global-coordinator-adversarial.test.ts, global-campaign.test.ts | PASS | |
 
 ## §4.6 Phase duration measurement
 
@@ -429,6 +434,14 @@ Purpose: Map every POC requirement to implementation, test, metric, and classifi
 | direct_accept_eligible (actual conditions) | result-printer.ts | claim_provenance | PASS |
 | git_commit_sha (env var fallback) | main.ts | build_identity | PASS |
 | surge_active_population_start/end/peak | result-printer.ts | surge_active_population | PASS |
+
+## §3.3.C Machine provenance: runtime limits use actual resolved values
+
+| Field | Source File | Test | Status |
+|---|---|---|---|
+| runtime_container_limits.runner: live /proc/self/limits RLIMIT_NOFILE + self cgroup cpu.max/memory.max (never hard-coded; unknown → null) | adapters/runtime-container-limits.ts → result-printer.ts emitMachineReadableResult | runtime-container-limits.test.ts (runner-from-proc, stale-100000-drift, unreadable→nulls) | PASS |
+| runtime_container_limits DUT services: launcher-provided env (NCHAN*/NCHAN2*/REDIS_* CPU_MAX_QUOTA/PERIOD, MEMORY_GB, NOFILE_SOFT/HARD); compose.evidence-100k.yaml exports them per service | adapters/runtime-container-limits.ts serviceLimitsFromEnv(); compose.evidence-100k.yaml env blocks | runtime-container-limits.test.ts (env resolution, null-when-unknown) | PASS |
+| contract_version: one canonical producer for single/evidence/shard/global/campaign outputs | domain/active-contract.ts ACTIVE_CONTRACT_VERSION | runtime-container-limits.test.ts canonical-source tests; contract-governance.test.ts; defect-publisher-correctness.test.ts machine-JSON assertion | PASS |
 
 ## §3.16 Cross-run null preservation
 

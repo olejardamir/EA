@@ -12,6 +12,7 @@ import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 
 // ─── §6.37: Evidence-suite unit tests ─────────────────────────────────
 // Tests the pure functions in evidence-suite.ts that do not require
@@ -201,6 +202,7 @@ function makeSuiteResult(
 ): EvidenceSuiteResult {
   const agg = baseAggregated()
   return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
     runs: [makeRun(0, agg)],
     aggregate: agg,
     crossRun: {

@@ -12,6 +12,8 @@ import type {
   ShardExperimentResult,
   ShardRegistration,
 } from "../application/global-coordinator.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
+import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -56,6 +58,7 @@ function fullSampleSet(shardId: number, activeCurrent = 50): AlignedSample[] {
 function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> = {}): ShardExperimentResult {
   const owner = shardId === 0
   return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
     scope: "shard",
     global_direct_accept_eligible: false,
@@ -97,7 +100,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
       { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: "ok" },
+      { name: "restart-replacement", participated: owner, passed: true, detail: "ok", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
     ],
     ...overrides,
   }
@@ -111,6 +114,36 @@ async function completeBarriers(coordinator: GlobalExperimentCoordinator): Promi
 }
 
 describe("GlobalExperimentCoordinator adversarial", () => {
+  it("rejects a shard result governed by a stale contract", () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0))
+    const stale = { ...shardResult(0), contract_version: "v2.0.4" } as unknown as ShardExperimentResult
+    assert.throws(() => coordinator.submitResult(stale), /contract_version mismatch/)
+  })
+
+  it("does not let a stale restart passed boolean bypass exact path evidence", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const owner = shardResult(0)
+    const restart = owner.scenarios.find((scenario) => scenario.name === "restart-replacement")!
+    const structured = validRestartStructuredEvidence()
+    structured.paths.literal_restart.received_last_seq = 18
+    structured.paths.literal_restart.received_required_count = 7
+    structured.paths.literal_restart.missing_required = 1
+    structured.paths.literal_restart.missing_required_sequences = [17]
+    structured.paths.literal_restart.out_of_range_after_count = 1
+    structured.paths.literal_restart.target_reached = false
+    structured.paths.literal_restart.passed = false
+    restart.passed = true
+    restart.structured = structured
+
+    coordinator.submitResult(owner)
+    coordinator.submitResult(shardResult(1))
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.scenario_results.find((scenario) => scenario.name === "restart-replacement")?.passed, false)
+    assert.equal(result.verdict, "REJECT")
+  })
+
   it("rejects out-of-range and non-integer shard IDs", () => {
     const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
     assert.throws(() => coordinator.register(registration(-1)), /invalid shard_id/)

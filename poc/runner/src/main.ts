@@ -1,4 +1,5 @@
 import { loadConfig } from "./config/experiment-config.js"
+import { ACTIVE_CONTRACT_VERSION } from "./domain/active-contract.js"
 import { NchanHttpPublisher } from "./adapters/nchan-http-publisher.js"
 import { SSEHttpClient } from "./adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "./adapters/metrics-recorder.js"
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
     })).digest("hex")
 
     const machineReadable = {
-      contract_version: "v2.0.3",
+      contract_version: suiteResult.contract_version,
       run_profile: config.runProfile,
       run_mode: "evidence",
       total_runs: suiteResult.totalRuns,
@@ -596,7 +597,8 @@ async function main(): Promise<void> {
 
     // Parse nchan restart result
     aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
-    aggregated.nchan_restart_missing_sequences = nchanResult.detail.includes("gap=true") ? 1 : 0
+    aggregated.nchan_restart_missing_sequences = Object.values(ctx._restartReplay ?? {})
+      .reduce((sum, path) => sum + (path?.missing_required ?? 0), 0)
     aggregated.nchan_restart_skipped = nchanResult.detail.includes("skipped")
 
     // §BH: Wire surge existing-viewer health
@@ -704,6 +706,7 @@ async function main(): Promise<void> {
         }
       }
       const shardResult: ShardExperimentResult = {
+        contract_version: ACTIVE_CONTRACT_VERSION,
         aggregate_scope: "shard",
         scope: "shard",
         global_direct_accept_eligible: false,
@@ -755,6 +758,8 @@ async function main(): Promise<void> {
             cpuset_effective_cpus: resourceSnap.runner_cpuset_effective_cpus,
             event_loop_p99_ms: resourceSnap.eventLoopDelayP99Ms,
             memory_peak_bytes: resourceSnap.memory_peak_bytes,
+            nofile_soft: topologyPreflight.fd_soft_limit,
+            nofile_hard: topologyPreflight.fd_hard_limit,
           },
           nchan: {
             cpu_raw_percent_peak: resourceSnap.nchan_cpu_percent_peak,
@@ -764,6 +769,8 @@ async function main(): Promise<void> {
             cpuset_effective_cpus: resourceSnap.nchan_cpuset_effective_cpus,
             memory_peak_run_bytes: resourceSnap.nchan_memory_peak_bytes,
             memory_peak_container_lifetime_bytes: resourceSnap.nchan_memory_container_lifetime_peak_bytes ?? null,
+            nginx_worker_fd_soft: nginxRuntimePreflight?.nginx_worker_fd_soft ?? null,
+            nginx_worker_fd_hard: nginxRuntimePreflight?.nginx_worker_fd_hard ?? null,
           },
           redis: {
             cpu_raw_percent_peak: resourceSnap.redis_cpu_percent_peak,

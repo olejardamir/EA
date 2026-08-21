@@ -1,6 +1,7 @@
 import crypto from "node:crypto"
 import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 import type { SerializedHistogram } from "../adapters/streaming-histogram.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 
 export const COORDINATED_PHASES = [
   "preflight",
@@ -73,6 +74,7 @@ export interface ShardScenarioEvidence {
 }
 
 export interface ShardExperimentResult {
+  contract_version: typeof ACTIVE_CONTRACT_VERSION
   aggregate_scope: "shard"
   scope: "shard"
   global_direct_accept_eligible: false
@@ -117,7 +119,7 @@ export interface GlobalActiveEvidence {
 }
 
 export interface GlobalExperimentResult {
-  contract_version: "v2.0.4"
+  contract_version: typeof ACTIVE_CONTRACT_VERSION
   aggregate_scope: "simultaneous_global_run"
   scope: "global"
   experiment_run_id: string
@@ -176,6 +178,42 @@ function histogramSummary(histogram: StreamingHistogram) {
 
 function emptyHistogram(): SerializedHistogram {
   return { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] }
+}
+
+export function isExactRestartPathEvidence(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  const path = value as Record<string, unknown>
+  const first = path.expected_first_seq
+  const last = path.expected_last_seq
+  const expectedCount = path.expected_count
+  return typeof path.transport_resume_id === "string" && path.transport_resume_id.length > 0
+    && typeof first === "number" && Number.isInteger(first)
+    && typeof last === "number" && Number.isInteger(last) && last >= first
+    && typeof expectedCount === "number" && expectedCount > 0 && expectedCount === last - first + 1
+    && path.received_first_seq === first
+    && path.received_last_seq === last
+    && path.received_required_count === expectedCount
+    && path.missing_required === 0
+    && Array.isArray(path.missing_required_sequences) && path.missing_required_sequences.length === 0
+    && path.duplicates === 0
+    && path.out_of_order === 0
+    && path.out_of_range_before_count === 0
+    && path.out_of_range_after_count === 0
+    && path.missing_prefix === false
+    && path.target_reached === true
+    && path.passed === true
+}
+
+export function hasExactRestartStructuredEvidence(structured: unknown): boolean {
+  if (!structured || typeof structured !== "object") return false
+  const paths = (structured as Record<string, unknown>).paths
+  if (!paths || typeof paths !== "object") return false
+  const record = paths as Record<string, unknown>
+  return isExactRestartPathEvidence(record.literal_restart) && isExactRestartPathEvidence(record.cross_node)
+}
+
+function hasExactRestartEvidence(scenario: ShardScenarioEvidence): boolean {
+  return hasExactRestartStructuredEvidence(scenario.structured)
 }
 
 export class GlobalExperimentCoordinator {
@@ -289,6 +327,7 @@ export class GlobalExperimentCoordinator {
     if (!this.registrations.has(result.shard_id)) throw new Error(`unregistered shard ${result.shard_id}`)
     if (this.results.has(result.shard_id)) throw new Error(`duplicate result from shard ${result.shard_id}`)
     if (result.experiment_run_id !== this.experimentRunId) throw new Error("result experiment_run_id mismatch")
+    if (result.contract_version !== ACTIVE_CONTRACT_VERSION) throw new Error("result contract_version mismatch")
     if (result.aggregate_scope !== "shard" || result.scope !== "shard" || result.global_direct_accept_eligible !== false) {
       throw new Error("shard result attempted a global acceptance claim")
     }
@@ -364,7 +403,8 @@ export class GlobalExperimentCoordinator {
       const participants = shardResults.flatMap((result) => result.scenarios.filter((scenario) => scenario.name === name && scenario.participated).map((scenario) => ({ shardId: result.shard_id, scenario })))
       const phaseName = name === "restart-replacement" ? "restart-replacement" : name
       const active = activeEvidence.scenarios[phaseName] ?? null
-      const passed = participants.length > 0 && participants.every(({ scenario }) => scenario.passed)
+      const passed = participants.length > 0 && participants.every(({ scenario }) => scenario.passed
+        && (name !== "restart-replacement" || hasExactRestartEvidence(scenario)))
       if (!passed) rejectReasons.push(`${name} scenario failed or had no participant`)
       if (active) {
         const requiredMin = name === "reconnect" ? Math.floor(this.globalTarget * 0.9) : this.globalTarget
@@ -413,7 +453,7 @@ export class GlobalExperimentCoordinator {
     if (rejectReasons.length > 0 && validity.valid) validity.reasons.push(...rejectReasons)
 
     return {
-      contract_version: "v2.0.4",
+      contract_version: ACTIVE_CONTRACT_VERSION,
       aggregate_scope: "simultaneous_global_run",
       scope: "global",
       experiment_run_id: this.experimentRunId,

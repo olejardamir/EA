@@ -1,3 +1,10 @@
+> **[SUPERSEDED — HISTORICAL EVIDENCE ONLY]** This document is superseded by
+> `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md`, the single canonical
+> active contract. It is preserved unmodified as historical evidence and MUST NOT be referenced
+> as active. Note: this file's multi-shard correction (4 × 28,000, RUN_MODE=single, independent
+> shard verdicts) described a topology the executable code never shipped; the executable
+> semantics at freeze time lived in `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_4.md`.
+
 # POC Experiment Contract — Nchan + Redis OSS + SSE
 
 **Contract ID:** POC-EXP-LMC-001

@@ -26,7 +26,8 @@ POC experiment contract v2.0.0                        EXISTS (frozen)
 POC experiment contract v2.0.1                        EXISTS (corrected, supersedes v2.0.0)
 POC experiment contract v2.0.2                        EXISTS (corrected, supersedes v2.0.1 — resolves §B/§AA/§C)
 POC experiment contract v2.0.3                        EXISTS (corrected, supersedes v2.0.2 — resolves resource-envelope/timing-text contradictions)
-POC experiment contract v2.0.4                        EXISTS (corrected, supersedes v2.0.3 — freezes phase schedule, slow-consumer thresholds, multi-shard topology, surge attribution)
+POC experiment contract v2.0.4                        EXISTS (historical — superseded by v2.0.5; two conflicting v2.0.4 files resolved)
+POC experiment contract v2.0.5                        EXISTS (canonical active — freezes 4×25,000=100,000 exact topology, coordinated-shard lifecycle, one-publisher ownership, global barriers/histogram merge/simultaneous-global verdict, 3–8 global-run campaign, slow-client 1600–2400 ms pacing, restart exact-range proof, resolved machine provenance)
 poc/                                                  EXISTS (built, tested, PASS at 10k scale)
 proposal.md                                           NOT YET CREATED
 README.md                                             NOT YET CREATED
@@ -277,7 +278,8 @@ without making new architecture decisions.
 ## Artifact
 
 ```text
-LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md (active)
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md (active)
+LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md (historical, superseded)
 ```
 
 ## Completion gate
@@ -286,15 +288,15 @@ LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md (active)
 PASS
 ```
 
-The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria. v2.0.2 resolved §B (lobby first_message), §AA (nchan_eventsource_event on match subscribers), and §C (buffer capacity prose) contradictions; v2.0.3 resolved resource-envelope/timing-text contradictions; v2.0.4 freezes the phase schedule, slow-consumer thresholds, multi-shard 100k topology, and surge attribution. Earlier versions are preserved as historical frozen state.
+The experiment contract is frozen with all 32 sections covering hypothesis, versions, topology, configuration, schema, workload, metrics, and acceptance criteria. v2.0.2 resolved §B (lobby first_message), §AA (nchan_eventsource_event on match subscribers), and §C (buffer capacity prose) contradictions; v2.0.3 resolved resource-envelope/timing-text contradictions; v2.0.4 froze the phase schedule, slow-consumer thresholds, multi-shard topology, and surge attribution but produced two conflicting active documents (a stale top-level file freezing 4×28,000 and an accurate poc-internal file); v2.0.5 is the single canonical successor freezing the executable semantics: 4×25,000 = 100,000 exact global target, RUN_MODE=coordinated-shard lifecycle with ordered barriers, one publisher-owner, lossless histogram merge, simultaneous-global-run verdict, 3–8 global-run campaign, slow-client pacing of 1600–2400 ms per intended client median, restart exact-required-set proof, and resolved (non-hard-coded) machine provenance. Earlier versions are preserved as historical frozen state.
 
 ---
 
 # Milestone 2 — Build the Smallest Runnable POC
 
-**Status: IN PROGRESS — gap closure in progress per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v4.md**
+**Status: DONE — 100% (gap closure complete per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v5a.md; audit: poc/internal_docs/MILESTONE_2_AUDIT_GAP_REPORT.md)**
 
-**Active contract:** `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md` (frozen, supersedes v2.0.3)
+**Active contract:** `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (frozen canonical successor; both v2.0.4 files are historical/superseded)
 
 ## Goal
 
@@ -957,7 +959,7 @@ M0.5 Industry / third-party solution review             DONE
      |
 M1  Freeze POC contract for Nchan + Redis + SSE        DONE
      |
-M2  Build smallest runnable POC                         IN PROGRESS — gap closure per v4
+M2  Build smallest runnable POC                         DONE — 100% (gap closure per v5a)
      |
 M3  Run POC and produce measured result                 NEXT
      |
@@ -995,4 +997,4 @@ The earlier milestone list was fundamentally correct, but this audit makes three
 3. **Final delivery cleanup deserves separate milestones.**  
    The PDF is strict that `poc/` contains nothing generated and that the ZIP contains only the requested artifacts.
 
-Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`, corrected to v2.0.1, further corrected to v2.0.2 (resolving §B/§AA/§C contradictions verified against Nchan 1.3.8 docs), corrected again to v2.0.3 (resolving resource-envelope and timing-text contradictions), and corrected to v2.0.4 (freezing phase schedule, slow-consumer thresholds, multi-shard topology, and surge attribution). M2 (Build the Smallest Runnable POC) is IN PROGRESS — gap closure per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v4.md. The correct next task after full gap closure is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.
+Because the architecture changed after the original freeze, the Nchan + Redis OSS + SSE POC experiment contract has been frozen as `LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_0.md`, corrected to v2.0.1, further corrected to v2.0.2 (resolving §B/§AA/§C contradictions verified against Nchan 1.3.8 docs), corrected again to v2.0.3 (resolving resource-envelope and timing-text contradictions), and corrected to v2.0.4 (freezing phase schedule, slow-consumer thresholds, multi-shard topology, and surge attribution). M2 (Build the Smallest Runnable POC) is DONE — 100% — remaining-gap closure per MILESTONE_2_CLOSE_GAP_REMAINING_ONLY_v5a.md is complete (canonical v2.0.5 contract, restart exact-range proof, resolved machine provenance, reconciled traceability). The correct next task after full gap closure is **Milestone 3: Run the POC and produce measured result** — repeat runs, scale to higher connection counts, and capture frozen evidence for the proposal.

@@ -74,7 +74,13 @@ services:
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
       # §3.8.A: Per-service CPU limits for normalized CPU metrics
       NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
+      NCHAN_MEMORY_GB: "8"
+      NCHAN_NOFILE_SOFT: "200000"
+      NCHAN_NOFILE_HARD: "200000"
       REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
+      REDIS_MEMORY_GB: "2"
     deploy:
       resources:
         limits:

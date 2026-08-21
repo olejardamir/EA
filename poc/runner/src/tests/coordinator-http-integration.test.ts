@@ -7,6 +7,8 @@ import path from "node:path"
 import { CoordinatedShardClient } from "../application/coordinator-client.js"
 import { COORDINATED_PHASES } from "../application/global-coordinator.js"
 import type { CoordinatedPhase, ShardExperimentResult } from "../application/global-coordinator.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
+import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 const SHARDS = 2
@@ -102,6 +104,7 @@ function sampleSeries(shardId: number): ShardExperimentResult["samples"] {
 function shardResult(shardId: number, runId: string): ShardExperimentResult {
   const owner = shardId === 0
   return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
     scope: "shard",
     global_direct_accept_eligible: false,
@@ -146,7 +149,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
       { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: "ok" },
+      { name: "restart-replacement", participated: owner, passed: true, detail: "ok", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
     ],
   }
 }

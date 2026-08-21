@@ -11,6 +11,8 @@ export interface TopologyPreflight {
   destination_tuple_capacity: number
   nginx_worker_processes: number
   nginx_worker_connections: number
+  nginx_worker_fd_soft: number | null
+  nginx_worker_fd_hard: number | null
   nginx_max_sse_capacity: number
   target_connections: number
   capacity_sufficient: boolean
@@ -239,6 +241,8 @@ export function runTopologyPreflight(
     destination_tuple_capacity: destTupleCapacity,
     nginx_worker_processes: nginxWorkers,
     nginx_worker_connections: nginxWorkerConns,
+    nginx_worker_fd_soft: nginxFdLimits?.soft ?? null,
+    nginx_worker_fd_hard: nginxFdLimits?.hard ?? null,
     nginx_max_sse_capacity: nginxMaxSseCapacity,
     target_connections: targetConnections,
     capacity_sufficient: capacitySufficient,

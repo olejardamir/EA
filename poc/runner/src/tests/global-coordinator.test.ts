@@ -12,6 +12,8 @@ import type {
   ShardExperimentResult,
   ShardRegistration,
 } from "../application/global-coordinator.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
+import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -59,6 +61,7 @@ function scenarioSamples(shardId: number): AlignedSample[] {
 function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> = {}): ShardExperimentResult {
   const owner = shardId === 0
   return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
     scope: "shard",
     global_direct_accept_eligible: false,
@@ -104,7 +107,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       { name: "burst", participated: owner, passed: true, detail: owner ? "authoritative burst" : "owner-only" },
       { name: "reconnect", participated: true, passed: true, detail: "all clients re-established" },
       { name: "slow-consumer", participated: true, passed: true, detail: "independent offered/consumed proof" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: owner ? "non-empty exact ranges" : "owner-only" },
+      { name: "restart-replacement", participated: owner, passed: true, detail: owner ? "non-empty exact ranges" : "owner-only", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
     ],
     ...overrides,
   }

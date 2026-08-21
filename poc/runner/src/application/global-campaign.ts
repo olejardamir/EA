@@ -1,7 +1,12 @@
-import { mergeHistograms, type GlobalExperimentResult } from "./global-coordinator.js"
+import {
+  hasExactRestartStructuredEvidence,
+  mergeHistograms,
+  type GlobalExperimentResult,
+} from "./global-coordinator.js"
+import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 
 export interface GlobalCampaignResult {
-  contract_version: "v2.0.4"
+  contract_version: typeof ACTIVE_CONTRACT_VERSION
   aggregate_scope: "campaign"
   scope: "campaign"
   global_direct_accept_eligible: boolean
@@ -52,6 +57,14 @@ function campaignHistogramSummary(histogram: ReturnType<typeof mergeHistograms>)
   }
 }
 
+function globalRunHasExactRestartEvidence(run: GlobalExperimentResult): boolean {
+  const restart = run.scenario_results.find((scenario) => scenario.name === "restart-replacement")
+  return !!restart
+    && restart.passed
+    && restart.details.length > 0
+    && restart.details.every((detail) => hasExactRestartStructuredEvidence(detail.structured))
+}
+
 export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): GlobalCampaignResult {
   const runs = [...globalRuns].sort((a, b) => a.run_index - b.run_index)
   const reasons: string[] = []
@@ -65,6 +78,15 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
   if (new Set(experimentRunIds).size !== runs.length) reasons.push("experiment_run_id must be unique per global run")
   if (runs.some((run) => run.aggregate_scope !== "simultaneous_global_run" || run.scope !== "global")) {
     reasons.push("campaign inputs must be simultaneous global-run results")
+  }
+  if (runs.some((run) => run.contract_version !== ACTIVE_CONTRACT_VERSION)) {
+    reasons.push(`all campaign inputs must use contract ${ACTIVE_CONTRACT_VERSION}`)
+  }
+  const runsWithoutExactRestart = runs
+    .filter((run) => !globalRunHasExactRestartEvidence(run))
+    .map((run) => run.run_index)
+  if (runsWithoutExactRestart.length > 0) {
+    reasons.push(`global runs missing exact restart structured evidence: ${runsWithoutExactRestart.join(",")}`)
   }
 
   const targets = new Set(runs.map((run) => run.global_target))
@@ -105,7 +127,7 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
         : "INCONCLUSIVE"
 
   return {
-    contract_version: "v2.0.4",
+    contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "campaign",
     scope: "campaign",
     global_direct_accept_eligible: verdict === "ACCEPT",

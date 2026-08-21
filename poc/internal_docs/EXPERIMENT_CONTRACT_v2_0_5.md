@@ -1,14 +1,12 @@
-> **[SUPERSEDED — HISTORICAL EVIDENCE ONLY]** This document is superseded by
-> `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md`, the single canonical
-> active contract. It was materially accurate for the coordinated executable semantics at
-> v2.0.4 time and is preserved unmodified as historical evidence; it MUST NOT be referenced
-> as active.
+# Experiment Contract v2.0.5 — POC Implementation Reference
 
-# Experiment Contract v2.0.4 — Coordinated Global Evidence
+Status: **NON-CANONICAL IMPLEMENTATION REFERENCE**
 
-Status: **FROZEN — active contract for Milestone 3**
+Canonical source of truth: `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md`. If this implementation reference ever differs from that file, the canonical top-level contract controls.
 
 Frozen: 2026-08-20
+
+Supersedes: `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md` (historical, stale topology/verdict) and `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_4.md` (historical, materially correct but ambiguous dual-active state)
 
 Scope: `poc/` coordinated 100,000-viewer experiment
 
@@ -16,30 +14,25 @@ Scope: `poc/` coordinated 100,000-viewer experiment
 
 - v2.0.2 is the historical initial freeze. It remains historical and is not edited.
 - v2.0.3 is the historical correction contract for the single-runner evidence machinery. It remains historical and is not edited.
-- v2.0.4 is the minimal successor that governs simultaneous multi-shard global evidence. Where this document changes a result-affecting v2.0.3 interpretation, v2.0.4 controls.
+- v2.0.4 existed in two simultaneous documents with the same frozen version number but different experiment descriptions. Both are now historical. `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_4.md` contained the materially correct executable semantics; `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_4.md` described a stale 4×28k/112k topology with independent shard verdicts.
+- v2.0.5 is the single canonical active successor version; its canonical document is `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md`. This file maps the `poc/` implementation to it and is not a second contract source.
 
 Milestone 2 freezes the machinery. It does **not** execute or claim the final Milestone 3 campaign.
 
 ## OLD / NEW / WHY change record
 
-| Area | OLD | NEW | WHY |
+| Area | OLD (v2.0.4 ambiguous state) | NEW (v2.0.5 canonical) | WHY |
 |---|---|---|---|
-| Experiment scope | Four independent shard runs | One coordinator-issued `experiment_run_id`, seed, target, lifecycle and verdict | A shard-local run cannot prove simultaneous 100k scale |
-| Generator topology | Approximately 4 × 28k | Exactly 4 × 25,000, global target 100,000 | Preserve source-port headroom for TIME_WAIT and non-viewer traffic |
-| Phase execution | Shards could advance independently | Every start/end boundary is a global barrier; any shard may globally abort | Align workload, concurrency and scenario evidence |
-| Publisher workload | One publisher per shard | Exactly one publisher-owner shard; every non-owner publishes zero events | Prevent multiplying the frozen logical workload fourfold |
-| Aggregation | Shard peaks/percentiles could be combined as summaries | One-second aligned samples, cumulative-counter deltas, lossless sparse histogram merge | Historical peaks and averaged percentiles are not global observations |
-| Nginx capacity | Helper/runner `/proc/self/limits` | Actual master and worker `/proc/<pid>/limits`; usable capacity uses the minimum worker limit | Prove the DUT process limit that actually bounds SSE viewers |
-| Late join | Prefill-only expected range | Full retained active-match history from sequence 1 through the frozen target head | Earlier valid same-run history is required evidence, not noise |
-| Reconnect | Cohort accounting could count attempted clients | One structured record per intended client; re-established subscription and frozen target are mandatory | Remove the zero-event failed-client false PASS |
-| Surge validity | Unfrozen approximate 80% sustained-rate tolerance | No arbitrary percentage tolerance; exact additions/attempts/establishments/failures and target are reported | Avoid a result-affecting rule absent from the frozen contract |
-| Slow consumer | Offered equaled consumed; weak ≥1s pacing | Offered comes from accepted publisher-head deltas; every client must pace at 1.6–2.4s | Establish an independent backlog and the intended 2s model |
-| Nchan memory | Container-lifetime `memory.peak` used as run peak | Run peak is max sampled `memory.current`; lifetime peak is retained separately | Prior runs must not contaminate a qualifying run |
-| CPU normalization | Runner period reused for services | Each of runner, Nchan and Redis uses its own quota, period and effective cpuset; denominator is the smaller capacity | Report service utilization against the capacity actually assigned |
-| Restart/replacement | Expected replay range could be empty | Publish and accept eight serialized events after the cursor, then freeze and require the exact range | A vacuous empty replay cannot prove recovery |
-| Terminal attribution | Repeated terminal callbacks could increment twice | Pool removal is the exact-once guard for attribution and dropped count | One terminal connection must map to one terminal category |
-| Source identity | Operator could omit `GIT_COMMIT_SHA` | Launch scripts resolve `git rev-parse HEAD`; coordinator requires one valid matching SHA | Evidence without immutable source provenance is invalid |
-| Result eligibility | A shard could imply global direct acceptance | Shards are `scope=shard`, `aggregate_scope=shard`, direct eligibility false; only a valid global result may set true | Keep simultaneous-shard aggregation distinct from repeated-run aggregation |
+| Active contract identity | Two documents both claim active frozen v2.0.4 | One canonical v2.0.5 supersedes both; both v2.0.4 files are historical | Two simultaneous active frozen contracts is not a valid source-of-truth chain |
+| Topology (stale v2.0.4) | 4 shards × 28,000 = 112,000 aggregate | Exactly 4 × 25,000 = 100,000 exact global target | §3.1: executable code runs 25k/shard with frozen source-port headroom model |
+| Verdict model (stale v2.0.4) | Each shard classifies independently; all shards must ACCEPT | One simultaneous-global-run aggregate/verdict; 3–8 repeated global runs; separate campaign aggregate | Shard-local runs cannot prove simultaneous 100k scale |
+| RUN_MODE (stale v2.0.4) | RUN_MODE=single per shard | RUN_MODE=coordinated-shard for 100k path | §2.3: coordinated launcher drives coordinator/shards, not independent suites |
+| Slow-consumer pacing (stale v2.0.4) | per_client_medians_all_above_1s | Every intended client median 1,600–2,400ms (±20%) | Tighter frozen range matches executable tolerance |
+| Restart replay counting | Could count total frame count as proof of completeness | Only unique canonical sequences within the frozen expected range count; later out-of-range events cannot substitute | §3.2: total frame count allows missing required sequences to pass |
+| Restart completion boundary | seq ≥ expected_last_seq treated as complete | All required canonical sequences in frozen set must be received exactly once | §3.2.D: target_reached means exact required set complete |
+| Restart structured evidence | Missing required sequences list absent | missing_required_sequences, out_of_range_before_count, out_of_range_after_count explicitly reported | §3.2.E: exact-range values must be machine-readable |
+| Machine provenance runtime limits | Hard-coded runner nofile=100000 | Actual runtime value from preflight/compose; coordinated 100k profile uses 120000 | §3.3.A: machine evidence must not claim a limit different from the actual process |
+| Contract version source | Scattered hard-coded string literals (v2.0.3, v2.0.4) | One canonical contract_version source; all machine outputs reference v2.0.5 | §3.3.B: one canonical producer prevents accidental drift |
 
 ## Frozen topology and launch paths
 
@@ -127,7 +120,29 @@ The final-scale scheduled window is 120 seconds and additions are the exact diff
 
 ### Restart and cross-node replacement
 
-Each path freezes its own transport resume ID and canonical cursor, publishes eight accepted per-match-serialized events, freezes the last accepted sequence, and then restarts/replaces. PASS requires a positive expected count, exact received required count, zero missing required, no missing prefix, zero duplicates, zero out-of-order and target reached. Literal and cross-node structured path objects are both present in machine evidence.
+Each path freezes its own transport resume ID and canonical cursor, publishes eight accepted per-match-serialized events, freezes the last accepted sequence, and then restarts/replaces.
+
+PASS requires ALL of the following:
+
+```text
+positive expected count
+received_required_count == expected_count (unique canonical sequences within frozen range)
+missing_required == 0
+no missing prefix
+duplicates == 0 (within required set)
+out_of_order == 0 (within required set)
+target_reached == true (all required sequences received)
+```
+
+A canonical sequence satisfying `expected_first_seq <= seq <= expected_last_seq` may count toward `received_required_count`. A later event with `seq > expected_last_seq` must never substitute for a missing required sequence. Total replay-frame count is never used as proof of exact replay completeness.
+
+Literal and cross-node structured path objects are both present in machine evidence. Each path result includes:
+
+```text
+missing_required_sequences: number[]  (explicit list of missing canonical sequences)
+out_of_range_before_count: number    (events received below expected_first_seq)
+out_of_range_after_count: number     (events received above expected_last_seq)
+```
 
 ### Active population
 
@@ -145,6 +160,20 @@ when both limits exist, otherwise by the available limit. Runner reads its cgrou
 
 `nchan_memory_peak_run_bytes` is max sampled `memory.current` during the run. `nchan_memory_peak_container_lifetime_bytes` is cgroup `memory.peak` and is informational only. Classifier memory decisions use the run-scoped measurement.
 
+## Machine provenance and runtime limits
+
+Machine evidence must report actual runtime values, not hard-coded assumptions:
+
+```text
+runner nofile soft/hard: actual value from compose profile or preflight measurement
+  (coordinated 100k profile: 120000; smoke/evidence profile: as configured)
+contract_version: from the canonical top-level v2.0.5 contract, implemented by
+  `runner/src/domain/active-contract.ts`
+source SHA: non-null, valid 40-hex, resolved at launch time
+```
+
+All machine outputs (single run, evidence suite, coordinated shard, simultaneous global run, campaign) must use the same canonical contract version source. Stale hard-coded version strings are not permitted.
+
 ## Result scopes and verdict
 
 The aggregation dimensions are strictly:
@@ -158,11 +187,11 @@ shard result
 
 Cross-shard code must not call the repeated-run `aggregateRuns()` path.
 
-The v2.0.4 campaign aggregator accepts only `aggregate_scope=simultaneous_global_run` inputs with unique contiguous run indices and run IDs, common target/source/shard count, and 3–8 runs. It pools the already-global histogram distributions, sums correctness counters, retains per-run resources/workload, and applies the frozen 15% cross-run coefficient-of-variation bound using sample variance (`n-1`), matching the existing evidence machinery. Invalid/inconclusive inputs or unstable dispersion produce campaign INCONCLUSIVE; stable runs with any conclusive REJECT produce campaign REJECT; all stable global ACCEPT runs produce campaign ACCEPT.
+The v2.0.5 campaign aggregator accepts only `aggregate_scope=simultaneous_global_run` inputs with unique contiguous run indices and run IDs, common target/source/shard count, and 3–8 runs. It pools the already-global histogram distributions, sums correctness counters, retains per-run resources/workload, and applies the frozen 15% cross-run coefficient-of-variation bound using sample variance (`n-1`), matching the existing evidence machinery. Invalid/inconclusive inputs or unstable dispersion produce campaign INCONCLUSIVE; stable runs with any conclusive REJECT produce campaign REJECT; all stable global ACCEPT runs produce campaign ACCEPT.
 
 Shard output contains `experiment_run_id`, `run_index`, `shard_id`, `shard_count`, `scope=shard`, `aggregate_scope=shard`, and `global_direct_accept_eligible=false`.
 
-The coordinator emits one `contract_version=v2.0.4`, `scope=global`, `aggregate_scope=simultaneous_global_run` result. Invalid generator, timing, source, topology, barriers, environment or missing evidence produces INCONCLUSIVE. With all evidence valid, a DUT/correctness/scenario threshold failure produces REJECT. ACCEPT requires every shard and scenario to accept, exact publisher ownership, aligned target, non-empty merged histograms, shared resource evidence and zero correctness violations. Only this ACCEPT sets `global_direct_accept_eligible=true`.
+The coordinator emits one `contract_version=v2.0.5`, `scope=global`, `aggregate_scope=simultaneous_global_run` result. Invalid generator, timing, source, topology, barriers, environment or missing evidence produces INCONCLUSIVE. With all evidence valid, a DUT/correctness/scenario threshold failure produces REJECT. ACCEPT requires every shard and scenario to accept, exact publisher ownership, aligned target, non-empty merged histograms, shared resource evidence and zero correctness violations. Only this ACCEPT sets `global_direct_accept_eligible=true`.
 
 ## Milestone boundary
 

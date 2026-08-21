@@ -114,8 +114,11 @@ export interface RestartPathResult {
   expected_count: number
   received_required_count: number
   missing_required: number
+  missing_required_sequences: number[]
   duplicates: number
   out_of_order: number
+  out_of_range_before_count: number
+  out_of_range_after_count: number
   missing_prefix: boolean
   target_reached: boolean
   recovery_ms: number

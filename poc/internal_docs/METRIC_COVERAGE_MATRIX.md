@@ -1,6 +1,6 @@
-# Metric Coverage Matrix — Active v2.0.4
+# Metric Coverage Matrix — Active v2.0.5
 
-Every result-affecting v2.0.4 metric has a producer, validity rule, machine-readable destination and focused coverage. Shard metrics are never presented as global unless they pass through the simultaneous global coordinator.
+Every result-affecting v2.0.5 metric has a producer, validity rule, machine-readable destination and focused coverage. The active contract is `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (both v2.0.4 documents are historical/superseded). Shard metrics are never presented as global unless they pass through the simultaneous global coordinator.
 
 | Metric/evidence | Producer | Frozen rule | Machine-readable destination | Focused coverage |
 |---|---|---|---|---|
@@ -15,7 +15,7 @@ Every result-affecting v2.0.4 metric has a producer, validity rule, machine-read
 | fan-out distribution | streaming sparse histograms | non-empty; merge counts, then recompute percentiles | global histogram and distribution | histogram merge/overflow tests |
 | late-join distribution | late-join timer histogram | connection-to-target timing; exact population retained | global late-join histogram | late-join and merge tests |
 | source-port viewer/reserve/headroom | topology preflight | viewers + 10% TIME_WAIT + 64 + 512 ≤ actual range | topology and shard validity | resource normalization |
-| Nginx process limits/capacity | Nchan control `/proc/<pid>/limits` | actual workers present; `workers × (min(worker_connections, RLIMIT)-256)` ≥ global target | Nginx preflight and shard validity | infrastructure contract + Docker preflight |
+| Nginx process limits/capacity | Nchan control `/proc/<pid>/limits` | actual workers present; `workers × (min(worker_connections, RLIMIT)-256)` ≥ global target | Nginx preflight and shard validity, including actual worker soft/hard RLIMIT values | infrastructure contract + Docker preflight |
 | late-join range/state | canonical publisher + history subscriber | sequence 1 through target, exact count/prefix/order/state; capacity proof | history counters/hist/detail | earlier-history late-join test |
 | reconnect client result | reconnect scenario | every intended client re-established and caught exact frozen target | `structured_scenario_evidence.reconnect_clients`; global structured detail | reconnect failed-client/field tests |
 | surge exact additions/attempts/results | surge scenario | exact target scheduling; no arbitrary rate tolerance | surge fields and aligned rates | scenario/classifier tests |
@@ -27,13 +27,13 @@ Every result-affecting v2.0.4 metric has a producer, validity rule, machine-read
 | slow memory boundedness | sampled Nchan current | growth <50MiB and <10%; recovery delta <50MiB | slow metrics | classifier/scenario tests |
 | Nchan run memory peak | max sampled `memory.current` | run-scoped; mandatory evidence | `memory_peak_run_bytes` | resource normalization test |
 | Nchan lifetime peak | cgroup `memory.peak` | informational only | `memory_peak_container_lifetime_bytes` | resource monitor output coverage |
-| runner CPU capacity | runner cgroup | own quota/period/cpuset, narrower limit wins | generator resource raw/capacity fields | resource normalization |
+| runner CPU and FD capacity | runner cgroup plus `/proc/self/limits` | own quota/period/cpuset, narrower CPU limit wins; nofile soft/hard are measured for the current process | generator resource raw/capacity fields and `runtime_container_limits.runner` | resource normalization + runtime-container-limits tests + selected-profile JSON inspection |
 | Nchan CPU capacity | Nchan control cgroup | own quota/period/cpuset, narrower limit wins | Nchan resource raw/capacity fields | resource normalization/infrastructure |
 | Redis CPU capacity | exported Redis cgroup + INFO CPU | own quota/period/cpuset, narrower limit wins | Redis resource raw/capacity fields | resource normalization/infrastructure |
-| literal restart range | serialized accepted publisher range + subscriber | positive exact count; no missing/prefix/dup/order error; target reached | structured literal path + counters | restart test |
-| cross-node replacement range | same, with node-2 resume | same exact predicates | structured cross-node path + counters | restart test |
+| literal restart range | serialized accepted publisher range + `evaluateRestartRequiredRange()` | unique in-range set exactly equals the frozen range; no missing/prefix/required-duplicate/required-order/out-of-range error; `target_reached` means set complete | structured literal path, explicit missing-sequence/out-of-range fields, and exact counters | literal matrix in `restart-exact-range.test.ts`; live Docker smoke exact 8/8 path |
+| cross-node replacement range | same canonical evaluator, with node-2 resume | same exact-set predicates; later live sequence cannot substitute for a missing required sequence | structured cross-node path, explicit missing-sequence/out-of-range fields, and exact counters | cross-node matrix in `restart-exact-range.test.ts` + live-path assertions in `nchan-restart.test.ts` |
 | terminal disconnect attribution | connection pool terminal removal | one removal, one category, one dropped increment when applicable | attribution counters | duplicate-terminal tests |
-| global correctness counters | sum of shard counters | missing/duplicate/order/reconnect violations = 0 | global correctness map | coordinator correctness test |
+| global restart/correctness proof | coordinator validates the publisher-owner's literal and cross-node structured path objects before summing counters | both exact path objects must satisfy the frozen interval/count/set predicates; a stale shard `passed=true` cannot bypass them | global scenario result, correctness map, then campaign input verdict | coordinator stale-boolean adversarial test + global-campaign invalid-input tests |
 | Nchan/Redis shared resources | publisher-owner shard | observe once, never sum duplicate observers | global `resources` | coordinator shared-resource tests |
 | shard eligibility | shard result builder | scope/aggregate scope shard; direct eligibility false | shard JSON | direct-claim tests |
 | global verdict/eligibility | coordinator | invalid evidence INCONCLUSIVE; valid DUT failure REJECT; all valid/pass ACCEPT | one global result | global classifier/adversarial/integration |
