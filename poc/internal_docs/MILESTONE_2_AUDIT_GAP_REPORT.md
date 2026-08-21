@@ -59,8 +59,8 @@ For restart/replacement specifically, both path labels run the same exact-set ad
 
 ## Reduced validation record
 
-- Runner typecheck and the complete runner suite passed after the executable changes (356 tests in 79 suites at the recorded closure run).
-- Focused restart tests passed for literal and cross-node exact-set behavior; the focused coordinator/campaign suites passed their structured-proof propagation cases.
+- Runner typecheck and the complete runner suite passed after the executable changes (372 tests in 81 suites at the recorded closure run).
+- Thirty focused restart tests passed for literal and cross-node exact-set behavior; 82 focused governance/provenance/coordinator/campaign regression tests passed, including structured-proof propagation cases.
 - The reduced coordinator HTTP integration uses the real coordinator server/client protocol and passed four-shard registration, barriers, aligned aggregation, histogram merge, result collection and verdict checks.
 - A non-qualifying live Docker smoke completed with `contract_version=v2.0.5`, full source SHA, `scope=single_run`, direct eligibility false, actual Nginx worker FD limits, and literal restart range `779..786` received exactly `8/8` with no missing/duplicate/order/out-of-range event.
 - A non-qualifying coordinated-profile machine-output probe reported four shards, 25,000 local target, 100,000 global target, one publisher owner, shard scope/direct eligibility false, runner nofile `120000/120000`, and the selected service CPU/memory/FD envelope. Neither probe is Milestone 3 evidence.
