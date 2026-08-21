@@ -174,3 +174,42 @@ describe("§M3-RACE: SSE replay-before-registration", () => {
     }
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+// §v2.1.1 drift item 12: wire-arrival latency stamping.
+// Every message event dispatched by the SSE subscription must carry
+// received_at_ms captured at socket-data callback entry, so publish→receipt
+// latency is immune to generator parse/dispatch delay.
+// ═══════════════════════════════════════════════════════════════
+describe("§M3-DEG: wire-arrival timestamp stamping", () => {
+  it("stamps received_at_ms on every buffered and live message event", async () => {
+    const server = await replayServer(
+      [{ id: "1", data: '{"canonical_seq":1}' }],
+      { live: [{ id: "2", data: '{"canonical_seq":2}' }], liveAfterMs: 30 },
+    )
+    try {
+      const client = new SSEHttpClient()
+      const events: SubscriptionEvent[] = []
+      const sub = await client.connect(`http://127.0.0.1:${server.port}/stream`)
+      sub.onEvent((evt) => events.push(evt))
+      await tick(80)
+      const messages = events.filter((e): e is Extract<SubscriptionEvent, { type: "message" }> => e.type === "message")
+      assert.ok(messages.length >= 2, `expected >=2 messages, got ${messages.length}`)
+      for (const evt of messages) {
+        assert.equal(typeof evt.received_at_ms, "number")
+        assert.ok(Number.isFinite(evt.received_at_ms!))
+        // Arrival stamp must not be in the future.
+        assert.ok(evt.received_at_ms! <= Date.now() + 5)
+      }
+      // Buffered pre-registration events and later live events carry distinct,
+      // monotonic non-decreasing stamps from the same clock.
+      const stamps = messages.map((e) => e.received_at_ms!)
+      for (let i = 1; i < stamps.length; i++) {
+        assert.ok(stamps[i] >= stamps[i - 1], "arrival stamps must be non-decreasing")
+      }
+      sub.close()
+    } finally {
+      await server.close()
+    }
+  })
+})

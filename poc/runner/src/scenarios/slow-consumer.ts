@@ -1,4 +1,4 @@
-import type { Scenario, ScenarioContext } from "./scenario.js"
+import type { Scenario, ScenarioContext, ScenarioResult } from "./scenario.js"
 import type { ConnectionEntry, ConnectionPool } from "../application/connection-pool.js"
 import type { Subscription, SubscriptionEvent } from "../ports/event-stream.js"
 import { StreamingHistogram } from "../adapters/streaming-histogram.js"
@@ -18,6 +18,10 @@ const PACING_MAX_MS = SLOW_EVENT_INTERVAL_MS * (1 + PACING_TOLERANCE_FRACTION)
 // the same order of samples as the measured window without touching the
 // frozen <= 5 % gate or any workload parameter.
 const HEALTHY_BASELINE_MS = 10_000
+// §M3-DEG: settle gap before the healthy baseline window — lets reconnect-phase
+// reattachment churn (catch-up drains, bursty replay) fully drain so the
+// baseline represents steady state, not post-churn residue.
+const RECONNECT_SETTLE_MS = 5_000
 const RECOVERY_TIMEOUT_MS = 10_000
 const MEMORY_MAX_GROWTH_BYTES = 50 * 1024 * 1024
 const MEMORY_MAX_GROWTH_FRACTION = 0.10
@@ -399,7 +403,7 @@ export class SlowConsumerScenario implements Scenario {
     this.pool = pool
   }
 
-  async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+  async execute(ctx: ScenarioContext): Promise<ScenarioResult> {
     ctx.log("--- PHASE: SLOW CONSUMER TEST ---")
 
     const all = [...this.pool.entries]
@@ -424,14 +428,17 @@ export class SlowConsumerScenario implements Scenario {
     // latency histogram.
     const healthyBeforeHist = new StreamingHistogram()
     const healthyDuringHist = new StreamingHistogram()
-    let collectHealthyBaseline = true
+    let collectHealthyBaseline = false
     let collectHealthyDuring = false
     for (const conn of healthyConnections) {
       conn.subscription.onEvent((evt) => {
         if (evt.type === "message") {
           const publishedAt = extractPublishTimestampMs(evt.event.data)
           if (publishedAt !== null) {
-            const latencyMs = Date.now() - publishedAt
+            // §v2.1.1 drift item 12: wire-arrival basis — the same quantity the
+            // global fan-out histogram measures, immune to generator
+            // parse-dispatch delay.
+            const latencyMs = (evt.received_at_ms ?? Date.now()) - publishedAt
             if (latencyMs >= 0 && latencyMs < 30_000) {
               if (collectHealthyBaseline) healthyBeforeHist.record(latencyMs)
               if (collectHealthyDuring) healthyDuringHist.record(latencyMs)
@@ -440,6 +447,13 @@ export class SlowConsumerScenario implements Scenario {
         }
       })
     }
+    // §M3-DEG: reconnect-settle gap. The baseline window must represent steady
+    // state; the reconnect phase's reattachment churn (catch-up drains, bursty
+    // replay) otherwise bleeds into its first seconds and inflates the baseline
+    // p95 by a run-to-run-variable amount (observed 45ms vs 62ms across
+    // identical-code probes). Settle first, then collect the baseline window.
+    await ctx.sleep(RECONNECT_SETTLE_MS)
+    collectHealthyBaseline = true
     await ctx.sleep(HEALTHY_BASELINE_MS)
     collectHealthyBaseline = false
     const p95Before = healthyBeforeHist.p95()
@@ -889,7 +903,16 @@ export class SlowConsumerScenario implements Scenario {
       end: this.pool.size,
     }
 
-    return { name: this.name, passed, detail }
+    return {
+      name: this.name,
+      passed,
+      detail,
+      // §v2.1.1 drift item 11: machine-readable probe-cohort size — the
+      // coordinator derives the slow-consumer active-population transient
+      // allowance from this evidence (capped at the frozen cohort fraction,
+      // zero when absent).
+      structured: { replay_probe_selected: probeSelected },
+    }
   }
 }
 

@@ -6,7 +6,14 @@ export interface SSEEvent {
 
 export type SubscriptionEvent =
   | { type: "open" }
-  | { type: "message"; event: SSEEvent }
+  | {
+      type: "message"
+      event: SSEEvent
+      /** §v2.1.1 drift item 12: Date.now() captured at socket-data callback
+       * entry — publish→wire-arrival latency basis, immune to generator
+       * parse-dispatch delay. Absent on synthetic/replayed events. */
+      received_at_ms?: number
+    }
   | { type: "error"; error: Error }
 
 export interface Subscription {

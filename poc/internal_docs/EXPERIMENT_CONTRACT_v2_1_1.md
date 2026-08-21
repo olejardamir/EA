@@ -103,6 +103,20 @@ v2.1.0 declared itself FROZEN, but the implementation subsequently changed in wa
                                      beyond the probed cohort still fails the
                                      gate. The aligned global active peak gate
                                      (>= 100,000) is untouched.
+12. wire-arrival latency basis      fan-out latency is measured from a
+                                     received_at_ms stamp captured at the SSE
+                                     socket-data callback entry — publish to
+                                     wire receipt — not at handler dispatch
+                                     time. Generator event-loop scheduling
+                                     delay is harness cost, never DUT delivery
+                                     latency; leaving it in the measurement
+                                     made the healthy-degradation gate flip
+                                     sign between identical-code runs
+                                     (+17..24% vs -18..-23%). The slow-consumer
+                                     healthy baseline additionally follows a
+                                     reconnect-settle gap so the baseline
+                                     window represents steady state rather
+                                     than post-churn residue.
 ```
 
 ## Frozen topology

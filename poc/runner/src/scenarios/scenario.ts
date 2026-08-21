@@ -103,6 +103,7 @@ export interface ScenarioResult {
   name: string
   passed: boolean
   detail: string
+  structured?: Record<string, unknown>
 }
 
 // §M2-5: Structured per-client reconnect result.

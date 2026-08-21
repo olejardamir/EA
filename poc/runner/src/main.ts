@@ -909,7 +909,7 @@ async function main(): Promise<void> {
             detail: reconnectResult.detail,
             structured: { clients: ctx._reconnectPerClient ?? [] },
           },
-          { name: "slow-consumer", participated: true, passed: slowResult.passed, detail: slowResult.detail },
+          { name: "slow-consumer", participated: true, passed: slowResult.passed, detail: slowResult.detail, structured: slowResult.structured },
           {
             name: "restart-replacement",
             participated: restartRole !== "bystander",

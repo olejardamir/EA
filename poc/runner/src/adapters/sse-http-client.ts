@@ -159,6 +159,11 @@ class SSESubscription implements Subscription {
     res.on("data", (chunk: Buffer) => {
       if (this._closed) return
 
+      // §v2.1.1 drift item 12: capture wire-arrival time before any parsing or
+      // dispatch work so delivery latency reflects transport receipt, not
+      // generator event-loop scheduling.
+      const arrivedAtMs = Date.now()
+
       try {
         // §AF: use TextDecoder with stream:true to handle multibyte chars
         // split across TCP chunks (e.g. 4-byte CJK chars at chunk boundary)
@@ -180,7 +185,7 @@ class SSESubscription implements Subscription {
           }
           // §3.17/§M3-RACE: Dispatch to all registered handlers, or buffer
           // until the first one registers — never drop.
-          this._dispatchOrBuffer({ type: "message", event: frame })
+          this._dispatchOrBuffer({ type: "message", event: frame, received_at_ms: arrivedAtMs })
         }
       } catch {
         // §BJ: Parse failure — invoke error callback

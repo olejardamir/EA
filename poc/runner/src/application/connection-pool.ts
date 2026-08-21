@@ -137,7 +137,7 @@ export class ConnectionPool {
     return createSequenceTracker(0)
   }
 
-  handleMessage(entry: ConnectionEntry, eventData: string, transportId?: string | null): void {
+  handleMessage(entry: ConnectionEntry, eventData: string, transportId?: string | null, receivedAtMs?: number): void {
     if (!this._running) return
 
     let raw: unknown
@@ -201,7 +201,10 @@ export class ConnectionPool {
     // global fan-out histogram and the healthy-degradation comparison.
     if (!entry.deferredDelivery) {
       const publishTime = new Date(data.publish_timestamp).getTime()
-      const recvTime = this.clock.now()
+      // §v2.1.1 drift item 12: prefer the wire-arrival stamp captured at the
+      // socket-data callback entry; fall back to clock.now() for synthetic
+      // events without one.
+      const recvTime = receivedAtMs ?? this.clock.now()
       const latency = recvTime - publishTime
       if (latency < 0) {
         this.metrics.incrementLatencyInvalid()
@@ -327,7 +330,7 @@ export class ConnectionPool {
   private processEntryEvent(entry: ConnectionEntry, evt: SubscriptionEvent): void {
     if (!this._running) return
     if (evt.type === "message") {
-      this.handleMessage(entry, evt.event.data, evt.event.id)
+      this.handleMessage(entry, evt.event.data, evt.event.id, evt.received_at_ms)
     } else if (evt.type === "error") {
       // §4.3: Terminal stream error — remove from active pool immediately
       // §4.17/§3.14: Disconnect attribution — classify error by cause
@@ -557,7 +560,7 @@ export class ConnectionPool {
         subscription.onEvent((evt) => {
           if (!this._running) return
           if (evt.type === "message") {
-            this.handleMessage(entry, evt.event.data, evt.event.id)
+            this.handleMessage(entry, evt.event.data, evt.event.id, evt.received_at_ms)
           }
         })
 
