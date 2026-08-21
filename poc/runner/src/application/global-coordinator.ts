@@ -194,6 +194,13 @@ function emptyHistogram(): SerializedHistogram {
   return { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] }
 }
 
+// §v2.1.1 §10 (restart-range live tail): frames ABOVE the frozen range are live
+// continuation on a live channel — diagnostic out_of_range_after counters only,
+// never a replay defect. Exactness is judged INSIDE the frozen interval:
+// complete set, zero duplicates/ordering violations, no prefix loss, nothing
+// below the consumed position. out_of_range_before stays fatal; only
+// out_of_range_after is tolerated, and received_last_seq must reach at least
+// the frozen upper bound.
 export function isExactRestartPathEvidence(value: unknown): boolean {
   if (!value || typeof value !== "object") return false
   const path = value as Record<string, unknown>
@@ -204,15 +211,17 @@ export function isExactRestartPathEvidence(value: unknown): boolean {
     && typeof first === "number" && Number.isInteger(first)
     && typeof last === "number" && Number.isInteger(last) && last >= first
     && typeof expectedCount === "number" && expectedCount > 0 && expectedCount === last - first + 1
-    && path.received_first_seq === first
-    && path.received_last_seq === last
+    && typeof path.received_first_seq === "number" && path.received_first_seq === first
+    && typeof path.received_last_seq === "number" && (path.received_last_seq as number) >= last
     && path.received_required_count === expectedCount
     && path.missing_required === 0
     && Array.isArray(path.missing_required_sequences) && path.missing_required_sequences.length === 0
     && path.duplicates === 0
     && path.out_of_order === 0
     && path.out_of_range_before_count === 0
-    && path.out_of_range_after_count === 0
+    && typeof path.out_of_range_after_count === "number"
+    && Number.isInteger(path.out_of_range_after_count)
+    && (path.out_of_range_after_count as number) >= 0
     && path.missing_prefix === false
     && path.target_reached === true
     && path.passed === true

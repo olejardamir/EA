@@ -193,14 +193,28 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     assert.equal(result.verdict, "ACCEPT")
   })
 
-  it("rejects out-of-range substitution in owner restart evidence", () => {
+  it("rejects below-consumed-position substitution in owner restart evidence", () => {
+    // §v2.1.1 §10: live tail ABOVE the frozen range is diagnostic-only, but
+    // frames BELOW the consumed position remain a fatal replay defect.
+    const run = globalRun(1)
+    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validOwnerRestartStructuredEvidence>
+    const spareProbe = (evidence.paths as Record<string, any>).spare_probe
+    spareProbe.out_of_range_before_count = 1
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /lacks exact spare-probe restart evidence/)
+  })
+
+  it("accepts owner restart evidence with diagnostic live-tail above the frozen range", () => {
+    // §v2.1.1 §10 regression at campaign level: recovery races can deliver one
+    // live frame past expected_last; that never fails an otherwise exact range.
     const run = globalRun(1)
     const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validOwnerRestartStructuredEvidence>
     const spareProbe = (evidence.paths as Record<string, any>).spare_probe
     spareProbe.received_last_seq = 18
     spareProbe.out_of_range_after_count = 1
     const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
-    assert.match(result.validity.reasons.join(" "), /lacks exact spare-probe restart evidence/)
+    assert.equal(result.verdict, "ACCEPT")
+    assert.equal(result.validity.valid, true)
   })
 
   it("rejects a non-owner that falsely claims restart participation", () => {

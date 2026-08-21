@@ -6,6 +6,8 @@ import {
   GlobalExperimentCoordinator,
   alignSamples,
   mergeHistograms,
+  isExactRestartPathEvidence,
+  restartEvidenceMatchesRun,
 } from "../application/global-coordinator.js"
 import type {
   AlignedSample,
@@ -357,5 +359,85 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     assert.equal(result.shard_results.every((shard) => shard.verdict === "ACCEPT"), true)
     assert.equal(result.verdict, "REJECT")
     assert.equal(result.global_direct_accept_eligible, false)
+  })
+})
+
+// §v2.1.1 §10 regression: restart-range live tail is diagnostic-only.
+describe("isExactRestartPathEvidence live-tail semantics", () => {
+  function exactPath(overrides: Record<string, unknown> = {}) {
+    return {
+      transport_resume_id: "resume-1",
+      expected_first_seq: 10,
+      expected_last_seq: 17,
+      received_first_seq: 10,
+      received_last_seq: 17,
+      expected_count: 8,
+      received_required_count: 8,
+      missing_required: 0,
+      missing_required_sequences: [] as number[],
+      duplicates: 0,
+      out_of_order: 0,
+      out_of_range_before_count: 0,
+      out_of_range_after_count: 0,
+      missing_prefix: false,
+      target_reached: true,
+      recovery_ms: 25,
+      passed: true,
+      ...overrides,
+    }
+  }
+
+  it("accepts canonical evidence with zero live-tail frames", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath()), true)
+  })
+
+  it("accepts otherwise-exact evidence with live-tail frames above the frozen range", () => {
+    // Observed in probe ea-probe-10000-20260821t134348: recovery races let one
+    // live frame (seq 1173 > expected_last 1172) arrive after the frozen range
+    // completed. Contract v2.1.1 §10 freezes these as diagnostic-only.
+    const withTail = exactPath({
+      received_last_seq: 18,
+      out_of_range_after_count: 1,
+    })
+    assert.equal(isExactRestartPathEvidence(withTail), true)
+    assert.equal(isExactRestartPathEvidence(exactPath({ out_of_range_after_count: 5, received_last_seq: 22 })), true)
+  })
+
+  it("still rejects loss inside the frozen range", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ missing_required: 1, missing_required_sequences: [12], received_required_count: 7 })), false)
+  })
+
+  it("still rejects duplicate and ordering violations inside the range", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ duplicates: 1, received_required_count: 9 })), false)
+    assert.equal(isExactRestartPathEvidence(exactPath({ out_of_order: 2 })), false)
+  })
+
+  it("still rejects frames below the consumed position (out_of_range_before)", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ out_of_range_before_count: 1 })), false)
+  })
+
+  it("still rejects prefix loss and unmet targets", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ missing_prefix: true })), false)
+    assert.equal(isExactRestartPathEvidence(exactPath({ target_reached: false })), false)
+    assert.equal(isExactRestartPathEvidence(exactPath({ passed: false })), false)
+  })
+
+  it("rejects malformed range arithmetic and missing transport id", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ expected_count: 7 })), false)
+    assert.equal(isExactRestartPathEvidence(exactPath({ transport_resume_id: "" })), false)
+    assert.equal(isExactRestartPathEvidence(null), false)
+    assert.equal(isExactRestartPathEvidence("nope"), false)
+  })
+
+  it("rejects a negative or non-integer live-tail counter", () => {
+    assert.equal(isExactRestartPathEvidence(exactPath({ out_of_range_after_count: -1 })), false)
+    assert.equal(isExactRestartPathEvidence(exactPath({ out_of_range_after_count: 1.5 })), false)
+  })
+
+  it("restartEvidenceMatchesRun still binds identity exactly", () => {
+    const structured = { campaign_id: "c1", experiment_run_id: "r1", run_index: 0, shard_id: 0, paths: {} }
+    assert.equal(restartEvidenceMatchesRun(structured, { campaign_id: "c1", experiment_run_id: "r1", run_index: 0, shard_id: 0 }), true)
+    assert.equal(restartEvidenceMatchesRun(structured, { campaign_id: "cX", experiment_run_id: "r1", run_index: 0, shard_id: 0 }), false)
+    assert.equal(restartEvidenceMatchesRun(structured, { campaign_id: "c1", experiment_run_id: "r1", run_index: 1, shard_id: 0 }), false)
   })
 })
