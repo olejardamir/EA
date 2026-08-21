@@ -1,11 +1,51 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { aggregateGlobalCampaign } from "../application/global-campaign.js"
-import type { GlobalExperimentResult } from "../application/global-coordinator.js"
+import type { GlobalExperimentResult, ShardExperimentResult } from "../application/global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
+
+function campaignShard(index: number, shardId: number): ShardExperimentResult {
+  const owner = shardId === 0
+  return {
+    contract_version: ACTIVE_CONTRACT_VERSION,
+    aggregate_scope: "shard",
+    scope: "shard",
+    global_direct_accept_eligible: false,
+    experiment_run_id: `run-${index}`,
+    campaign_id: "campaign-1",
+    run_index: index,
+    shard_id: shardId,
+    shard_count: 4,
+    local_target: 25_000,
+    global_target: 100_000,
+    seed: 42 + index,
+    source_commit: SHA,
+    publisher_owner: owner,
+    verdict: "ACCEPT",
+    validity: { generator_valid: true, source_port_headroom_valid: true, nginx_worker_capacity_valid: true, environment_valid: true, timing_valid: true, reasons: [] },
+    samples: [],
+    histograms: {
+      fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] },
+      late_join: { max_ms: 30_000, total_count: owner ? 1 : 0, overflow_count: 0, buckets: owner ? [[20, 1]] : [] },
+      burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[30, 1]] },
+    },
+    correctness_counters: {},
+    workload: { events_published: owner ? 100 : 0, phase_rates: [] },
+    resources: { generator: {}, nchan: owner ? { memory_peak_run_bytes: 1000 } : {}, redis: owner ? { memory_used_bytes: 500 } : {} },
+    scenarios: [{
+      name: "restart-replacement",
+      participated: owner,
+      passed: true,
+      detail: owner ? "exact owner evidence" : "not-participating",
+      structured: owner
+        ? validRestartStructuredEvidence({ experiment_run_id: `run-${index}`, run_index: index })
+        : { paths: {} },
+    }],
+  }
+}
 
 function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {}): GlobalExperimentResult {
   return {
@@ -13,6 +53,8 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
     aggregate_scope: "simultaneous_global_run",
     scope: "global",
     experiment_run_id: `run-${index}`,
+    campaign_id: "campaign-1",
+    created_at_ms: 1_700_000_000_000 + index,
     run_index: index,
     seed: 42 + index,
     participating_shard_ids: [0, 1, 2, 3],
@@ -32,18 +74,19 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
     histograms: {
       fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
       late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] } },
+      burst: { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[30, 4]] } },
     },
     correctness_counters: { missing_sequences: 0 },
     per_shard_generator_validity: [],
-    resources: { nchan: {}, redis: {} },
+    resources: { nchan: {}, redis: { memory_used_bytes: 500 } },
     scenario_results: [{
       name: "restart-replacement",
       passed: true,
       participant_shard_ids: [0],
       active_population: null,
-      details: [{ shard_id: 0, detail: "exact restart paths", structured: validRestartStructuredEvidence() }],
+      details: [{ shard_id: 0, participated: true, detail: "exact restart paths", structured: validRestartStructuredEvidence({ experiment_run_id: `run-${index}`, run_index: index }) }],
     }],
-    shard_results: [],
+    shard_results: [0, 1, 2, 3].map((shardId) => campaignShard(index, shardId)),
     validity: { valid: true, reasons: [] },
     verdict: "ACCEPT",
     global_direct_accept_eligible: true,
@@ -112,7 +155,7 @@ describe("repeated simultaneous-global campaign aggregation", () => {
 
   it("does not let stale global ACCEPT booleans bypass exact restart evidence", () => {
     const stale = globalRun(1)
-    const structured = stale.scenario_results[0].details[0].structured as ReturnType<typeof validRestartStructuredEvidence>
+    const structured = stale.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
     structured.paths.cross_node.received_required_count = 7
     structured.paths.cross_node.missing_required = 1
     structured.paths.cross_node.missing_required_sequences = [17]
@@ -123,6 +166,107 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     assert.equal(result.validity.valid, false)
     assert.equal(result.verdict, "INCONCLUSIVE")
     assert.equal(result.global_direct_accept_eligible, false)
-    assert.match(result.validity.reasons.join(" "), /missing exact restart structured evidence: 1/)
+    assert.match(result.validity.reasons.join(" "), /publisher-owner shard 0 lacks exact restart evidence/)
+  })
+
+  it("accepts one exact owner and three legitimate non-participants", () => {
+    const result = aggregateGlobalCampaign([globalRun(0), globalRun(1), globalRun(2)])
+    assert.equal(result.validity.valid, true)
+    assert.equal(result.verdict, "ACCEPT")
+  })
+
+  it("rejects out-of-range substitution in owner restart evidence", () => {
+    const run = globalRun(1)
+    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
+    evidence.paths.literal_restart.received_last_seq = 18
+    evidence.paths.literal_restart.out_of_range_after_count = 1
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /lacks exact restart evidence/)
+  })
+
+  it("rejects a non-owner that falsely claims restart participation", () => {
+    const run = globalRun(1)
+    run.shard_results[1].scenarios[0].participated = true
+    run.shard_results[1].scenarios[0].structured = validRestartStructuredEvidence({ experiment_run_id: "run-1", run_index: 1, shard_id: 1 })
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /non-publisher shard 1/)
+  })
+
+  it("rejects multiple publisher owners", () => {
+    const run = globalRun(1)
+    run.shard_results[1].publisher_owner = true
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /publisher owners 2/)
+  })
+
+  it("rejects a run with no publisher owner", () => {
+    const run = globalRun(1)
+    for (const shard of run.shard_results) shard.publisher_owner = false
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /publisher owners 0/)
+  })
+
+  it("rejects stale restart evidence copied from another run", () => {
+    const run = globalRun(1)
+    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
+    evidence.experiment_run_id = "run-0"
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /stale or misbound/)
+  })
+
+  it("merges burst populations and preserves overflow evidence", () => {
+    const first = globalRun(0)
+    first.histograms.burst = { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 2, overflow_count: 1, distribution: { max_ms: 30_000, total_count: 2, overflow_count: 1, buckets: [[10, 1]] } }
+    const second = globalRun(1)
+    second.histograms.burst = { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 2, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[20, 2]] } }
+    const third = globalRun(2)
+    third.histograms.burst = { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 2, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[30, 2]] } }
+    const result = aggregateGlobalCampaign([first, second, third])
+    assert.equal(result.histograms.burst.count, 6)
+    assert.equal(result.histograms.burst.p95_ms, 30)
+    assert.equal(result.histograms.burst.overflow_count, 1)
+  })
+
+  it("cannot interpret missing burst or late-join evidence as pass", () => {
+    const run = globalRun(1)
+    run.histograms.burst = { p50_ms: 0, p95_ms: 0, p99_ms: 0, max_ms: 0, count: 0, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] } }
+    run.histograms.late_join = { p50_ms: 0, p95_ms: 0, p99_ms: 0, max_ms: 0, count: 0, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] } }
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.match(result.validity.reasons.join(" "), /burst histogram is empty/)
+    assert.match(result.validity.reasons.join(" "), /late-join sample count 0/)
+  })
+
+  it("enforces frozen campaign identity, source, run count, seed, and freshness", () => {
+    const runs = [globalRun(0), globalRun(1), globalRun(2)]
+    const result = aggregateGlobalCampaign(runs, {
+      campaign_id: "different-campaign",
+      source_commit: "0000000000000000000000000000000000000000",
+      run_count: 4,
+      base_seed: 100,
+      started_at_ms: 1_900_000_000_000,
+    })
+    assert.equal(result.validity.valid, false)
+    const reasons = result.validity.reasons.join(" ")
+    assert.match(reasons, /campaign identity does not match/)
+    assert.match(reasons, /source commit does not match/)
+    assert.match(reasons, /differs from frozen 4/)
+    assert.match(reasons, /base-seed policy/)
+    assert.match(reasons, /predate the current campaign/)
+  })
+
+  it("rejects a stale shard object hidden inside a current global result", () => {
+    const run = globalRun(1)
+    run.shard_results[2].experiment_run_id = "run-0"
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.match(result.validity.reasons.join(" "), /stale or misbound shard results/)
+  })
+
+  it("handles a physically missing burst field as invalid evidence, not an exception", () => {
+    const run = globalRun(1)
+    delete (run.histograms as Partial<GlobalExperimentResult["histograms"]>).burst
+    const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.match(result.validity.reasons.join(" "), /burst histogram is empty/)
   })
 })

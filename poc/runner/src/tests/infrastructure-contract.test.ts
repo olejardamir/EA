@@ -14,6 +14,24 @@ describe("Milestone 2 infrastructure contract", () => {
     assert.match(control, /nginx_worker_fd_soft/)
     assert.match(control, /PER_WORKER_FD_RESERVE = 256/)
     assert.match(control, /usable_sse_capacity/)
+    assert.match(control, /theoretical_even_distribution/)
+    assert.match(control, /worker_distribution_observed: false/)
+  })
+
+  it("uses a fresh campaign identity/storage and exact detached terminal-state evidence", () => {
+    const launcher = read("run-evidence-100k.sh")
+    assert.match(launcher, /CAMPAIGN_ID.*COMPOSE_PROJECT_NAME/)
+    assert.match(launcher, /docker volume ls/)
+    assert.match(launcher, /docker container ls/)
+    assert.match(launcher, /docker network ls/)
+    const campaign = read("runner/src/global-campaign.ts")
+    assert.match(campaign, /stale campaign-result\.json exists/)
+    assert.match(campaign, /do not exactly match frozen run set/)
+    assert.match(campaign, /mtimeMs < campaignStartedAtMs/)
+    const detached = read("run-detached.sh")
+    for (const field of ["start_timestamp", "launcher_pid", "command", "stdout-stderr", "exit_status", "end_timestamp"]) {
+      assert.match(detached, new RegExp(field))
+    }
   })
 
   it("freezes exactly four 25k coordinated shards with one publisher owner", () => {
@@ -43,6 +61,17 @@ describe("Milestone 2 infrastructure contract", () => {
       assert.match(source, /\^\[0-9a-f\]\{40\}\$/)
     }
     assert.match(read("runner/Dockerfile"), /^ARG GIT_COMMIT_SHA$/m)
+  })
+
+  it("routes the normal smoke command through the portable bridge profile", () => {
+    const launcher = read("run-smoke.sh")
+    assert.match(launcher, /compose\.smoke-portable\.yaml/)
+    assert.match(launcher, /--project-name/)
+    const compose = read("compose.smoke-portable.yaml")
+    assert.match(compose, /GIT_COMMIT_SHA: "\$\{GIT_COMMIT_SHA:\?Use \.\/run-smoke\.sh\}"/)
+    assert.match(compose, /redis-cgroup-evidence:\/redis-cgroup:ro/)
+    assert.match(compose, /nchan-portable\.conf:\/etc\/nginx\/nchan-portable\.conf:ro/)
+    assert.doesNotMatch(read("nchan/nchan-portable.conf"), /allow host\.docker\.internal/)
   })
 
   it("exports Redis's actual cpu.max and cpuset evidence outside Redis data", () => {

@@ -155,9 +155,12 @@ async function main(): Promise<void> {
   const shardCount = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10)
   const globalTarget = parseInt(process.env.GLOBAL_TARGET ?? String(config.targetConnections * shardCount), 10)
   const publisherOwner = !coordinatedMode || process.env.PUBLISHER_OWNER === "true"
+  const campaignId = process.env.CAMPAIGN_ID ?? "single-run"
+  if (coordinatedMode && !process.env.CAMPAIGN_ID?.trim()) throw new Error("CAMPAIGN_ID is required in coordinated mode")
   const sourceCommit = getGitCommitSha()
   const coordinator = coordinatedMode
-    ? new CoordinatedShardClient(process.env.COORDINATOR_URL ?? "http://coordinator:3000", {
+      ? new CoordinatedShardClient(process.env.COORDINATOR_URL ?? "http://coordinator:3000", {
+        campaign_id: campaignId,
         shard_id: shardId,
         shard_count: shardCount,
         local_target: config.targetConnections,
@@ -230,7 +233,12 @@ async function main(): Promise<void> {
       clockEvidence.nchan1_reachable = resp1.ok
     } catch {}
     if (config.nchan2SubUrl) {
-      const nchan2PubUrl = config.nchan2SubUrl.replace("/sub/", "/pub/").replace(":8081", ":18080")
+      const nchan2PubUrl = config.nchan2PubUrl ?? (() => {
+        const url = new URL(config.nchan2SubUrl)
+        if (url.port === "18081") url.port = "18080"
+        url.pathname = ""
+        return url.toString().replace(/\/$/, "")
+      })()
       try {
         const resp2 = await fetch(`${nchan2PubUrl}/pub/healthcheck`, { signal: AbortSignal.timeout(3000) })
         clockEvidence.nchan2_reachable = resp2.ok
@@ -484,9 +492,9 @@ async function main(): Promise<void> {
     // Collect metrics
     await phaseBarrier("final-metrics", "start")
     log("\n--- COLLECTING METRICS ---")
-    resourceMonitor.stopEventLoopMonitor()
     resourceMonitor.measureCpu()
     const resourceSnap = resourceMonitor.snapshot()
+    resourceMonitor.stopEventLoopMonitor()
 
     const phaseHists = metrics.snapshotPhaseHistograms()
     const aggregated = aggregateWorkerMetrics([metrics], ctx.phaseSnapshots, phaseHists)
@@ -518,6 +526,7 @@ async function main(): Promise<void> {
     aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
     aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
+    aggregated.redis_memory_used_bytes = resourceSnap.redisMemoryBytesPeak ?? null
     // §AC: Wire cgroup v2 runtime signals — deltas from run-start baseline
     aggregated.cpu_usage_usec = (resourceSnap.cpu_usage_usec ?? 0) - (cgroupBaseline.cpu_usage_usec ?? 0)
     aggregated.cpu_throttled_count = (resourceSnap.cpu_throttled_count ?? 0) - (cgroupBaseline.cpu_throttled_count ?? 0)
@@ -658,7 +667,9 @@ async function main(): Promise<void> {
       aggregated.restart_active_end = ctx._restartActivePopulation.end
     }
 
-    const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
+    const generatorHealthy = aggregated.resource_cpu_percent_peak !== null
+      && aggregated.resource_cpu_percent_peak < 90
+      && aggregated.event_loop_delay_p99_ms < 100
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
     // A coordinated shard is classified only for its local validity. It cannot
@@ -716,6 +727,7 @@ async function main(): Promise<void> {
         scope: "shard",
         global_direct_accept_eligible: false,
         experiment_run_id: coordinator.experimentRunId!,
+        campaign_id: campaignId,
         run_index: parseInt(process.env.GLOBAL_RUN_INDEX ?? "0", 10),
         shard_id: shardId,
         shard_count: shardCount,
@@ -737,6 +749,8 @@ async function main(): Promise<void> {
         histograms: {
           fan_out: metrics.getFanOutHistogram().serialize(),
           late_join: metrics.getLateJoinHistogram().serialize(),
+          burst: phaseHists.burst?.fanOut.distribution
+            ?? { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] },
         },
         correctness_counters: {
           missing_sequences: aggregated.missing_sequences,
@@ -774,6 +788,10 @@ async function main(): Promise<void> {
             cpuset_effective_cpus: resourceSnap.nchan_cpuset_effective_cpus,
             memory_peak_run_bytes: resourceSnap.nchan_memory_peak_bytes,
             memory_peak_container_lifetime_bytes: resourceSnap.nchan_memory_container_lifetime_peak_bytes ?? null,
+            oom_events: aggregated.nchan_memory_oom_events,
+            oom_kill_events: aggregated.nchan_memory_oom_kill_events,
+            cpu_throttled_count: aggregated.nchan_cpu_throttled_count,
+            cpu_throttled_usec: aggregated.nchan_cpu_throttled_usec,
             nginx_worker_fd_soft: nginxRuntimePreflight?.nginx_worker_fd_soft ?? null,
             nginx_worker_fd_hard: nginxRuntimePreflight?.nginx_worker_fd_hard ?? null,
           },
@@ -784,10 +802,20 @@ async function main(): Promise<void> {
             cpu_max_period: resourceSnap.redis_cpu_max_period,
             cpuset_effective_cpus: resourceSnap.redis_cpuset_effective_cpus,
             memory_peak_run_mb: resourceSnap.redisMemoryMbPeak,
+            memory_used_bytes: resourceSnap.redisMemoryBytesPeak ?? null,
           },
         },
         scenarios: [
-          { name: "late-join", participated: publisherOwner, passed: lateJoinResult.passed, detail: lateJoinResult.detail },
+          {
+            name: "late-join",
+            participated: publisherOwner,
+            passed: lateJoinResult.passed,
+            detail: lateJoinResult.detail,
+            structured: {
+              expected_sample_count: publisherOwner ? 1 : 0,
+              recorded_sample_count: phaseHists["late-join"]?.lateJoin.count ?? 0,
+            },
+          },
           { name: "burst", participated: publisherOwner, passed: burstResult.passed, detail: burstResult.detail },
           {
             name: "reconnect",
@@ -802,7 +830,13 @@ async function main(): Promise<void> {
             participated: publisherOwner,
             passed: nchanResult.passed,
             detail: nchanResult.detail,
-            structured: { paths: ctx._restartReplay ?? {} },
+            structured: {
+              campaign_id: campaignId,
+              experiment_run_id: coordinator.experimentRunId!,
+              run_index: parseInt(process.env.GLOBAL_RUN_INDEX ?? "0", 10),
+              shard_id: shardId,
+              paths: ctx._restartReplay ?? {},
+            },
           },
         ],
       }

@@ -156,6 +156,12 @@ export function emitMachineReadableResult(
 
   // §4.2/§4.24: Run topology preflight if not provided
   const preflight = topologyPreflight ?? runTopologyPreflight(config.targetConnections)
+  // §3.8/§4.18: Judge generator headroom against assigned CPU capacity,
+  // not the raw multi-core process percentage (which may legitimately exceed 100%).
+  const generatorHealthy = metrics.resource_cpu_percent_peak !== null
+    && metrics.resource_cpu_percent_peak < 90
+    && metrics.generator_event_loop_p99_ms < 100
+    && metrics.generator_backlog_peak <= 1000
 
   const result = {
     contract_version: ACTIVE_CONTRACT_VERSION,
@@ -346,6 +352,7 @@ export function emitMachineReadableResult(
       memory_mb_peak: metrics.memory_mb_peak,
       nchan_memory_mb_peak: metrics.nchan_memory_mb_peak,
       redis_memory_mb_peak: metrics.redis_memory_mb_peak,
+      redis_memory_used_bytes: metrics.redis_memory_used_bytes ?? null,
       // §3.8.F: CPU percent fields — two units:
       //   *_cpu_percent_peak = raw percent of one CPU core (100% = 1 core fully utilized)
       //   *_resource_cpu_percent_peak = percent of assigned service capacity (normalized by cgroup limit)
@@ -511,7 +518,7 @@ export function emitMachineReadableResult(
     },
     validity: {
       timing_valid: metrics.timing_valid,
-      generator_healthy: metrics.generator_cpu_percent_peak < 90 && metrics.generator_event_loop_p99_ms < 100,
+      generator_healthy: generatorHealthy,
       // §4.18: Structured validity reasons from failed inconclusive checks
       reasons: verdictResult.checks
         .filter((c) => c.name.startsWith("inconclusive_override") && !c.passed)
@@ -520,7 +527,7 @@ export function emitMachineReadableResult(
     // §4.18: Measurement validity — conditions that could invalidate measurement
     measurement_validity: {
       timing_valid: metrics.timing_valid,
-      generator_healthy: metrics.generator_cpu_percent_peak < 90 && metrics.generator_event_loop_p99_ms < 100,
+      generator_healthy: generatorHealthy,
       topology_capacity_sufficient: metrics.topology_capacity_sufficient,
       no_schema_errors: (metrics.schema_validation_errors + metrics.missing_transport_id) === 0,
       no_parse_errors: (metrics.sse_parse_errors + metrics.json_parse_errors) === 0,

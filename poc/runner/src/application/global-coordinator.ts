@@ -24,6 +24,7 @@ export type BarrierBoundary = "start" | "end"
 
 export interface ShardRegistration {
   experiment_run_id?: string
+  campaign_id: string
   shard_id: number
   shard_count: number
   local_target: number
@@ -79,6 +80,7 @@ export interface ShardExperimentResult {
   scope: "shard"
   global_direct_accept_eligible: false
   experiment_run_id: string
+  campaign_id: string
   run_index: number
   shard_id: number
   shard_count: number
@@ -93,6 +95,7 @@ export interface ShardExperimentResult {
   histograms: {
     fan_out: SerializedHistogram
     late_join: SerializedHistogram
+    burst: SerializedHistogram
   }
   correctness_counters: Record<string, number>
   workload: {
@@ -123,6 +126,8 @@ export interface GlobalExperimentResult {
   aggregate_scope: "simultaneous_global_run"
   scope: "global"
   experiment_run_id: string
+  campaign_id: string
+  created_at_ms: number
   run_index: number
   seed: number
   participating_shard_ids: number[]
@@ -136,6 +141,7 @@ export interface GlobalExperimentResult {
   histograms: {
     fan_out: ReturnType<typeof histogramSummary>
     late_join: ReturnType<typeof histogramSummary>
+    burst: ReturnType<typeof histogramSummary>
   }
   correctness_counters: Record<string, number>
   per_shard_generator_validity: Array<{ shard_id: number; validity: ShardValidity }>
@@ -145,7 +151,7 @@ export interface GlobalExperimentResult {
     passed: boolean
     participant_shard_ids: number[]
     active_population: { active_start: number; active_min: number; active_peak: number; active_end: number } | null
-    details: Array<{ shard_id: number; detail: string; structured?: Record<string, unknown> }>
+    details: Array<{ shard_id: number; participated: boolean; detail: string; structured?: Record<string, unknown> }>
   }>
   shard_results: ShardExperimentResult[]
   validity: { valid: boolean; reasons: string[] }
@@ -212,12 +218,31 @@ export function hasExactRestartStructuredEvidence(structured: unknown): boolean 
   return isExactRestartPathEvidence(record.literal_restart) && isExactRestartPathEvidence(record.cross_node)
 }
 
+export function hasNoFabricatedRestartPaths(structured: unknown): boolean {
+  if (!structured || typeof structured !== "object") return true
+  const paths = (structured as Record<string, unknown>).paths
+  return !!paths && typeof paths === "object" && Object.keys(paths as Record<string, unknown>).length === 0
+}
+
+export function restartEvidenceMatchesRun(
+  structured: unknown,
+  expected: { campaign_id: string; experiment_run_id: string; run_index: number; shard_id: number },
+): boolean {
+  if (!structured || typeof structured !== "object") return false
+  const record = structured as Record<string, unknown>
+  return record.campaign_id === expected.campaign_id
+    && record.experiment_run_id === expected.experiment_run_id
+    && record.run_index === expected.run_index
+    && record.shard_id === expected.shard_id
+}
+
 function hasExactRestartEvidence(scenario: ShardScenarioEvidence): boolean {
   return hasExactRestartStructuredEvidence(scenario.structured)
 }
 
 export class GlobalExperimentCoordinator {
   readonly experimentRunId: string
+  readonly campaignId: string
   readonly shardCount: number
   readonly globalTarget: number
   readonly seed: number
@@ -231,6 +256,7 @@ export class GlobalExperimentCoordinator {
 
   constructor(options: {
     experimentRunId?: string
+    campaignId: string
     shardCount: number
     globalTarget: number
     seed: number
@@ -238,7 +264,9 @@ export class GlobalExperimentCoordinator {
   }) {
     if (!Number.isInteger(options.shardCount) || options.shardCount < 1) throw new Error("shardCount must be positive")
     if (!Number.isInteger(options.globalTarget) || options.globalTarget < 1) throw new Error("globalTarget must be positive")
+    if (!options.campaignId.trim()) throw new Error("campaignId must be non-empty")
     this.experimentRunId = options.experimentRunId || crypto.randomUUID()
+    this.campaignId = options.campaignId
     this.shardCount = options.shardCount
     this.globalTarget = options.globalTarget
     this.seed = options.seed
@@ -252,6 +280,7 @@ export class GlobalExperimentCoordinator {
     }
     if (this.registrations.has(registration.shard_id)) throw new Error(`duplicate shard_id ${registration.shard_id}`)
     if (registration.experiment_run_id && registration.experiment_run_id !== this.experimentRunId) throw new Error("experiment_run_id mismatch")
+    if (registration.campaign_id !== this.campaignId) throw new Error("campaign_id mismatch")
     if (registration.shard_count !== this.shardCount) throw new Error("shard_count mismatch")
     if (registration.global_target !== this.globalTarget) throw new Error("global_target mismatch")
     if (registration.seed !== this.seed) throw new Error("global seed mismatch")
@@ -327,6 +356,7 @@ export class GlobalExperimentCoordinator {
     if (!this.registrations.has(result.shard_id)) throw new Error(`unregistered shard ${result.shard_id}`)
     if (this.results.has(result.shard_id)) throw new Error(`duplicate result from shard ${result.shard_id}`)
     if (result.experiment_run_id !== this.experimentRunId) throw new Error("result experiment_run_id mismatch")
+    if (result.campaign_id !== this.campaignId) throw new Error("result campaign_id mismatch")
     if (result.contract_version !== ACTIVE_CONTRACT_VERSION) throw new Error("result contract_version mismatch")
     if (result.aggregate_scope !== "shard" || result.scope !== "shard" || result.global_direct_accept_eligible !== false) {
       throw new Error("shard result attempted a global acceptance claim")
@@ -386,7 +416,10 @@ export class GlobalExperimentCoordinator {
 
     const mergedFanOut = mergeHistograms(shardResults.map((result) => result.histograms.fan_out ?? emptyHistogram()))
     const mergedLateJoin = mergeHistograms(shardResults.map((result) => result.histograms.late_join ?? emptyHistogram()))
+    const mergedBurst = mergeHistograms(shardResults.map((result) => result.histograms.burst ?? emptyHistogram()))
     if (mergedFanOut.count === 0) validityReasons.push("global fan-out histogram is empty")
+    if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
+    if (mergedLateJoin.count !== 1) validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly 1 publisher-owner sample`)
 
     const correctnessCounters: Record<string, number> = {}
     for (const result of shardResults) {
@@ -400,11 +433,31 @@ export class GlobalExperimentCoordinator {
 
     const scenarioNames: ShardScenarioEvidence["name"][] = ["late-join", "burst", "reconnect", "slow-consumer", "restart-replacement"]
     const scenarioResults = scenarioNames.map((name) => {
-      const participants = shardResults.flatMap((result) => result.scenarios.filter((scenario) => scenario.name === name && scenario.participated).map((scenario) => ({ shardId: result.shard_id, scenario })))
+      const records = shardResults.flatMap((result) => result.scenarios.filter((scenario) => scenario.name === name).map((scenario) => ({ shardId: result.shard_id, owner: result.publisher_owner, scenario })))
+      const participants = records.filter(({ scenario }) => scenario.participated)
       const phaseName = name === "restart-replacement" ? "restart-replacement" : name
       const active = activeEvidence.scenarios[phaseName] ?? null
-      const passed = participants.length > 0 && participants.every(({ scenario }) => scenario.passed
-        && (name !== "restart-replacement" || hasExactRestartEvidence(scenario)))
+      let passed = participants.length > 0 && participants.every(({ scenario }) => scenario.passed)
+      if (name === "restart-replacement") {
+        const ownerRecords = records.filter(({ owner }) => owner)
+        const nonOwnerRecords = records.filter(({ owner }) => !owner)
+        const validOwner = ownerRecords.length === 1
+          && ownerRecords[0].scenario.participated
+          && ownerRecords[0].scenario.passed
+          && hasExactRestartEvidence(ownerRecords[0].scenario)
+          && restartEvidenceMatchesRun(ownerRecords[0].scenario.structured, {
+            campaign_id: this.campaignId,
+            experiment_run_id: this.experimentRunId,
+            run_index: ownerResult?.run_index ?? -1,
+            shard_id: ownerRecords[0].shardId,
+          })
+        const validNonOwners = nonOwnerRecords.length === Math.max(0, this.shardCount - 1)
+          && nonOwnerRecords.every(({ scenario }) => !scenario.participated
+            && scenario.passed
+            && hasNoFabricatedRestartPaths(scenario.structured))
+        passed = validOwner && validNonOwners
+        if (!validNonOwners) validityReasons.push("restart non-owner participation/evidence is invalid")
+      }
       if (!passed) rejectReasons.push(`${name} scenario failed or had no participant`)
       if (active) {
         const requiredMin = name === "reconnect" ? Math.floor(this.globalTarget * 0.9) : this.globalTarget
@@ -417,8 +470,9 @@ export class GlobalExperimentCoordinator {
         passed,
         participant_shard_ids: participants.map(({ shardId }) => shardId),
         active_population: active,
-        details: participants.map(({ shardId, scenario }) => ({
+        details: records.map(({ shardId, scenario }) => ({
           shard_id: shardId,
+          participated: scenario.participated,
           detail: scenario.detail,
           ...(scenario.structured ? { structured: scenario.structured } : {}),
         })),
@@ -437,6 +491,10 @@ export class GlobalExperimentCoordinator {
     const resources = {
       nchan: ownerResult?.resources.nchan ?? {},
       redis: ownerResult?.resources.redis ?? {},
+    }
+    const redisMemoryUsedBytes = resources.redis.memory_used_bytes
+    if (typeof redisMemoryUsedBytes !== "number" || !Number.isFinite(redisMemoryUsedBytes) || redisMemoryUsedBytes < 0) {
+      validityReasons.push("mandatory Redis memory_used_bytes evidence is missing or invalid")
     }
 
     const validity = { valid: validityReasons.length === 0, reasons: validityReasons }
@@ -457,6 +515,8 @@ export class GlobalExperimentCoordinator {
       aggregate_scope: "simultaneous_global_run",
       scope: "global",
       experiment_run_id: this.experimentRunId,
+      campaign_id: this.campaignId,
+      created_at_ms: Date.now(),
       run_index: shardResults[0]?.run_index ?? 0,
       seed: this.seed,
       participating_shard_ids: ids,
@@ -467,7 +527,11 @@ export class GlobalExperimentCoordinator {
       phase_timings: phaseTimings,
       active_population: activeEvidence,
       workload_rates: ownerResult?.workload ?? { events_published: 0, phase_rates: [] },
-      histograms: { fan_out: histogramSummary(mergedFanOut), late_join: histogramSummary(mergedLateJoin) },
+      histograms: {
+        fan_out: histogramSummary(mergedFanOut),
+        late_join: histogramSummary(mergedLateJoin),
+        burst: histogramSummary(mergedBurst),
+      },
       correctness_counters: correctnessCounters,
       per_shard_generator_validity: shardResults.map((result) => ({ shard_id: result.shard_id, validity: result.validity })),
       resources,

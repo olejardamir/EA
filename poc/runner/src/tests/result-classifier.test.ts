@@ -180,6 +180,21 @@ describe("classifyResult", () => {
     assert.equal(result.verdict, "REJECT")
   })
 
+  it("treats a Nchan OOM kill as direct DUT capacity evidence", () => {
+    const result = classifyResult(baseMetrics({
+      nchan_memory_oom_kill_events: 1,
+      connections_attempted: 100_000,
+      connection_failures: 40_000,
+    }), true, true)
+    assert.equal(result.verdict, "REJECT")
+    assert.equal(result.checks.at(-1)?.name, "dut_memory_capacity_reject")
+  })
+
+  it("does not turn a Nchan OOM into a verdict when generator validity failed", () => {
+    const result = classifyResult(baseMetrics({ nchan_memory_oom_kill_events: 1 }), false, true)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+  })
+
   it("returns REJECT when duplicates > 0", () => {
     const result = classifyResult(baseMetrics({ duplicates: 1 }), true, true)
     assert.equal(result.verdict, "REJECT")

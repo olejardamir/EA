@@ -1,3 +1,5 @@
+import type { PhaseHistogramResult } from "../domain/result.js"
+
 export interface MetricsRecorder {
   recordFanOutLatency(ms: number): void
   recordLateJoinLatency(ms: number): void
@@ -53,7 +55,7 @@ export interface MetricsRecorder {
   // §4.25: Per-phase histogram isolation
   beginPhase(name: string): void
   endPhase(): void
-  snapshotPhaseHistograms(): Record<string, { fanOut: { p50: number; p95: number; p99: number; max: number; count: number }; lateJoin: { p50: number; p95: number; p99: number; max: number; count: number } }>
+  snapshotPhaseHistograms(): Record<string, { fanOut: PhaseHistogramResult; lateJoin: PhaseHistogramResult }>
   snapshot(): MetricsSnapshot
 }
 

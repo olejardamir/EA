@@ -2,6 +2,7 @@ export interface ExperimentConfig {
   nchanPubUrl: string
   nchanSubUrl: string
   nchan2SubUrl: string
+  nchan2PubUrl?: string
   nchanControlUrl: string
   redisUrl: string
   targetConnections: number
@@ -57,6 +58,9 @@ export function loadConfig(): ExperimentConfig {
     nchanPubUrl,
     nchanSubUrl,
     nchan2SubUrl: process.env.NCHAN2_SUB_URL ?? "",
+    nchan2PubUrl: process.env.NCHAN2_PUB_URL
+      ? requireUrl(process.env.NCHAN2_PUB_URL, "NCHAN2_PUB_URL", "")
+      : undefined,
     nchanControlUrl: process.env.NCHAN_CONTROL_URL ?? "",
     redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
     targetConnections: requirePositiveInt(process.env.TARGET_CONNECTIONS, "TARGET_CONNECTIONS"),

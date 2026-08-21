@@ -122,6 +122,6 @@ function composeEvidenceEnv(): Record<string, string> {
 
 describe("canonical contract version source", () => {
   it("exports the frozen successor version", () => {
-    assert.equal(ACTIVE_CONTRACT_VERSION, "v2.0.5")
+    assert.equal(ACTIVE_CONTRACT_VERSION, "v2.0.6")
   })
 })

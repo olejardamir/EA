@@ -348,9 +348,9 @@ export async function runSingleExperiment(
     ctx.phaseSnapshots.push({ phase: "nchan-restart", eventsPublished: restartSnap.eventsPublished, byMatch: restartSnap.byMatch, durationMs: restartDuration, lobbyPublished: restartSnap.lobbyPublished, matchPublished: restartSnap.matchPublished, matchAttempts: restartSnap.matchAttempts, lobbyAttempts: restartSnap.lobbyAttempts })
 
     // Collect metrics
-    resourceMonitor.stopEventLoopMonitor()
     resourceMonitor.measureCpu()
     const resourceSnap = resourceMonitor.snapshot()
+    resourceMonitor.stopEventLoopMonitor()
 
     // §BA: §6.32: Capture streaming histograms for pooled percentile computation
     const rawFanOut = metrics.getFanOutHistogram()
@@ -363,6 +363,7 @@ export async function runSingleExperiment(
     aggregated.generator_event_loop_p99_ms = resourceSnap.eventLoopDelayP99Ms
     aggregated.nchan_memory_mb_peak = resourceSnap.nchanMemoryMbPeak
     aggregated.redis_memory_mb_peak = resourceSnap.redisMemoryMbPeak
+    aggregated.redis_memory_used_bytes = resourceSnap.redisMemoryBytesPeak ?? null
     // §3.9: Per-run cgroup deltas — cgroup counters are cumulative over container lifetime;
     // subtract the baseline captured at run start to get the per-run delta.
     aggregated.cpu_usage_usec = (resourceSnap.cpu_usage_usec ?? 0) - (cgroupBaseline.cpu_usage_usec ?? 0)
@@ -544,7 +545,9 @@ export async function runSingleExperiment(
       nchan2_reachable: nchan2Reachable,
     }
 
-    const generatorHealthy = aggregated.generator_cpu_percent_peak < 90 && aggregated.event_loop_delay_p99_ms < 100
+    const generatorHealthy = aggregated.resource_cpu_percent_peak !== null
+      && aggregated.resource_cpu_percent_peak < 90
+      && aggregated.event_loop_delay_p99_ms < 100
     const timingValid = aggregated.event_loop_delay_p99_ms < 200
 
     // §3.8.E: Campaign-level aggregate target for multi-shard 100k campaigns
@@ -764,6 +767,10 @@ function aggregateRuns(runs: SingleRunResult[]): AggregatedMetrics {
   aggregate.redis_memory_mb_peak = anyRedisMemNull
     ? null
     : Math.max(...runs.map((r) => r.aggregated.redis_memory_mb_peak as number))
+  const anyRedisBytesNull = runs.some((r) => r.aggregated.redis_memory_used_bytes === null || r.aggregated.redis_memory_used_bytes === undefined)
+  aggregate.redis_memory_used_bytes = anyRedisBytesNull
+    ? null
+    : Math.max(...runs.map((r) => r.aggregated.redis_memory_used_bytes as number))
   const anyNchanMemPeakBytesNull = runs.some((r) => r.aggregated.nchan_memory_peak_bytes === null)
   aggregate.nchan_memory_peak_bytes = anyNchanMemPeakBytesNull
     ? null

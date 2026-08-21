@@ -1,6 +1,8 @@
 import {
   hasExactRestartStructuredEvidence,
+  hasNoFabricatedRestartPaths,
   mergeHistograms,
+  restartEvidenceMatchesRun,
   type GlobalExperimentResult,
 } from "./global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
@@ -10,6 +12,8 @@ export interface GlobalCampaignResult {
   aggregate_scope: "campaign"
   scope: "campaign"
   global_direct_accept_eligible: boolean
+  campaign_id: string | null
+  created_at_ms: number
   run_count: number
   run_indices: number[]
   experiment_run_ids: string[]
@@ -26,6 +30,7 @@ export interface GlobalCampaignResult {
   histograms: {
     fan_out: ReturnType<typeof campaignHistogramSummary>
     late_join: ReturnType<typeof campaignHistogramSummary>
+    burst: ReturnType<typeof campaignHistogramSummary>
   }
   correctness_counters: Record<string, number>
   per_run_resources: GlobalExperimentResult["resources"][]
@@ -36,6 +41,7 @@ export interface GlobalCampaignResult {
 }
 
 const DISPERSION_THRESHOLD_CV = 0.15
+const EMPTY_DISTRIBUTION = { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] }
 
 function coefficientOfVariation(values: number[]): number {
   if (values.length < 2) return 0
@@ -57,15 +63,42 @@ function campaignHistogramSummary(histogram: ReturnType<typeof mergeHistograms>)
   }
 }
 
-function globalRunHasExactRestartEvidence(run: GlobalExperimentResult): boolean {
-  const restart = run.scenario_results.find((scenario) => scenario.name === "restart-replacement")
-  return !!restart
-    && restart.passed
-    && restart.details.length > 0
-    && restart.details.every((detail) => hasExactRestartStructuredEvidence(detail.structured))
+function globalRunRestartEvidenceError(run: GlobalExperimentResult): string | null {
+  if (run.shard_results.length !== run.shard_count) return "restart evidence does not cover every shard"
+  const owners = run.shard_results.filter((shard) => shard.publisher_owner)
+  if (owners.length !== 1) return `restart publisher owners ${owners.length}; expected exactly 1`
+  if (run.publisher_owner_shard_id !== owners[0].shard_id) return "restart publisher owner disagrees with global identity"
+
+  for (const shard of run.shard_results) {
+    const records = shard.scenarios.filter((scenario) => scenario.name === "restart-replacement")
+    if (records.length !== 1) return `shard ${shard.shard_id} restart record count ${records.length}; expected 1`
+    const restart = records[0]
+    if (shard.publisher_owner) {
+      if (!restart.participated || !restart.passed || !hasExactRestartStructuredEvidence(restart.structured)) {
+        return `publisher-owner shard ${shard.shard_id} lacks exact restart evidence`
+      }
+      if (!restartEvidenceMatchesRun(restart.structured, {
+        campaign_id: run.campaign_id,
+        experiment_run_id: run.experiment_run_id,
+        run_index: run.run_index,
+        shard_id: shard.shard_id,
+      })) return `publisher-owner shard ${shard.shard_id} restart evidence is stale or misbound`
+    } else if (restart.participated || !restart.passed || !hasNoFabricatedRestartPaths(restart.structured)) {
+      return `non-publisher shard ${shard.shard_id} restart non-participation is invalid`
+    }
+  }
+  return null
 }
 
-export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): GlobalCampaignResult {
+export interface FrozenCampaignPolicy {
+  campaign_id?: string
+  source_commit?: string
+  run_count?: number
+  base_seed?: number
+  started_at_ms?: number
+}
+
+export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], policy: FrozenCampaignPolicy = {}): GlobalCampaignResult {
   const runs = [...globalRuns].sort((a, b) => a.run_index - b.run_index)
   const reasons: string[] = []
   if (runs.length < 3 || runs.length > 8) reasons.push(`global run count ${runs.length} outside frozen 3..8 range`)
@@ -82,11 +115,37 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
   if (runs.some((run) => run.contract_version !== ACTIVE_CONTRACT_VERSION)) {
     reasons.push(`all campaign inputs must use contract ${ACTIVE_CONTRACT_VERSION}`)
   }
-  const runsWithoutExactRestart = runs
-    .filter((run) => !globalRunHasExactRestartEvidence(run))
-    .map((run) => run.run_index)
-  if (runsWithoutExactRestart.length > 0) {
-    reasons.push(`global runs missing exact restart structured evidence: ${runsWithoutExactRestart.join(",")}`)
+  if (policy.run_count !== undefined && runs.length !== policy.run_count) reasons.push(`global run count ${runs.length} differs from frozen ${policy.run_count}`)
+
+  const campaignIds = new Set(runs.map((run) => run.campaign_id))
+  const campaignId = campaignIds.size === 1 ? runs[0]?.campaign_id ?? null : null
+  if (campaignIds.size !== 1 || !campaignId) reasons.push("campaign identity differs or is missing across runs")
+  if (policy.campaign_id !== undefined && campaignId !== policy.campaign_id) reasons.push("campaign identity does not match frozen launcher policy")
+  if (runs.some((run) => !Number.isFinite(run.created_at_ms) || run.created_at_ms <= 0)) reasons.push("global run creation timestamp is missing or invalid")
+  if (policy.started_at_ms !== undefined && runs.some((run) => run.created_at_ms < policy.started_at_ms!)) {
+    reasons.push("one or more global results predate the current campaign")
+  }
+  if (runs.some((run) => run.created_at_ms > Date.now() + 60_000)) reasons.push("one or more global results have an implausible future timestamp")
+
+  for (const run of runs) {
+    if (policy.campaign_id !== undefined && run.experiment_run_id !== `${policy.campaign_id}-global-${run.run_index}`) {
+      reasons.push(`global run ${run.run_index} experiment_run_id does not match frozen launcher identity`)
+    }
+    if (run.shard_results.some((shard) => shard.campaign_id !== run.campaign_id
+      || shard.experiment_run_id !== run.experiment_run_id
+      || shard.run_index !== run.run_index
+      || shard.seed !== run.seed
+      || shard.source_commit !== run.source_commit)) {
+      reasons.push(`global run ${run.run_index} contains stale or misbound shard results`)
+    }
+    const error = globalRunRestartEvidenceError(run)
+    if (error) reasons.push(`global run ${run.run_index} restart evidence: ${error}`)
+    if (!run.histograms?.burst || run.histograms.burst.count === 0) reasons.push(`global run ${run.run_index} burst histogram is empty`)
+    if (!run.histograms?.late_join || run.histograms.late_join.count !== 1) reasons.push(`global run ${run.run_index} late-join sample count ${run.histograms?.late_join?.count ?? "missing"}; expected 1`)
+    const redisMemory = run.resources?.redis?.memory_used_bytes
+    if (typeof redisMemory !== "number" || !Number.isFinite(redisMemory) || redisMemory < 0) {
+      reasons.push(`global run ${run.run_index} Redis memory_used_bytes is missing or invalid`)
+    }
   }
 
   const targets = new Set(runs.map((run) => run.global_target))
@@ -96,18 +155,29 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
   const sourceCommit = commits.size === 1 ? runs[0]?.source_commit ?? null : null
   if (targets.size !== 1) reasons.push("global target differs across runs")
   if (commits.size !== 1 || !sourceCommit) reasons.push("source commit differs or is missing across runs")
+  if (policy.source_commit !== undefined && sourceCommit !== policy.source_commit) reasons.push("source commit does not match frozen launcher policy")
   if (shardCounts.size !== 1) reasons.push("shard count differs across runs")
+  const seeds = runs.map((run) => run.seed)
+  if (new Set(seeds).size !== runs.length || seeds.some((seed, index) => seed !== seeds[0] + index)) {
+    reasons.push("seeds must be unique and contiguous from the frozen base")
+  }
+  if (policy.base_seed !== undefined && seeds.some((seed, index) => seed !== policy.base_seed! + index)) {
+    reasons.push("seeds do not match frozen base-seed policy")
+  }
 
   const dispersionMetrics = {
     global_active_peak: coefficientOfVariation(runs.map((run) => run.active_population.global_active_peak)),
-    fan_out_p95_ms: coefficientOfVariation(runs.map((run) => run.histograms.fan_out.p95_ms)),
-    late_join_p95_ms: coefficientOfVariation(runs.map((run) => run.histograms.late_join.p95_ms)),
+    fan_out_p95_ms: coefficientOfVariation(runs.map((run) => run.histograms?.fan_out?.p95_ms ?? 0)),
+    late_join_p95_ms: coefficientOfVariation(runs.map((run) => run.histograms?.late_join?.p95_ms ?? 0)),
+    burst_p95_ms: coefficientOfVariation(runs.map((run) => run.histograms?.burst?.p95_ms ?? 0)),
   }
   const worstCv = Math.max(...Object.values(dispersionMetrics))
   const dispersionStable = Number.isFinite(worstCv) && worstCv <= DISPERSION_THRESHOLD_CV
 
-  const fanOut = mergeHistograms(runs.map((run) => run.histograms.fan_out.distribution))
-  const lateJoin = mergeHistograms(runs.map((run) => run.histograms.late_join.distribution))
+  const fanOut = mergeHistograms(runs.map((run) => run.histograms?.fan_out?.distribution ?? EMPTY_DISTRIBUTION))
+  const lateJoin = mergeHistograms(runs.map((run) => run.histograms?.late_join?.distribution ?? EMPTY_DISTRIBUTION))
+  const burst = mergeHistograms(runs.map((run) => run.histograms?.burst?.distribution ?? EMPTY_DISTRIBUTION))
+  if (lateJoin.count < runs.length) reasons.push(`campaign late-join cohort ${lateJoin.count} < required ${runs.length}`)
   const correctnessCounters: Record<string, number> = {}
   for (const run of runs) {
     for (const [name, value] of Object.entries(run.correctness_counters)) {
@@ -131,12 +201,14 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
     aggregate_scope: "campaign",
     scope: "campaign",
     global_direct_accept_eligible: verdict === "ACCEPT",
+    campaign_id: campaignId,
+    created_at_ms: Date.now(),
     run_count: runs.length,
     run_indices: runIndices,
     experiment_run_ids: experimentRunIds,
     global_target: globalTarget,
     source_commit: sourceCommit,
-    seeds: runs.map((run) => run.seed),
+    seeds,
     per_run_verdicts: runs.map((run) => run.verdict),
     dispersion: {
       threshold_cv: DISPERSION_THRESHOLD_CV,
@@ -147,6 +219,7 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[]): G
     histograms: {
       fan_out: campaignHistogramSummary(fanOut),
       late_join: campaignHistogramSummary(lateJoin),
+      burst: campaignHistogramSummary(burst),
     },
     correctness_counters: correctnessCounters,
     per_run_resources: runs.map((run) => run.resources),

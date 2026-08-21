@@ -47,6 +47,7 @@ function startCoordinator(): SpawnedCoordinator {
         GLOBAL_SEED: "42",
         GIT_COMMIT_SHA: SHA,
         EXPERIMENT_RUN_ID: "it-run-1",
+        CAMPAIGN_ID: "campaign-it",
         GLOBAL_RESULT_PATH: resultPath,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -109,6 +110,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
     scope: "shard",
     global_direct_accept_eligible: false,
     experiment_run_id: runId,
+    campaign_id: "campaign-it",
     run_index: 0,
     shard_id: shardId,
     shard_count: SHARDS,
@@ -129,7 +131,8 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
     samples: sampleSeries(shardId),
     histograms: {
       fan_out: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[20, 1], [40, 1]] },
-      late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[5, 1]] },
+      late_join: { max_ms: 30_000, total_count: owner ? 1 : 0, overflow_count: 0, buckets: owner ? [[5, 1]] : [] },
+      burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
     },
     correctness_counters: {
       missing_sequences: 0,
@@ -143,13 +146,23 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       events_published: owner ? 40 : 0,
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
-    resources: { generator: {}, nchan: owner ? { memory_peak_run_bytes: 1234 } : {}, redis: {} },
+    resources: {
+      generator: {},
+      nchan: owner ? { memory_peak_run_bytes: 1234 } : {},
+      redis: owner ? { memory_used_bytes: 500 } : {},
+    },
     scenarios: [
       { name: "late-join", participated: owner, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
       { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: "ok", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
+      {
+        name: "restart-replacement",
+        participated: owner,
+        passed: true,
+        detail: "ok",
+        ...(owner ? { structured: validRestartStructuredEvidence({ campaign_id: "campaign-it", experiment_run_id: runId }) } : {}),
+      },
     ],
   }
 }
@@ -162,6 +175,7 @@ describe("§5 PASS 13-15: reduced coordinated multi-shard HTTP integration", () 
       const port = await waitForPort(spawned)
       const clients = Array.from({ length: SHARDS }, (_, shardId) =>
         new CoordinatedShardClient(`http://127.0.0.1:${port}`, {
+          campaign_id: "campaign-it",
           shard_id: shardId,
           shard_count: SHARDS,
           local_target: LOCAL_TARGET,
@@ -217,6 +231,7 @@ describe("§5 PASS 13-15: reduced coordinated multi-shard HTTP integration", () 
       await spawned.waitReady()
       const port = await waitForPort(spawned)
       const failing = new CoordinatedShardClient(`http://127.0.0.1:${port}`, {
+        campaign_id: "campaign-it",
         shard_id: 0,
         shard_count: SHARDS,
         local_target: LOCAL_TARGET,
@@ -226,6 +241,7 @@ describe("§5 PASS 13-15: reduced coordinated multi-shard HTTP integration", () 
         publisher_owner: true,
       })
       const healthy = new CoordinatedShardClient(`http://127.0.0.1:${port}`, {
+        campaign_id: "campaign-it",
         shard_id: 1,
         shard_count: SHARDS,
         local_target: LOCAL_TARGET,

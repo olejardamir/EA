@@ -1,4 +1,9 @@
-export function validRestartStructuredEvidence() {
+export function validRestartStructuredEvidence(identity: {
+  campaign_id?: string
+  experiment_run_id?: string
+  run_index?: number
+  shard_id?: number
+} = {}) {
   const path = (transport: string) => ({
     transport_resume_id: transport,
     expected_first_seq: 10,
@@ -18,5 +23,11 @@ export function validRestartStructuredEvidence() {
     recovery_ms: 25,
     passed: true,
   })
-  return { paths: { literal_restart: path("literal-9"), cross_node: path("cross-9") } }
+  return {
+    campaign_id: identity.campaign_id ?? "campaign-1",
+    experiment_run_id: identity.experiment_run_id ?? "run-1",
+    run_index: identity.run_index ?? 0,
+    shard_id: identity.shard_id ?? 0,
+    paths: { literal_restart: path("literal-9"), cross_node: path("cross-9") },
+  }
 }

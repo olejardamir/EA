@@ -75,14 +75,19 @@ function redisInfo(redisUrl: string): Promise<string> {
   })
 }
 
-function parseRedisUsedMemory(info: string): number | null {
+export function parseRedisUsedMemoryBytes(info: string): number | null {
   for (const line of info.split("\r\n")) {
     if (line.startsWith("used_memory:")) {
       const bytes = parseInt(line.split(":")[1], 10)
-      if (!isNaN(bytes)) return bytes / (1024 * 1024)
+      if (!isNaN(bytes)) return bytes
     }
   }
   return null
+}
+
+export function cpuUsageDeltaPercent(deltaUsec: number, wallDeltaSeconds: number): number | null {
+  if (!Number.isFinite(deltaUsec) || deltaUsec < 0 || !Number.isFinite(wallDeltaSeconds) || wallDeltaSeconds <= 0) return null
+  return (deltaUsec / 1_000_000 / wallDeltaSeconds) * 100
 }
 
 function parseRedisConnectedClients(info: string): number | null {
@@ -212,6 +217,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   private memoryMbPeak = 0
   private cpuPercentPeak = 0
   private redisMemoryMbPeak: number | null = null
+  private redisMemoryBytesPeak: number | null = null
   private nchanMemoryMbPeak: number | null = null
   private nchanCpuUsageUsec: number | null = null
   private nchanCpuThrottledCount: number | null = null
@@ -244,6 +250,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
   // §AB: Use perf_hooks.monitorEventLoopDelay() for accurate event-loop delay
   // measurement instead of sparse setImmediate probes.
   private eventLoopMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null
+  private eventLoopDelayP99PeakMs = 0
 
   // §AC: cgroup v2 cumulative counters — sampled once at snapshot time
   private cgroupCpuUsageUsec = 0
@@ -320,9 +327,10 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     try {
       const info = await redisInfo(redisUrl)
       this._redisDataReceived = true
-      const memMb = parseRedisUsedMemory(info)
-      if (memMb !== null && (this.redisMemoryMbPeak === null || memMb > this.redisMemoryMbPeak)) {
-        this.redisMemoryMbPeak = memMb
+      const memoryBytes = parseRedisUsedMemoryBytes(info)
+      if (memoryBytes !== null && (this.redisMemoryBytesPeak === null || memoryBytes > this.redisMemoryBytesPeak)) {
+        this.redisMemoryBytesPeak = memoryBytes
+        this.redisMemoryMbPeak = memoryBytes / (1024 * 1024)
       }
       const clients = parseRedisConnectedClients(info)
       if (clients !== null && (this.redisConnectedClientsPeak === null || clients > this.redisConnectedClientsPeak)) {
@@ -384,9 +392,10 @@ export class CgroupResourceMonitor implements ResourceMonitor {
           if (this.prevNchanCpuUsageUsec !== null) {
             const cpuDelta = metrics.cpu_usage_usec - this.prevNchanCpuUsageUsec
             const wallDelta = (wallTime - this.prevNchanWallTime) / 1000 // seconds
-            if (wallDelta > 0) {
-              // cpu_usage_usec is in microseconds; convert to percentage of wall time
-              const cpuPercent = (cpuDelta / 1000 / wallDelta) * 100
+            const cpuPercent = cpuUsageDeltaPercent(cpuDelta, wallDelta)
+            if (cpuPercent !== null) {
+              // cpu_usage_usec is in microseconds; 1,000,000 usec over one
+              // second is 100% of one CPU, not 100,000%.
               if (this.nchanCpuPercentPeak === null || cpuPercent > this.nchanCpuPercentPeak) {
                 this.nchanCpuPercentPeak = cpuPercent
               }
@@ -426,13 +435,13 @@ export class CgroupResourceMonitor implements ResourceMonitor {
     // of event-loop delay. Resolution defaults to 10ms which is sufficient for
     // the frozen 50ms threshold.
     this.eventLoopMonitor = monitorEventLoopDelay({ resolution: 10 })
+    this.eventLoopDelayP99PeakMs = 0
     this.eventLoopMonitor.enable()
   }
 
   stopEventLoopMonitor(): void {
     if (this.eventLoopMonitor) {
       this.eventLoopMonitor.disable()
-      this.eventLoopMonitor = null
     }
   }
 
@@ -534,12 +543,13 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       this.memoryMbPeak = memMb
     }
 
-    let p99 = 0
+    let p99 = this.eventLoopDelayP99PeakMs
     if (this.eventLoopMonitor) {
       // §AB: Use percentiles from the continuous histogram
       const histogram = this.eventLoopMonitor
-      p99 = histogram.percentile(99) / 1_000_000 // ns -> ms
-      histogram.reset()
+      const observedP99 = histogram.percentile(99) / 1_000_000 // ns -> ms
+      if (Number.isFinite(observedP99)) this.eventLoopDelayP99PeakMs = Math.max(this.eventLoopDelayP99PeakMs, observedP99)
+      p99 = this.eventLoopDelayP99PeakMs
     }
 
     return {
@@ -548,6 +558,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
       cpuPercentPeak: this.cpuPercentPeak,
       nchanMemoryMbPeak: this.nchanMemoryMbPeak,
       redisMemoryMbPeak: this.redisMemoryMbPeak,
+      redisMemoryBytesPeak: this.redisMemoryBytesPeak,
       // §AC: cgroup v2 runtime signals (runner)
       cpu_usage_usec: this.cgroupCpuUsageUsec,
       cpu_throttled_count: this.cgroupCpuThrottledCount,
@@ -629,6 +640,7 @@ export class CgroupResourceMonitor implements ResourceMonitor {
 
   dispose(): void {
     this.stopEventLoopMonitor()
+    this.eventLoopMonitor = null
     if (this.pollTimer) {
       clearInterval(this.pollTimer)
       this.pollTimer = null

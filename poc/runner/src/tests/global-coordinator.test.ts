@@ -25,6 +25,7 @@ function histogram(values: number[]) {
 
 function registration(shardId: number, overrides: Partial<ShardRegistration> = {}): ShardRegistration {
   return {
+    campaign_id: "campaign-1",
     shard_id: shardId,
     shard_count: 2,
     local_target: 50,
@@ -66,6 +67,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     scope: "shard",
     global_direct_accept_eligible: false,
     experiment_run_id: "run-1",
+    campaign_id: "campaign-1",
     run_index: 0,
     shard_id: shardId,
     shard_count: 2,
@@ -84,7 +86,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reasons: [],
     },
     samples: scenarioSamples(shardId),
-    histograms: { fan_out: histogram([10 + shardId * 10, 20 + shardId * 10]), late_join: histogram([100 + shardId * 100]) },
+    histograms: {
+      fan_out: histogram([10 + shardId * 10, 20 + shardId * 10]),
+      late_join: histogram(owner ? [100] : []),
+      burst: histogram([30 + shardId * 10]),
+    },
     correctness_counters: {
       missing_sequences: 0,
       duplicates: 0,
@@ -100,7 +106,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     resources: {
       generator: { cpu_percent_of_capacity_peak: 50 },
       nchan: owner ? { memory_peak_run_bytes: 1000 } : {},
-      redis: owner ? { memory_peak_run_bytes: 500 } : {},
+      redis: owner ? { memory_peak_run_bytes: 500, memory_used_bytes: 500 } : {},
     },
     scenarios: [
       { name: "late-join", participated: owner, passed: true, detail: owner ? "exact full history" : "owner-only" },
@@ -122,7 +128,7 @@ async function completeBarriers(coordinator: GlobalExperimentCoordinator): Promi
 
 describe("GlobalExperimentCoordinator", () => {
   it("does not release a phase until every shard reaches the same barrier", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     let released = false
@@ -135,7 +141,7 @@ describe("GlobalExperimentCoordinator", () => {
   })
 
   it("propagates a global abort to shards waiting at a barrier", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     const waiting = coordinator.arrive(0, "preflight", "start")
@@ -144,7 +150,7 @@ describe("GlobalExperimentCoordinator", () => {
   })
 
   it("rejects inconsistent seeds, commits, targets, and duplicate shard IDs", () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     assert.throws(() => coordinator.register(registration(0)), /duplicate shard_id/)
     assert.throws(() => coordinator.register(registration(1, { seed: 43 })), /seed mismatch/)
@@ -176,7 +182,7 @@ describe("GlobalExperimentCoordinator", () => {
   })
 
   it("produces one global ACCEPT only after all barriers and global evidence pass", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -194,7 +200,7 @@ describe("GlobalExperimentCoordinator", () => {
   })
 
   it("prevents a shard-local direct/global acceptance claim", () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     assert.throws(() => coordinator.submitResult({
       ...shardResult(0),
@@ -203,13 +209,13 @@ describe("GlobalExperimentCoordinator", () => {
   })
 
   it("returns INCONCLUSIVE for generator/environment invalidity and REJECT for healthy DUT capacity failure", async () => {
-    const invalid = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const invalid = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     invalid.register(registration(0)); invalid.register(registration(1)); await completeBarriers(invalid)
     invalid.submitResult(shardResult(0, { validity: { ...shardResult(0).validity, generator_valid: false, reasons: ["event loop saturated"] } }))
     invalid.submitResult(shardResult(1))
     assert.equal(invalid.buildGlobalResult().verdict, "INCONCLUSIVE")
 
-    const capacity = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const capacity = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     capacity.register(registration(0)); capacity.register(registration(1)); await completeBarriers(capacity)
     const low = (id: number) => shardResult(id, { samples: scenarioSamples(id).map((sample) => ({ ...sample, active_current: 40 })) })
     capacity.submitResult(low(0)); capacity.submitResult(low(1))

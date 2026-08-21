@@ -154,6 +154,11 @@ const server = http.createServer((req, res) => {
       nginx_worker_fd_hard: null,
       cpu_quota: null,
       worker_connections_total: null,
+      per_worker_connection_ceiling: null,
+      per_worker_fd_reserve: 256,
+      per_worker_usable_sse_capacity: null,
+      capacity_model: "theoretical_even_distribution",
+      worker_distribution_observed: false,
       sufficient: false,
       reason: null,
     }
@@ -245,7 +250,9 @@ const server = http.createServer((req, res) => {
     // worker_connections ceiling and that worker's actual RLIMIT_NOFILE.
     const PER_WORKER_FD_RESERVE = 256
     if (result.worker_processes && result.worker_connections && result.nginx_worker_fd_soft) {
-      const perWorker = Math.max(0, Math.min(result.worker_connections, result.nginx_worker_fd_soft) - PER_WORKER_FD_RESERVE)
+      result.per_worker_connection_ceiling = Math.min(result.worker_connections, result.nginx_worker_fd_soft)
+      const perWorker = Math.max(0, result.per_worker_connection_ceiling - PER_WORKER_FD_RESERVE)
+      result.per_worker_usable_sse_capacity = perWorker
       result.usable_sse_capacity = result.worker_processes * perWorker
     }
 

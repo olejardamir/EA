@@ -1,4 +1,6 @@
-# Milestone 2 Remaining-Gap Audit — v5a Closure
+# Milestone 2 Remaining-Gap Audit — Historical v2.0.5 Baseline
+
+> Superseded for current machinery by `MILESTONE_2_POST_Q5_REAUDIT.md`. This file preserves the pre-q5 closure baseline and its then-current validation record.
 
 Audit date: 2026-08-20
 

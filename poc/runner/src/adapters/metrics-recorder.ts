@@ -78,13 +78,19 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
     this.activePhaseName = null
   }
 
-  snapshotPhaseHistograms(): Record<string, { fanOut: { p50: number; p95: number; p99: number; max: number; count: number }; lateJoin: { p50: number; p95: number; p99: number; max: number; count: number } }> {
+  snapshotPhaseHistograms(): Record<string, { fanOut: import("../domain/result.js").PhaseHistogramResult; lateJoin: import("../domain/result.js").PhaseHistogramResult }> {
     const result: Record<string, any> = {}
     for (const [name, h] of this.phaseFanOutHistograms) {
       const lh = this.phaseLateJoinHistograms.get(name)
       result[name] = {
-        fanOut: { p50: h.p50(), p95: h.p95(), p99: h.p99(), max: h.max, count: h.count },
-        lateJoin: { p50: lh?.p50() ?? 0, p95: lh?.p95() ?? 0, p99: lh?.p99() ?? 0, max: lh?.max ?? 0, count: lh?.count ?? 0 },
+        fanOut: {
+          p50: h.p50(), p95: h.p95(), p99: h.p99(), max: h.max, count: h.count,
+          overflow_count: h.overflows, distribution: h.serialize(),
+        },
+        lateJoin: {
+          p50: lh?.p50() ?? 0, p95: lh?.p95() ?? 0, p99: lh?.p99() ?? 0, max: lh?.max ?? 0, count: lh?.count ?? 0,
+          overflow_count: lh?.overflows ?? 0, distribution: lh?.serialize(),
+        },
       }
     }
     return result

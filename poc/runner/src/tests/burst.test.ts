@@ -49,7 +49,9 @@ function mockCtx(burstSeconds = 1): ScenarioContext {
         incrementSchemaValidationErrors() {},
         incrementMissingTransportId() {},
         recordSchedulerLag() {},
-        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
+        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() {
+          return { burst: { fanOut: { p50: 50, p95: 75, p99: 75, max: 75, count: 10 }, lateJoin: { p50: 0, p95: 0, p99: 0, max: 0, count: 0 } } }
+        },
         snapshot(): MetricsSnapshot {
           snapshotCount++
           // First snapshot (pre-burst) returns 5 latencies, second (post-burst) returns 15
@@ -138,9 +140,7 @@ describe("BurstScenario", () => {
     const ctx = mockCtx(1)
     const burst = new BurstScenario()
     await burst.execute(ctx)
-    // First snapshot returns 5 latencies, second returns 15
-    // Burst latencies = second.slice(5) = [30, 35, 40, 45, 50, 55, 60, 65, 70, 75]
-    // p95 = index ceil(0.95 * 10) - 1 = 9 → 75
+    // The dedicated full phase histogram owns the burst percentile.
     assert.equal(burst.burstFanOutP95Ms, 75)
   })
 
@@ -177,7 +177,9 @@ describe("BurstScenario", () => {
         incrementSchemaValidationErrors() {},
         incrementMissingTransportId() {},
         recordSchedulerLag() {},
-        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() { return {} },
+        beginPhase(_name: string) {}, endPhase() {}, snapshotPhaseHistograms() {
+          return { burst: { fanOut: { p50: 0, p95: 0, p99: 0, max: 0, count: 0 }, lateJoin: { p50: 0, p95: 0, p99: 0, max: 0, count: 0 } } }
+        },
         snapshot(): MetricsSnapshot {
         return {
           fan_out_latencies_ms: [], late_join_latencies_ms: [],
@@ -205,7 +207,7 @@ describe("BurstScenario", () => {
     } as any
     const burst = new BurstScenario()
     const result = await burst.execute(ctx)
-    assert.ok(result.passed)
+    assert.equal(result.passed, false)
     assert.equal(burst.burstFanOutP95Ms, 0)
   })
 })

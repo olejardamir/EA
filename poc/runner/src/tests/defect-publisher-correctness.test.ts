@@ -422,8 +422,10 @@ describe("§6.24: Machine-readable JSON output", () => {
           connections_dropped: 0, expected_fan_deliveries: 50, received_fan_deliveries: 50,
           connections_target: 100, burst_fan_out_p95_ms: 20,
           nchan_restart_history_replay_correct: true, nchan_restart_missing_sequences: 0, nchan_restart_skipped: false,
-          non_slow_p95_degradation_pct: 0, nchan_memory_mb_peak: null, redis_memory_mb_peak: null,
-          timing_valid: true, generator_cpu_percent_peak: 30, generator_event_loop_p99_ms: 5,
+          non_slow_p95_degradation_pct: 0, nchan_memory_mb_peak: null, redis_memory_mb_peak: 1,
+          redis_memory_used_bytes: 1_048_576,
+          timing_valid: true, generator_cpu_percent_peak: 119, resource_cpu_percent_peak: 14,
+          generator_event_loop_p99_ms: 5,
           run_profile: "smoke", lobby_subscribers: 2, match_001_subscribers: 12,
           match_002_subscribers: 0, match_003_subscribers: 0, match_004_subscribers: 0,
           match_005_subscribers: 0, match_006_subscribers: 0, match_007_subscribers: 0,
@@ -454,6 +456,11 @@ describe("§6.24: Machine-readable JSON output", () => {
     assert.ok(parsed.event_metrics, "event_metrics present")
     assert.ok(parsed.latency_metrics, "latency_metrics present")
     assert.ok(parsed.classification, "classification present")
+    assert.equal(parsed.resource_metrics.redis_memory_used_bytes, 1_048_576)
+    assert.equal(parsed.resource_metrics.generator_cpu_percent_peak, 119, "raw multi-core CPU remains observable")
+    assert.equal(parsed.resource_metrics.resource_cpu_percent_peak, 14, "normalized CPU remains observable")
+    assert.equal(parsed.validity.generator_healthy, true, "validity uses normalized CPU capacity")
+    assert.equal(parsed.measurement_validity.generator_healthy, true, "measurement validity uses normalized CPU capacity")
     assert.equal(parsed.classification.verdict, "NOT_APPLICABLE")
     assert.ok(Array.isArray(parsed.classification.checks), "checks is array")
   })

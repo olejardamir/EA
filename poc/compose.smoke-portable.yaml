@@ -14,6 +14,11 @@
 services:
   redis:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
+    entrypoint: ["/bin/sh", "/redis-cgroup-entrypoint.sh"]
+    command: ["redis-server"]
+    volumes:
+      - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
+      - redis-cgroup-evidence:/redis-cgroup
     ports:
       - "6379:6379"
     deploy:
@@ -28,6 +33,7 @@ services:
       retries: 5
 
   nchan:
+    image: poc-nchan:latest
     build:
       context: ./nchan
     # §6.16: Override default nchan.conf with portable config that uses
@@ -35,6 +41,8 @@ services:
     environment:
       NGINX_CONF: "/etc/nginx/nchan-portable.conf"
       CONTROL_PORT: "18888"
+    volumes:
+      - ./nchan/nchan-portable.conf:/etc/nginx/nchan-portable.conf:ro
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -58,8 +66,14 @@ services:
       retries: 10
 
   runner:
+    image: poc-runner:latest
     build:
       context: ./runner
+      args:
+        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
+    volumes:
+      - redis-cgroup-evidence:/redis-cgroup:ro
+      - ./runner/src:/app/src:ro
     depends_on:
       nchan:
         condition: service_healthy
@@ -77,6 +91,17 @@ services:
       COOLDOWN_SECONDS: "3"
       SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "smoke"
+      RUN_MODE: "single"
+      SURGE_SECONDS: "5"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
+      NCHAN_CPU_MAX_QUOTA: "400000"
+      NCHAN_CPU_MAX_PERIOD: "100000"
+      NCHAN_MEMORY_GB: "4"
+      NCHAN_NOFILE_SOFT: "200000"
+      NCHAN_NOFILE_HARD: "200000"
+      REDIS_CPU_MAX_QUOTA: "200000"
+      REDIS_CPU_MAX_PERIOD: "100000"
+      REDIS_MEMORY_GB: "2"
     deploy:
       resources:
         limits:
@@ -86,3 +111,6 @@ services:
       nofile:
         soft: 100000
         hard: 100000
+
+volumes:
+  redis-cgroup-evidence:

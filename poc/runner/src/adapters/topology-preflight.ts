@@ -14,6 +14,11 @@ export interface TopologyPreflight {
   nginx_worker_fd_soft: number | null
   nginx_worker_fd_hard: number | null
   nginx_max_sse_capacity: number
+  nginx_per_worker_connection_ceiling: number
+  nginx_per_worker_fd_reserve: number
+  nginx_per_worker_usable_sse_capacity: number
+  nginx_capacity_model: "theoretical_even_distribution"
+  nginx_worker_distribution_observed: false
   target_connections: number
   capacity_sufficient: boolean
   warnings: string[]
@@ -244,6 +249,13 @@ export function runTopologyPreflight(
     nginx_worker_fd_soft: nginxFdLimits?.soft ?? null,
     nginx_worker_fd_hard: nginxFdLimits?.hard ?? null,
     nginx_max_sse_capacity: nginxMaxSseCapacity,
+    nginx_per_worker_connection_ceiling: nginxFdLimits?.soft
+      ? Math.min(nginxWorkerConns, nginxFdLimits.soft)
+      : nginxWorkerConns,
+    nginx_per_worker_fd_reserve: NGINX_PER_WORKER_FD_RESERVE,
+    nginx_per_worker_usable_sse_capacity: perWorkerConfiguredCapacity,
+    nginx_capacity_model: "theoretical_even_distribution",
+    nginx_worker_distribution_observed: false,
     target_connections: targetConnections,
     capacity_sufficient: capacitySufficient,
     warnings,

@@ -108,6 +108,18 @@ export function classifyResult(
     return { verdict: "INCONCLUSIVE", checks }
   }
 
+  // v2.0.6: this is a DUT cgroup, not a generator cgroup. Once generator and
+  // timing validity have passed, an OOM kill is direct frozen-capacity evidence.
+  // Check it before downstream connection failures caused by the killed worker.
+  if (metrics.nchan_memory_oom_kill_events !== null && metrics.nchan_memory_oom_kill_events > 0) {
+    checks.push({
+      name: "dut_memory_capacity_reject",
+      passed: false,
+      detail: `nchan_memory_oom_kill_events=${metrics.nchan_memory_oom_kill_events} > 0 — DUT exceeded its frozen memory capacity`,
+    })
+    return { verdict: "REJECT", checks }
+  }
+
   // §4.11: High connection failure rate indicates environment/network bottleneck
   if (metrics.connections_attempted > 0) {
     const failureRate = metrics.connection_failures / metrics.connections_attempted
@@ -198,16 +210,6 @@ export function classifyResult(
       name: "inconclusive_override",
       passed: false,
       detail: `nchan_cpu_throttled_count=${metrics.nchan_cpu_throttled_count} > 0 — Nchan host CPU throttled`,
-    })
-    return { verdict: "INCONCLUSIVE", checks }
-  }
-
-  // §4.11: Nchan OOM kills — DUT memory exhausted
-  if (metrics.nchan_memory_oom_kill_events !== null && metrics.nchan_memory_oom_kill_events > 0) {
-    checks.push({
-      name: "inconclusive_override",
-      passed: false,
-      detail: `nchan_memory_oom_kill_events=${metrics.nchan_memory_oom_kill_events} > 0 — Nchan killed by OOM`,
     })
     return { verdict: "INCONCLUSIVE", checks }
   }
@@ -606,6 +608,12 @@ export function aggregateWorkerMetrics(
   // §3.7: Latency validity counters
   let latency_invalid_count = 0
   let latency_overflow_count = 0
+  // §4.25: Population metadata must represent all samples, including
+  // histogram overflow, rather than the bounded diagnostic arrays below.
+  let fan_out_sample_count = 0
+  let fan_out_overflow_count = 0
+  let late_join_sample_count = 0
+  let late_join_overflow_count = 0
   // §3.7: Accumulate global scheduler lag across all workers (max of p95/max)
   let scheduler_lag_p95_ms = 0
   let scheduler_lag_max_ms = 0
@@ -660,6 +668,10 @@ export function aggregateWorkerMetrics(
     // §3.9: Latency validity counters
     latency_invalid_count += s.latency_invalid_count
     latency_overflow_count += s.latency_overflow_count
+    fan_out_sample_count += s.fan_out_sample_count
+    fan_out_overflow_count += s.fan_out_overflow_count
+    late_join_sample_count += s.late_join_sample_count
+    late_join_overflow_count += s.late_join_overflow_count
     // §3.7: Accumulate global scheduler lag (max across workers)
     if (s.scheduler_lag_p95_ms > scheduler_lag_p95_ms) scheduler_lag_p95_ms = s.scheduler_lag_p95_ms
     if (s.scheduler_lag_max_ms > scheduler_lag_max_ms) scheduler_lag_max_ms = s.scheduler_lag_max_ms
@@ -869,11 +881,11 @@ export function aggregateWorkerMetrics(
     redis_resource_cpu_percent_peak: null,
     // §4.2: Topology capacity — wired from preflight in main.ts
     topology_capacity_sufficient: true,
-    // §4.25: Histogram sample population metadata — defaults
-    fan_out_sample_count: 0,
-    fan_out_overflow_count: 0,
-    late_join_sample_count: 0,
-    late_join_overflow_count: 0,
+    // §4.25: Histogram sample population metadata — exact worker sums
+    fan_out_sample_count,
+    fan_out_overflow_count,
+    late_join_sample_count,
+    late_join_overflow_count,
     // §3.9: Latency validity counters
     latency_invalid_count,
     latency_overflow_count,

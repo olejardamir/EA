@@ -25,6 +25,7 @@ function histogram(values: number[], maxMs = 30_000) {
 
 function registration(shardId: number, overrides: Partial<ShardRegistration> = {}): ShardRegistration {
   return {
+    campaign_id: "campaign-1",
     shard_id: shardId,
     shard_count: 2,
     local_target: 50,
@@ -63,6 +64,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     scope: "shard",
     global_direct_accept_eligible: false,
     experiment_run_id: "run-1",
+    campaign_id: "campaign-1",
     run_index: 0,
     shard_id: shardId,
     shard_count: 2,
@@ -81,7 +83,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reasons: [],
     },
     samples: fullSampleSet(shardId),
-    histograms: { fan_out: histogram([10, 20]), late_join: histogram([5]) },
+    histograms: {
+      fan_out: histogram([10, 20]),
+      late_join: histogram(owner ? [5] : []),
+      burst: histogram([15]),
+    },
     correctness_counters: {
       missing_sequences: 0,
       duplicates: 0,
@@ -94,7 +100,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       events_published: owner ? 100 : 0,
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
-    resources: { generator: {}, nchan: owner ? { memory_peak_run_bytes: 1000 } : {}, redis: {} },
+    resources: {
+      generator: {},
+      nchan: owner ? { memory_peak_run_bytes: 1000 } : {},
+      redis: owner ? { memory_used_bytes: 500 } : {},
+    },
     scenarios: [
       { name: "late-join", participated: owner, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
@@ -115,14 +125,14 @@ async function completeBarriers(coordinator: GlobalExperimentCoordinator): Promi
 
 describe("GlobalExperimentCoordinator adversarial", () => {
   it("rejects a shard result governed by a stale contract", () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     const stale = { ...shardResult(0), contract_version: "v2.0.4" } as unknown as ShardExperimentResult
     assert.throws(() => coordinator.submitResult(stale), /contract_version mismatch/)
   })
 
   it("does not let a stale restart passed boolean bypass exact path evidence", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
     const owner = shardResult(0)
     const restart = owner.scenarios.find((scenario) => scenario.name === "restart-replacement")!
@@ -145,14 +155,14 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("rejects out-of-range and non-integer shard IDs", () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     assert.throws(() => coordinator.register(registration(-1)), /invalid shard_id/)
     assert.throws(() => coordinator.register(registration(2)), /invalid shard_id/)
     assert.throws(() => coordinator.register(registration(1.5)), /invalid shard_id/)
   })
 
   it("binds every barrier receipt to the one coordinator-issued experiment run ID", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 1, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 1, globalTarget: 100, seed: 42 })
     assert.throws(() => coordinator.register(registration(0, { experiment_run_id: "different-run", shard_count: 1 })), /mismatch/)
     coordinator.register(registration(0, { shard_count: 1 }))
     const receipt = await coordinator.arrive(0, "preflight", "start")
@@ -160,7 +170,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("marks the aggregate invalid when local targets do not sum to the global target", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0, { local_target: 40 }))
     coordinator.register(registration(1, { local_target: 40 }))
     await completeBarriers(coordinator)
@@ -202,7 +212,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("returns INCONCLUSIVE when a shard never submits a result", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -214,7 +224,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("flags non-owner shards that published workload", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -237,7 +247,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("detects a shard skipping an earlier phase boundary", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 1, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 1, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0, { shard_count: 1 }))
     await coordinator.arrive(0, "preflight", "start")
     await coordinator.arrive(0, "preflight", "end")
@@ -248,14 +258,14 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("rejects duplicate barrier arrivals from the same shard", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 1, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 1, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0, { shard_count: 1 }))
     await coordinator.arrive(0, "preflight", "start")
     await assert.rejects(coordinator.arrive(0, "preflight", "start"), /duplicate barrier arrival/)
   })
 
   it("keeps the first abort reason when abort is called repeatedly", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     const waiting = coordinator.arrive(0, "preflight", "start")
@@ -267,7 +277,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("rejects results from unregistered shards and duplicate submissions", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -277,7 +287,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("treats a failed per-shard source-port headroom flag as invalidating", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -291,19 +301,19 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   })
 
   it("requires a non-empty global fan-out histogram", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([]), late_join: histogram([]) } }))
-    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([]), late_join: histogram([]) } }))
+    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
+    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.validity.valid, false)
     assert.ok(result.validity.reasons.some((reason) => reason.includes("global fan-out histogram is empty")))
   })
 
   it("reports REJECT when any correctness counter is nonzero across shards", async () => {
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
@@ -319,7 +329,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   it("does not let a single 28k-scale shard verdict stand in for the global verdict", async () => {
     // Shard 0 claims ACCEPT at its local scale while the aligned global peak
     // never reaches the global target — the global result must be REJECT.
-    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)

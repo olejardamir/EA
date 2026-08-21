@@ -61,6 +61,7 @@ export interface AggregatedMetrics {
   non_slow_p95_degradation_pct: number
   nchan_memory_mb_peak: number | null
   redis_memory_mb_peak: number | null
+  redis_memory_used_bytes?: number | null
   // §4.9: Nchan container resource metrics
   nchan_cpu_usage_usec: number | null
   nchan_cpu_throttled_count: number | null
@@ -294,6 +295,8 @@ export interface PhaseHistogramResult {
   p99: number
   max: number
   count: number
+  overflow_count?: number
+  distribution?: import("../adapters/streaming-histogram.js").SerializedHistogram
 }
 
 export interface VerdictResult {

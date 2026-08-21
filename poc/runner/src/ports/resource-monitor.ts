@@ -4,6 +4,7 @@ export interface ResourceSnapshot {
   cpuPercentPeak: number
   nchanMemoryMbPeak: number | null
   redisMemoryMbPeak: number | null
+  redisMemoryBytesPeak?: number | null
   // §AC: cgroup v2 runtime signals (runner)
   cpu_usage_usec: number | null           // cpu.stat usage_usec — total CPU time in microseconds
   cpu_throttled_count: number | null      // cpu.stat nr_throttled — number of times CPU was throttled
@@ -58,6 +59,11 @@ export interface NginxPreflight {
   nginx_worker_fd_hard: number | null
   cpu_quota: number | null
   worker_connections_total: number | null
+  per_worker_connection_ceiling: number | null
+  per_worker_fd_reserve: number
+  per_worker_usable_sse_capacity: number | null
+  capacity_model: "theoretical_even_distribution"
+  worker_distribution_observed: boolean
   // §3.4.C: Usable SSE capacity after subtracting non-viewer FD overhead
   usable_sse_capacity: number | null
   sufficient: boolean

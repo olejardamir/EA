@@ -21,9 +21,12 @@ const expectedSourceCommit = process.env.GIT_COMMIT_SHA
 if (!expectedSourceCommit || !/^[0-9a-f]{40}$/i.test(expectedSourceCommit)) {
   throw new Error("GIT_COMMIT_SHA must be the full checkout SHA")
 }
+const campaignId = process.env.CAMPAIGN_ID
+if (!campaignId?.trim()) throw new Error("CAMPAIGN_ID must be non-empty")
 
 const coordinator = new GlobalExperimentCoordinator({
   experimentRunId: process.env.EXPERIMENT_RUN_ID || undefined,
+  campaignId,
   shardCount,
   globalTarget,
   seed,

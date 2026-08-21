@@ -4,7 +4,7 @@ import { parseSSEChunk } from "../adapters/sse-http-client.js"
 import type { ParsedFrame } from "../adapters/sse-http-client.js"
 import { BoundedMetricsRecorder } from "../adapters/metrics-recorder.js"
 import { ConnectionPool } from "../application/connection-pool.js"
-import { classifyResult } from "../application/result-classifier.js"
+import { aggregateWorkerMetrics, classifyResult } from "../application/result-classifier.js"
 import { createSequenceTracker } from "../domain/sequence-validator.js"
 import { createMatchHeadTracker } from "../domain/match-state.js"
 import { createEventPayload, MATCH_IDS } from "../domain/event.js"
@@ -1267,12 +1267,19 @@ describe("§4.25: Histogram overflow behavior", () => {
     const metrics = new BoundedMetricsRecorder()
     for (let i = 0; i < 50; i++) metrics.recordFanOutLatency(i)
     metrics.recordFanOutLatency(-1)
+    metrics.recordLateJoinLatency(100)
+    metrics.recordLateJoinLatency(-1)
     const snap = metrics.snapshot()
+    const aggregate = aggregateWorkerMetrics([metrics])
 
     assert.equal(snap.fan_out_sample_count, 51, "sample count includes all")
     assert.equal(snap.fan_out_overflow_count, 1, "overflow tracked")
-    assert.equal(snap.late_join_sample_count, 0, "no late-join yet")
-    assert.equal(snap.late_join_overflow_count, 0, "no late-join overflow")
+    assert.equal(snap.late_join_sample_count, 2, "late-join count includes all")
+    assert.equal(snap.late_join_overflow_count, 1, "late-join overflow tracked")
+    assert.equal(aggregate.fan_out_sample_count, 51, "aggregate preserves full fan-out population")
+    assert.equal(aggregate.fan_out_overflow_count, 1, "aggregate preserves fan-out overflow")
+    assert.equal(aggregate.late_join_sample_count, 2, "aggregate preserves full late-join population")
+    assert.equal(aggregate.late_join_overflow_count, 1, "aggregate preserves late-join overflow")
   })
 })
 

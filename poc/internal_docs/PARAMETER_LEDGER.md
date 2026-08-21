@@ -1,6 +1,6 @@
 # Parameter Explainability Ledger (§AI / §6.44)
 
-Active contract: `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (both v2.0.4 documents are historical/superseded).
+Active contract: `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md`. v2.0.5 and q5 are historical.
 
 Every result-affecting non-assignment constant has a value, unit, classification, rationale, and usage location.
 
@@ -10,7 +10,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 |---|---|---|---|---|---|
 | GLOBAL_TARGET (coordinated evidence) | 100000 | connections | ASSIGNMENT_FACT | 100,000 simultaneous global viewers | compose.evidence-100k.yaml, global-coordinator.ts |
 | TARGET_CONNECTIONS (coordinated shard) | 25000 | connections/shard | DERIVED_VALUE | 4 × 25,000 = 100,000 while preserving frozen source-port reserves | compose.evidence-100k.yaml, topology-preflight.ts |
-| TARGET_CONNECTIONS (legacy repeated single-runner evidence) | 100000 | connections | HISTORICAL_CONTRACT | v2.0.3 cross-run path; it is not direct global eligibility under the active v2.0.5 contract | compose.evidence.yaml, evidence-suite.ts |
+| TARGET_CONNECTIONS (legacy repeated single-runner evidence) | 100000 | connections | HISTORICAL_CONTRACT | v2.0.3 cross-run path; it is not direct global eligibility under the active v2.0.6 contract | compose.evidence.yaml, evidence-suite.ts |
 | TARGET_CONNECTIONS (smoke) | 100 | connections | PLANNING_ASSUMPTION | Scaled-down for fast iteration; exercises same logic | compose.yaml, experiment-config.ts |
 | WARMUP_SECONDS (evidence) | 30 | s | PLANNING_ASSUMPTION | Sufficient for 60k connections + events to stabilize | compose.evidence.yaml |
 | WARMUP_SECONDS (smoke) | 5 | s | PLANNING_ASSUMPTION | Proportional reduction for 100-connection smoke | compose.yaml |
@@ -66,7 +66,7 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Redis connect timeout | 5s | seconds | PLANNING_ASSUMPTION | Reasonable Redis connection timeout | nchan.conf:24 |
 | Redis command timeout | 5s | seconds | PLANNING_ASSUMPTION | Reasonable Redis command timeout | nchan.conf:25 |
 | worker_processes | 4 | count | DERIVED_VALUE | Matches 4-CPU container quota (§BC) | nchan.conf:2 |
-| worker_connections | 32768 | count | DERIVED_VALUE | 4 workers × 32768 = 131072 max connections; explicit headroom above 100k target (Redis/FD/control FDs consume non-viewer descriptors) | nchan.conf:7 |
+| worker_connections | 32768 | connections/worker | HISTORICAL_FROZEN_CONFIG | 131,072 raw/130,048 reserved even-distribution aggregate is theoretical only. q5 hit per-worker warnings and Nchan OOM near 66k; v2.0.6 does not raise this limit. | nchan.conf:7, control-server.js, M4 reconciliation |
 
 ## Resource Envelope
 
@@ -87,13 +87,14 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Latency histogram max | 30000 | ms | PLANNING_ASSUMPTION | Overflow bucket; ≥30s latencies counted but not discarded (§T) | connection-pool.ts:94 |
 | Latency invalid threshold | 0 | ms | PROTOCOL_REQUIREMENT | Negative latency → timing validity failure (§T) | connection-pool.ts:91 |
 | Fan-out sample count | dynamic | count | DERIVED_VALUE | Total valid fan-out samples; overflow counted separately (§4.25) | metrics-recorder.ts |
-| Late-join sample count | dynamic | count | DERIVED_VALUE | Total valid late-join samples; overflow counted separately (§4.25) | metrics-recorder.ts |
+| Burst fan-out sample count | dynamic, >0 per valid global run | count | PROTOCOL_REQUIREMENT | Full phase distribution is required; missing/empty cannot be zero latency or PASS | metrics-recorder.ts, burst.ts, global coordinator/campaign |
+| Late-join sample count | exactly 1/global run; ≥run count and ≥3/campaign | count | PROTOCOL_REQUIREMENT | One authoritative owner measurement per synchronized repetition; non-owners contribute zero | global-coordinator.ts, global-campaign.ts |
 
 ## Generator Health Thresholds
 
 | Parameter | Value | Unit | Classification | Rationale | Where Used |
 |---|---|---|---|---|---|
-| Generator CPU saturation | 90 | % | PLANNING_ASSUMPTION | Above 90% CPU → generator may be bottleneck, not DUT | result-classifier (classifyResult) |
+| Generator CPU saturation | 90 | % assigned capacity | PLANNING_ASSUMPTION | Raw CPU is normalized by runner quota/cpuset first; ≥90% means the generator may be the bottleneck | main.ts, evidence-suite.ts, result-classifier.ts |
 | Event-loop delay saturation | 100 | ms p99 | PLANNING_ASSUMPTION | Above 100ms event-loop p99 → generator saturated | result-classifier (classifyResult) |
 | Event-loop delay timing validity | 200 | ms p99 | PLANNING_ASSUMPTION | Above 200ms → timing measurements unreliable | result-classifier (classifyResult) |
 
@@ -105,6 +106,8 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | MAX_RUNS | 8 | count | PLANNING_ASSUMPTION | Maximum runs before declaring INCONCLUSIVE on variance | evidence-suite.ts:63 |
 | Dispersion threshold | 15% | CV | PLANNING_ASSUMPTION | Coefficient of variation ≤ 15% for stable dispersion | evidence-suite.ts:64 |
 | Max run timeout | 600000 | ms | PLANNING_ASSUMPTION | 10-minute hard limit per run to prevent infinite hangs | evidence-suite.ts:115 |
+| Coordinated runner maximum | 1800000 | ms | PLANNING_ASSUMPTION | Bounds the whole long-form shard run without truncating valid multi-phase execution | compose.evidence-100k.yaml, main.ts |
+| Coordinator barrier request deadline | 660000 | ms | PLANNING_ASSUMPTION | One explicit whole-request deadline; intentionally longer than long scenario work and never shadowed by a transport headers timeout | coordinator-client.ts |
 
 ## Slow Consumer Parameters
 
@@ -135,15 +138,22 @@ Every result-affecting non-assignment constant has a value, unit, classification
 | Late-join deterministic prefill | 500 | accepted events | PLANNING_ASSUMPTION | Meaningful deterministic retained-history extension | late-join.ts |
 | Late-join live margin | 120 | events | DERIVED_VALUE | 60 events/s × 2-second catch-up bound | late-join.ts |
 | Late-join safety margin | 256 | events | PLANNING_ASSUMPTION | Guards live-arrival and scheduling variation | late-join.ts |
+| Late-join global-run population | exactly 1 | owner sample/run | PROTOCOL_REQUIREMENT | The single publisher owner performs the synchronized history probe; every non-owner contributes zero | global-coordinator.ts |
+| Late-join campaign population | at least run count and at least 3 | samples/campaign | PROTOCOL_REQUIREMENT | Repetition supplies a non-trivial population without changing owner-only workload semantics | global-campaign.ts |
 | Scenario active minimum | 100% target; reconnect 90% | percentage | PROTOCOL_REQUIREMENT | Peak claims remain at target; reconnect permits its deliberate 10% cohort outage | global-coordinator.ts |
 | Coordinated campaign runs | 3 minimum, 8 maximum | global runs | PLANNING_ASSUMPTION | Repeats complete simultaneous-global experiments without mixing shard/run dimensions | run-evidence-100k.sh, global-campaign.ts |
 | Coordinated campaign dispersion | 15% | sample coefficient of variation (`n-1`) | PLANNING_ASSUMPTION | Frozen stability bound across global active peak and latency p95 metrics | global-campaign.ts |
+| Campaign identity | equals unique Compose project name | identifier | PROTOCOL_REQUIREMENT | Binds storage, containers, network, global results and restart proof to one fresh campaign | both evidence launchers, coordinator/campaign |
+| Campaign source/run/seed policy | one full SHA; indices 0..N-1; seeds base+index; IDs `${campaign_id}-global-${index}` | provenance tuple | PROTOCOL_REQUIREMENT | Prevents mixed or stale results from satisfying current evidence | run-evidence-100k.sh, global-campaign.ts |
+| Freshness lower bound | result timestamp and file mtime ≥ campaign start | milliseconds | PROTOCOL_REQUIREMENT | Prior result files cannot be accepted under a new invocation | global-campaign CLI/application |
+| Detached signal status | 128 + signal number | numeric exit | PROTOCOL_REQUIREMENT | Preserves standard shell terminal-state encoding across detachment | run-detached.sh |
 
 ## Machine Provenance Sources
 
 | Field | Resolved source | Validity rule | Where Emitted |
 |---|---|---|---|
-| `contract_version` | `ACTIVE_CONTRACT_VERSION` in `domain/active-contract.ts` | every single/shard/global/campaign output must equal canonical v2.0.5 | result-printer, evidence-suite, main shard result, global coordinator, campaign |
+| `contract_version` | `ACTIVE_CONTRACT_VERSION` in `domain/active-contract.ts` | every single/shard/global/campaign output must equal canonical v2.0.6 | result-printer, evidence-suite, main shard result, global coordinator, campaign |
+| `campaign_id`, `created_at_ms` | detached/qualifying launcher and result producer clock | exact current identity; timestamp after campaign start and not implausibly future | shard/global/campaign provenance |
 | runner nofile soft/hard | current process `/proc/self/limits` | parsed actual values; unknown is explicit `null`, never a stale profile constant | `runtime_container_limits.runner`, shard generator resources |
 | service CPU/memory/nofile envelope | launch-profile environment populated beside Compose service limits | selected profile and emitted values must agree; unavailable values are explicit `null` | `runtime_container_limits.nchan`, `.nchan2`, `.redis` |
 | Nginx worker nofile soft/hard | Nchan control process scan of `/proc/<worker>/limits` | actual worker values required for Nginx capacity proof | Nginx preflight, shard Nchan resources |
@@ -193,5 +203,6 @@ BACKPRESSURE_DURATION_MS: 15000
 NCHAN_PUB_URL: http://localhost:8080
 NCHAN_SUB_URL: http://localhost:8081
 NCHAN2_SUB_URL: http://localhost:18081
+NCHAN2_PUB_URL: http://localhost:18080
 REDIS_URL: redis://localhost:6379
 ```

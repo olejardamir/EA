@@ -1,8 +1,18 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { CgroupResourceMonitor } from "../adapters/cgroup-resource-monitor.js"
+import { CgroupResourceMonitor, cpuUsageDeltaPercent, parseRedisUsedMemoryBytes } from "../adapters/cgroup-resource-monitor.js"
 
 describe("CgroupResourceMonitor (Defect 9)", () => {
+  it("parses Redis INFO used_memory as exact bytes", () => {
+    assert.equal(parseRedisUsedMemoryBytes("$20\r\n# Memory\r\nused_memory:123456\r\n\r\n"), 123456)
+    assert.equal(parseRedisUsedMemoryBytes("# Memory\r\nused_memory_human:1M\r\n"), null)
+  })
+  it("converts Nchan cgroup microseconds exactly once", () => {
+    assert.equal(cpuUsageDeltaPercent(1_000_000, 1), 100)
+    assert.equal(cpuUsageDeltaPercent(2_000_000, 1), 200)
+    assert.equal(cpuUsageDeltaPercent(1_000_000, 2), 50)
+    assert.equal(cpuUsageDeltaPercent(-1, 1), null)
+  })
   it("snapshot returns all required fields", () => {
     const monitor = new CgroupResourceMonitor()
     const snap = monitor.snapshot()
@@ -36,6 +46,7 @@ describe("CgroupResourceMonitor (Defect 9)", () => {
     const snap = monitor.snapshot()
     assert.ok(snap.eventLoopDelayP99Ms >= 0)
     monitor.stopEventLoopMonitor()
+    assert.ok(monitor.snapshot().eventLoopDelayP99Ms >= snap.eventLoopDelayP99Ms)
     monitor.dispose()
   })
 
