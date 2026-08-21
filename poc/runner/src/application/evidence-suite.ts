@@ -276,9 +276,14 @@ export async function runSingleExperiment(
     metrics.endPhase()
 
     // Phase 5: Late-join under peak load
+    // §v2.1.0: single-shard suite acts as the owner — canonical prefill, frozen
+    // expectation in shared Redis, history probe against its own partition node.
     metrics.beginPhase("late-join")
     const lateJoinStart = ctx.clock.now()
-    const lateJoin = new LateJoinScenario(pool)
+    const lateJoin = new LateJoinScenario(pool, {
+      role: "owner",
+      experimentRunId: `evidence-r${runIndex}-s${seed}`,
+    })
     const lateJoinResult = await lateJoin.execute(ctx)
     const lateJoinDuration = ctx.clock.now() - lateJoinStart
     metrics.endPhase()
@@ -333,10 +338,22 @@ export async function runSingleExperiment(
 
     // Phase 10: Nchan restart — §6.37 step 9: once-per-campaign scenario
     // Only execute on the first run; subsequent runs reuse the first run's result.
+    // §v2.1.0: owner role — spare-node cross-node probe (spare = nchan-2 in the
+    // single-shard evidence topology, explicit spare node in partitioned ones).
     let nchanResult: { name: string; passed: boolean; detail: string }
     const restartStart = ctx.clock.now()
     if (runIndex === 0) {
-      const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
+      const spareSubUrl = config.nchanSpareSubUrl || config.nchan2SubUrl
+      const nchanRestart = new NchanRestartScenario({
+        role: "owner",
+        ownSubUrl: config.nchanSubUrl,
+        ownPubUrl: config.nchanPubUrl,
+        spareSubUrl,
+        controlUrl: config.nchanControlUrl,
+        pool,
+        restartTargetShard: 0,
+        shardId: 0,
+      })
       nchanResult = await nchanRestart.execute(ctx)
     } else {
       // §6.37 step 9: Skip on subsequent runs — the restart scenario is once-per-campaign

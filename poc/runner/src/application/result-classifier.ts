@@ -315,6 +315,26 @@ export function classifyResult(
     detail: `${metrics.reconnect_order_violations} == 0`,
   })
 
+  // §v2.1.0: planned partition-failover correctness — deltas across the restart
+  // drill window must be zero (subset of the global counters, gated explicitly).
+  checks.push({
+    name: "restart_failover_gaps",
+    passed: metrics.restart_failover_gaps === 0,
+    detail: `${metrics.restart_failover_gaps} == 0`,
+  })
+
+  checks.push({
+    name: "restart_failover_duplicates",
+    passed: metrics.restart_failover_duplicates === 0,
+    detail: `${metrics.restart_failover_duplicates} == 0`,
+  })
+
+  checks.push({
+    name: "restart_failover_order_violations",
+    passed: metrics.restart_failover_order_violations === 0,
+    detail: `${metrics.restart_failover_order_violations} == 0`,
+  })
+
   // §3.10: Campaign-only restart scenario — excluded from per-run classifier when intentionally
   // not scheduled. The campaign classifier separately requires the once-per-campaign restart result
   // to PASS. Per-run classifier must not mark a deliberate campaign-level omission as INCONCLUSIVE.
@@ -398,12 +418,16 @@ export function classifyResult(
     })
   }
 
-  // §4.11: Nchan memory — mandatory in evidence mode, skip in smoke
+  // §4.11: Nchan memory — mandatory in evidence mode, skip in smoke.
+  // §v2.1.0: envelope-aware — the frozen limit is the per-node container memory
+  // (NCHAN_MEMORY_GB, default 8); gate at 87.5% of that envelope.
   if (metrics.nchan_memory_mb_peak !== null) {
+    const nchanMemoryGb = Number.parseInt(process.env.NCHAN_MEMORY_GB ?? "8", 10) || 8
+    const memoryLimitMb = nchanMemoryGb * 1024 * 0.875
     checks.push({
       name: "nchan_memory",
-      passed: metrics.nchan_memory_mb_peak < 7000,
-      detail: `${metrics.nchan_memory_mb_peak}MB < 7000MB (87.5% of 8 GB DUT limit)`,
+      passed: metrics.nchan_memory_mb_peak < memoryLimitMb,
+      detail: `${metrics.nchan_memory_mb_peak}MB < ${memoryLimitMb}MB (87.5% of ${nchanMemoryGb} GB DUT limit)`,
     })
   }
 
@@ -605,6 +629,7 @@ export function aggregateWorkerMetrics(
   let server_initiated_disconnects = 0
   let network_failures = 0
   let shutdown_cleanup_disconnects = 0
+  let planned_restart_disconnects = 0
   // §3.7: Latency validity counters
   let latency_invalid_count = 0
   let latency_overflow_count = 0
@@ -665,6 +690,7 @@ export function aggregateWorkerMetrics(
     server_initiated_disconnects += s.server_initiated_disconnects
     network_failures += s.network_failures
     shutdown_cleanup_disconnects += s.shutdown_cleanup_disconnects
+    planned_restart_disconnects += s.planned_restart_disconnects
     // §3.9: Latency validity counters
     latency_invalid_count += s.latency_invalid_count
     latency_overflow_count += s.latency_overflow_count
@@ -869,6 +895,11 @@ export function aggregateWorkerMetrics(
     server_initiated_disconnects,
     network_failures,
     shutdown_cleanup_disconnects,
+    // §v2.1.0: planned failover accounting — deltas wired from main.ts
+    planned_restart_disconnects,
+    restart_failover_gaps: 0,
+    restart_failover_duplicates: 0,
+    restart_failover_order_violations: 0,
     // §4.9: Redis connected-client peak — wired from resource monitor in main.ts
     redis_connected_clients_peak: null,
     // §3.8: Nchan/Redis CPU percent peaks

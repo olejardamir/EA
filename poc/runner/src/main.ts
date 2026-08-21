@@ -17,7 +17,7 @@ import { BurstScenario } from "./scenarios/burst.js"
 import { ReconnectScenario } from "./scenarios/reconnect.js"
 import { SlowConsumerScenario } from "./scenarios/slow-consumer.js"
 import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
-import { NchanRestartScenario } from "./scenarios/nchan-restart.js"
+import { NchanRestartScenario, type RestartScenarioRole } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
 import { printSummary, emitMachineReadableResult } from "./application/result-printer.js"
 import { runEvidenceSuite } from "./application/evidence-suite.js"
@@ -125,6 +125,16 @@ async function main(): Promise<void> {
   const resourceMonitor = new CgroupResourceMonitor(config.redisUrl, config.nchanControlUrl)
   const headTracker = createMatchHeadTracker()
 
+  // §v2.1.0: coordinated-mode shard identity for partition wiring
+  const coordinatedModeEarly = config.runMode === "coordinated-shard"
+  const shardIdEarly = parseInt(process.env.SHARD_ID ?? "0", 10)
+  // §v2.1.0: the restart-target shard additionally monitors the SPARE node so
+  // per-node resource evidence covers every fan-out node incl. the replacement.
+  const isRestartTargetShard = coordinatedModeEarly && shardIdEarly === config.restartTargetShard
+  const spareMonitor = isRestartTargetShard && config.nchanSpareControlUrl
+    ? new CgroupResourceMonitor(undefined, config.nchanSpareControlUrl)
+    : null
+
   const random = createPRNG(config.seed)
 
   const pool = new ConnectionPool(
@@ -216,7 +226,9 @@ async function main(): Promise<void> {
     // §4.15: Clock compatibility — same-host containers share the Linux kernel clock.
     // RTT/2 is NOT a clock offset measurement. All containers with network_mode:host
     // or on the same Docker host share the same monotonic and wall clocks.
-    // We verify connectivity to each Nchan node and document the clock model.
+    // We verify connectivity to this shard's partition node (+ spare when configured)
+    // and document the clock model. Field mapping: nchan1_reachable = own partition
+    // node; nchan2_reachable = spare node when configured, else true (not applicable).
     const clockEvidence = {
       runner_wall_clock: process.hrtime(),
       runner_date_now: Date.now(),
@@ -232,25 +244,24 @@ async function main(): Promise<void> {
       const resp1 = await fetch(`${config.nchanPubUrl}/pub/healthcheck`, { signal: AbortSignal.timeout(3000) })
       clockEvidence.nchan1_reachable = resp1.ok
     } catch {}
-    if (config.nchan2SubUrl) {
-      const nchan2PubUrl = config.nchan2PubUrl ?? (() => {
-        const url = new URL(config.nchan2SubUrl)
-        if (url.port === "18081") url.port = "18080"
+    if (config.nchanSpareSubUrl) {
+      const sparePubUrl = config.nchanSparePubUrl ?? (() => {
+        const url = new URL(config.nchanSpareSubUrl)
         url.pathname = ""
         return url.toString().replace(/\/$/, "")
       })()
       try {
-        const resp2 = await fetch(`${nchan2PubUrl}/pub/healthcheck`, { signal: AbortSignal.timeout(3000) })
+        const resp2 = await fetch(`${sparePubUrl}/pub/healthcheck`, { signal: AbortSignal.timeout(3000) })
         clockEvidence.nchan2_reachable = resp2.ok
       } catch {}
     }
 
     // Same-host containers: clock offset is 0 (shared kernel clock)
-    // Only fails if a Nchan node is unreachable (can't verify clock sharing)
+    // Only fails if a required Nchan node is unreachable (can't verify clock sharing)
     clockEvidence.passed = clockEvidence.nchan1_reachable &&
-      (config.nchan2SubUrl ? clockEvidence.nchan2_reachable : true)
+      (config.nchanSpareSubUrl ? clockEvidence.nchan2_reachable : true)
 
-    log(`§4.15 clock-compat: model=${clockEvidence.clock_model} nchan1=${clockEvidence.nchan1_reachable} nchan2=${clockEvidence.nchan2_reachable} offset=${clockEvidence.cross_node_max_offset_ms}ms threshold=${clockEvidence.threshold_ms}ms passed=${clockEvidence.passed}`)
+    log(`§4.15 clock-compat: model=${clockEvidence.clock_model} partition=${clockEvidence.nchan1_reachable} spare=${config.nchanSpareSubUrl ? clockEvidence.nchan2_reachable : "n/a"} offset=${clockEvidence.cross_node_max_offset_ms}ms threshold=${clockEvidence.threshold_ms}ms passed=${clockEvidence.passed}`)
     if (!clockEvidence.passed) {
       log("§4.15 clock-compat: INCONCLUSIVE — unreachable Nchan node prevents clock verification")
     }
@@ -269,6 +280,13 @@ async function main(): Promise<void> {
       sleep,
       publisherEnabled: publisherOwner,
     }
+    // §v2.1.0: run identity for structured evidence binding (registration already done)
+    ctx._runIdentity = {
+      campaignId,
+      experimentRunId: coordinator?.experimentRunId ?? "single-run",
+      runIndex: parseInt(process.env.GLOBAL_RUN_INDEX ?? "0", 10),
+      shardId,
+    }
 
     log("=== POC Runner Starting ===")
     log(`Config: ${config.targetConnections} target connections, seed=${config.seed}`)
@@ -282,7 +300,9 @@ async function main(): Promise<void> {
     let nginxFdLimits: { soft: number | null; hard: number | null } | undefined
     if (config.nchanControlUrl) {
       const rm = new CgroupResourceMonitor(undefined, config.nchanControlUrl)
-      const nginxPreflight = await rm.preflight(config.nchanControlUrl, globalTarget)
+      // §v2.1.0: per-node preflight — each shard validates its OWN partition node
+      // against its local expected population (~25k), not the global 100k target.
+      const nginxPreflight = await rm.preflight(config.nchanControlUrl, config.targetConnections)
       nginxRuntimePreflight = nginxPreflight
       if (nginxPreflight) {
         const soft = nginxPreflight.nginx_worker_fd_soft ?? nginxPreflight.nginx_master_fd_soft
@@ -324,6 +344,7 @@ async function main(): Promise<void> {
 
     loopMonitor = setInterval(() => {
       resourceMonitor.measureCpu()
+      spareMonitor?.measureCpu()
       // §BL: Sample publisher backlog (in-flight publish promises) every 100ms
       metrics.setBacklog(publisher.pendingPublishes)
       // §3.5: Drain publisher scheduler lag samples into metrics recorder
@@ -341,6 +362,12 @@ async function main(): Promise<void> {
     // §3.8.C: Wait for initial Nchan/Redis polls so baseline includes service metrics
     await resourceMonitor.ready()
     const cgroupBaseline = resourceMonitor.snapshot()
+    let spareBaseline: Awaited<ReturnType<CgroupResourceMonitor["snapshot"]>> | null = null
+    if (spareMonitor) {
+      await spareMonitor.ready()
+      spareBaseline = spareMonitor.snapshot()
+      log(`§v2.1.0 spare-node monitoring active (restart target shard ${shardId})`)
+    }
     await phaseBarrier("preflight", "end")
 
     // Phase 1: Warmup (60% base) — publisher starts during warm-up (§BT)
@@ -395,14 +422,18 @@ async function main(): Promise<void> {
     await phaseBarrier("stabilization", "end")
 
     // Phase 5: Late-join under peak load
+    // §v2.1.0: every shard samples its OWN partition node against the one
+    // owner-frozen expectation — no independent history/fan-out ownership domain
+    // can escape verification (one sample per shard per run).
     await phaseBarrier("late-join", "start")
     metrics.beginPhase("late-join")
     const lateJoinStart = ctx.clock.now()
     ctx._activePopulationStart = pool.size
-    const lateJoin = new LateJoinScenario(pool)
-    const lateJoinResult = publisherOwner
-      ? await lateJoin.execute(ctx)
-      : { name: "late-join", passed: true, detail: "not-participating: authoritative publisher-owner shard only" }
+    const lateJoin = new LateJoinScenario(pool, {
+      role: publisherOwner ? "owner" : "follower",
+      experimentRunId: coordinator?.experimentRunId ?? `${campaignId}-single`,
+    })
+    const lateJoinResult = await lateJoin.execute(ctx)
     const lateJoinDuration = ctx.clock.now() - lateJoinStart
     metrics.endPhase()
     log(`  ${lateJoinResult.passed ? "PASS" : "FAIL"} ${lateJoinResult.name}: ${lateJoinResult.detail}`)
@@ -472,15 +503,28 @@ async function main(): Promise<void> {
     ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, matchPublished: slowSnap.matchPublished, lobbyPublished: slowSnap.lobbyPublished, matchAttempts: slowSnap.matchAttempts, lobbyAttempts: slowSnap.lobbyAttempts })
     await phaseBarrier("slow-consumer", "end")
 
-    // Phase 10: Nchan restart (cross-node Redis history or literal process restart)
+    // Phase 10: Nchan restart — §v2.1.0 partition-targeted drill.
+    // owner (publisher-owner shard): spare-node cross-node probe.
+    // target (restartTargetShard): literal partition restart + planned pool failover.
+    // bystander: records non-participation with no fabricated paths.
     await phaseBarrier("restart-replacement", "start")
     metrics.beginPhase("nchan-restart")
     const restartStart = ctx.clock.now()
     ctx._activePopulationStart = pool.size
-    const nchanRestart = new NchanRestartScenario(config.nchanSubUrl, config.nchanPubUrl, config.nchan2SubUrl, config.nchanControlUrl)
-    const nchanResult = publisherOwner
-      ? await nchanRestart.execute(ctx)
-      : { name: "nchan-restart", passed: true, detail: "not-participating: authoritative publisher-owner shard only" }
+    const restartRole: RestartScenarioRole = publisherOwner
+      ? "owner"
+      : shardId === config.restartTargetShard ? "target" : "bystander"
+    const nchanRestart = new NchanRestartScenario({
+      role: restartRole,
+      ownSubUrl: config.nchanSubUrl,
+      ownPubUrl: config.nchanPubUrl,
+      spareSubUrl: config.nchanSpareSubUrl,
+      controlUrl: config.nchanControlUrl,
+      pool,
+      restartTargetShard: config.restartTargetShard,
+      shardId,
+    })
+    const nchanResult = await nchanRestart.execute(ctx)
     const restartDuration = ctx.clock.now() - restartStart
     metrics.endPhase()
     log(`  ${nchanResult.passed ? "PASS" : "FAIL"} ${nchanResult.name}: ${nchanResult.detail}`)
@@ -494,6 +538,12 @@ async function main(): Promise<void> {
     log("\n--- COLLECTING METRICS ---")
     resourceMonitor.measureCpu()
     const resourceSnap = resourceMonitor.snapshot()
+    // §v2.1.0: spare-node final snapshot (restart-target shard only)
+    let spareSnap: Awaited<ReturnType<CgroupResourceMonitor["snapshot"]>> | null = null
+    if (spareMonitor) {
+      spareMonitor.measureCpu()
+      spareSnap = spareMonitor.snapshot()
+    }
     resourceMonitor.stopEventLoopMonitor()
 
     const phaseHists = metrics.snapshotPhaseHistograms()
@@ -502,7 +552,7 @@ async function main(): Promise<void> {
     // §3.12: Wire clock validity into single-run aggregated metrics
     aggregated.clock_validity = {
       clock_model: clockEvidence.clock_model,
-      nodes_covered: ["runner", "nchan-1", ...(config.nchan2SubUrl ? ["nchan-2"] : [])],
+      nodes_covered: ["runner", "nchan-p" + shardId, ...(config.nchanSpareSubUrl ? ["nchan-spare"] : [])],
       measurement_method: "same-host-kernel-clock-verification",
       offset_or_guarantee: clockEvidence.cross_node_max_offset_ms,
       uncertainty_ms: 0,
@@ -614,6 +664,13 @@ async function main(): Promise<void> {
     aggregated.nchan_restart_missing_sequences = Object.values(ctx._restartReplay ?? {})
       .reduce((sum, path) => sum + (path?.missing_required ?? 0), 0)
     aggregated.nchan_restart_skipped = nchanResult.detail.includes("skipped")
+    // §v2.1.0: planned failover-window correctness deltas — gated explicitly by the
+    // classifier and by the coordinator's restart-target pool-health check.
+    if (ctx._failoverHealth) {
+      aggregated.restart_failover_gaps = ctx._failoverHealth.gaps
+      aggregated.restart_failover_duplicates = ctx._failoverHealth.duplicates
+      aggregated.restart_failover_order_violations = ctx._failoverHealth.order_violations
+    }
 
     // §BH: Wire surge existing-viewer health
     if (ctx._surgeHealth) {
@@ -804,6 +861,21 @@ async function main(): Promise<void> {
             memory_peak_run_mb: resourceSnap.redisMemoryMbPeak,
             memory_used_bytes: resourceSnap.redisMemoryBytesPeak ?? null,
           },
+          // §v2.1.0: spare-node evidence — recorded by the restart-target shard only
+          ...(spareMonitor && spareBaseline && spareSnap ? {
+            spare: {
+              cpu_raw_percent_peak: spareSnap.nchan_cpu_percent_peak,
+              cpu_max_quota: spareSnap.nchan_cpu_max_quota,
+              cpu_max_period: spareSnap.nchan_cpu_max_period,
+              cpuset_effective_cpus: spareSnap.nchan_cpuset_effective_cpus,
+              memory_peak_run_bytes: spareSnap.nchan_memory_peak_bytes,
+              memory_peak_container_lifetime_bytes: spareSnap.nchan_memory_container_lifetime_peak_bytes ?? null,
+              oom_events: (spareSnap.nchan_memory_oom_events ?? 0) - (spareBaseline.nchan_memory_oom_events ?? 0),
+              oom_kill_events: (spareSnap.nchan_memory_oom_kill_events ?? 0) - (spareBaseline.nchan_memory_oom_kill_events ?? 0),
+              cpu_throttled_count: (spareSnap.nchan_cpu_throttled_count ?? 0) - (spareBaseline.nchan_cpu_throttled_count ?? 0),
+              cpu_throttled_usec: (spareSnap.nchan_cpu_throttled_usec ?? 0) - (spareBaseline.nchan_cpu_throttled_usec ?? 0),
+            },
+          } : {}),
         },
         scenarios: [
           {
@@ -827,7 +899,7 @@ async function main(): Promise<void> {
           { name: "slow-consumer", participated: true, passed: slowResult.passed, detail: slowResult.detail },
           {
             name: "restart-replacement",
-            participated: publisherOwner,
+            participated: restartRole !== "bystander",
             passed: nchanResult.passed,
             detail: nchanResult.detail,
             structured: {
@@ -835,7 +907,9 @@ async function main(): Promise<void> {
               experiment_run_id: coordinator.experimentRunId!,
               run_index: parseInt(process.env.GLOBAL_RUN_INDEX ?? "0", 10),
               shard_id: shardId,
+              role: restartRole,
               paths: ctx._restartReplay ?? {},
+              ...(ctx._failoverHealth ? { pool: ctx._failoverHealth } : {}),
             },
           },
         ],

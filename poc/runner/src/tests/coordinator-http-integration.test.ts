@@ -8,7 +8,10 @@ import { CoordinatedShardClient } from "../application/coordinator-client.js"
 import { COORDINATED_PHASES } from "../application/global-coordinator.js"
 import type { CoordinatedPhase, ShardExperimentResult } from "../application/global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
-import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
+import {
+  validOwnerRestartStructuredEvidence,
+  validTargetRestartStructuredEvidence,
+} from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 const SHARDS = 2
@@ -104,6 +107,11 @@ function sampleSeries(shardId: number): ShardExperimentResult["samples"] {
 
 function shardResult(shardId: number, runId: string): ShardExperimentResult {
   const owner = shardId === 0
+  // §v2.1.0 role model with SHARDS=2: shard 0 = publisher owner (spare probe),
+  // shard 1 = restart target (failover drill); no bystanders.
+  const restartStructured = owner
+    ? validOwnerRestartStructuredEvidence({ campaign_id: "campaign-it", experiment_run_id: runId, run_index: 0, shard_id: 0 })
+    : validTargetRestartStructuredEvidence({ campaign_id: "campaign-it", experiment_run_id: runId, run_index: 0, shard_id: 1 })
   return {
     contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
@@ -131,7 +139,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
     samples: sampleSeries(shardId),
     histograms: {
       fan_out: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[20, 1], [40, 1]] },
-      late_join: { max_ms: 30_000, total_count: owner ? 1 : 0, overflow_count: 0, buckets: owner ? [[5, 1]] : [] },
+      late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[5, 1]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
     },
     correctness_counters: {
@@ -148,20 +156,20 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
     },
     resources: {
       generator: {},
-      nchan: owner ? { memory_peak_run_bytes: 1234 } : {},
+      nchan: { memory_peak_run_bytes: 1234, oom_kill_events: 0 },
       redis: owner ? { memory_used_bytes: 500 } : {},
     },
     scenarios: [
-      { name: "late-join", participated: owner, passed: true, detail: "ok" },
+      { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
       { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
       {
         name: "restart-replacement",
-        participated: owner,
+        participated: true,
         passed: true,
         detail: "ok",
-        ...(owner ? { structured: validRestartStructuredEvidence({ campaign_id: "campaign-it", experiment_run_id: runId }) } : {}),
+        structured: restartStructured,
       },
     ],
   }

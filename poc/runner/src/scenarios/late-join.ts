@@ -1,6 +1,7 @@
 import type { Scenario, ScenarioContext } from "./scenario.js"
 import type { ConnectionPool } from "../application/connection-pool.js"
 import { MATCH_IDS } from "../domain/event.js"
+import { redisSet, redisGet } from "../adapters/redis-run-isolation.js"
 
 // §4.1: Frozen prefill depth — deterministic history depth for late-join test
 // Must be <= 5000 (Nchan buffer length) and >= 100 (meaningful sample)
@@ -8,12 +9,16 @@ const PREFILL_DEPTH = 500
 const NCHAN_BUFFER_CAPACITY = 5000
 const ESTIMATED_EVENTS_PER_SEC = 60
 const HISTORY_SAFETY_MARGIN = 256
+// §v2.1.0: follower shards poll the shared Redis expectation key until the
+// publisher-owner freezes it. Bounded so a lost owner cannot hang the run.
+const FOLLOWER_POLL_TIMEOUT_MS = 90_000
+const FOLLOWER_POLL_INTERVAL_MS = 500
 
-// §BA FROZEN INTERPRETATION: Single late-join per run.
-// With N=1 sample, p95 = p50 = p99 = max = the single observation.
-// This is a frozen interpretation, NOT a robust statistical estimate.
-// The evidence-suite orchestrator (§6.37) may run multiple late-join cohorts
-// across repeated runs to build a meaningful sample population.
+// §v2.1.0 FROZEN INTERPRETATION: one late-join sample PER SHARD per run.
+// Every shard probes its OWN partition node's /history endpoint against the
+// same owner-frozen expectation, so no independent history/fan-out ownership
+// domain can escape verification (§26). With S shards there are exactly S
+// samples per run; the coordinator gates on count === shardCount.
 
 // §4.1/§3.1.A: Reconstructed state from history replay
 // Uses the frozen application event schema: clock.period is a string ("1H"/"2H"),
@@ -24,22 +29,52 @@ interface ReconstructedState {
   clock: { period: string; elapsed_seconds: number }
 }
 
+// §v2.1.0: owner-frozen late-join expectation handed to every follower shard
+// through the shared canonical Redis. Written AFTER prefill completes; the JSON
+// payload is immutable evidence of the exact range and committed state.
+export interface LateJoinExpectation {
+  match_id: string
+  expected_first_seq: number
+  expected_last_seq: number
+  frozen_state: {
+    seq: number
+    score: { home: number; away: number }
+    clock: { period: string; elapsed: number }
+  }
+  prefill_events: number
+}
+
 export class LateJoinScenario implements Scenario {
   name = "late-join"
   private pool: ConnectionPool
+  private role: "owner" | "follower"
+  private experimentRunId: string
 
-  constructor(pool: ConnectionPool) {
+  constructor(pool: ConnectionPool, opts: { role: "owner" | "follower"; experimentRunId: string }) {
     this.pool = pool
+    this.role = opts.role
+    this.experimentRunId = opts.experimentRunId
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    ctx.log("--- PHASE: LATE-JOIN TEST (canonical prefill) ---")
+    if (this.role === "owner") {
+      return this.executeOwner(ctx)
+    }
+    return this.executeFollower(ctx)
+  }
+
+  private expectationKey(): string {
+    return `latejoin_expectation:${this.experimentRunId}`
+  }
+
+  // Owner: canonical prefill through the publisher state machine, freeze the
+  // expectation into shared Redis, then probe its own partition node.
+  private async executeOwner(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+    ctx.log("--- PHASE: LATE-JOIN TEST (canonical prefill + per-partition sampling) ---")
 
     const testMatch = ctx.matchIds[0] || MATCH_IDS[0]
 
     // §3.1: Step 1 — Publish through canonical publisher state machine
-    // publishPrefill uses the same per-match serialization, candidate-state,
-    // accepted-commit, and head-tracker logic as normal publishing.
     const publishStart = ctx.clock.now()
     const prefillResult = await ctx.publisher.publishPrefill(testMatch, PREFILL_DEPTH)
     const publishDuration = ctx.clock.now() - publishStart
@@ -48,27 +83,83 @@ export class LateJoinScenario implements Scenario {
       ctx.log(`§3.1 Late-join: only published ${prefillResult.published}/${PREFILL_DEPTH} events in ${publishDuration}ms`)
       return { name: this.name, passed: false, detail: `prefill incomplete: ${prefillResult.published}/${PREFILL_DEPTH}` }
     }
+    if (!prefillResult.frozenState) {
+      ctx.log("§3.1 Late-join: publisher did not commit a frozen state snapshot")
+      return { name: this.name, passed: false, detail: "prefill produced no frozen state" }
+    }
 
     ctx.log(`§3.1 Late-join: canonical prefill complete, first=${prefillResult.firstSeq}, last=${prefillResult.lastSeq}, publish_time=${publishDuration}ms`)
 
-    // §3.1: Step 2 — Freeze expected range BEFORE connection (independent of received history)
-    // Full retained active-match history is the frozen interpretation. Evidence
-    // runs reset Redis before warmup, so the independently known oldest sequence
-    // is 1; valid earlier same-run events are required, not treated as noise.
-    const expectedFirstSeq = 1
-    const expectedLastSeq = prefillResult.lastSeq
+    // §v2.1.0: Freeze the expectation and hand it to every follower shard via
+    // the shared canonical Redis BEFORE any probe runs.
+    const expectation: LateJoinExpectation = {
+      match_id: testMatch,
+      expected_first_seq: 1,
+      expected_last_seq: prefillResult.lastSeq,
+      frozen_state: prefillResult.frozenState,
+      prefill_events: prefillResult.published,
+    }
+    try {
+      await redisSet(ctx.config.redisUrl, this.expectationKey(), JSON.stringify(expectation))
+    } catch (err) {
+      ctx.log(`§v2.1.0 Late-join: failed to publish expectation to Redis: ${err}`)
+      return { name: this.name, passed: false, detail: `expectation publish failed: ${err}` }
+    }
+    ctx.log(`§v2.1.0 Late-join: expectation frozen in Redis key=${this.expectationKey()}`)
+
+    return this.runHistoryProbe(ctx, expectation)
+  }
+
+  // Follower: poll the shared expectation, then probe its OWN partition node's
+  // /history endpoint against the identical frozen range/state.
+  private async executeFollower(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+    ctx.log("--- PHASE: LATE-JOIN TEST (follower: per-partition history sampling) ---")
+
+    const deadline = Date.now() + FOLLOWER_POLL_TIMEOUT_MS
+    let raw: string | null = null
+    while (Date.now() < deadline) {
+      try {
+        raw = await redisGet(ctx.config.redisUrl, this.expectationKey())
+      } catch (err) {
+        ctx.log(`§v2.1.0 Late-join follower: Redis poll error (will retry): ${err}`)
+      }
+      if (raw !== null) break
+      await ctx.sleep(FOLLOWER_POLL_INTERVAL_MS)
+    }
+    if (raw === null) {
+      return { name: this.name, passed: false, detail: `expectation key ${this.expectationKey()} not published within ${FOLLOWER_POLL_TIMEOUT_MS}ms` }
+    }
+
+    let expectation: LateJoinExpectation
+    try {
+      expectation = JSON.parse(raw) as LateJoinExpectation
+    } catch (err) {
+      return { name: this.name, passed: false, detail: `expectation malformed: ${err}` }
+    }
+    if (typeof expectation.expected_last_seq !== "number"
+      || typeof expectation.expected_first_seq !== "number"
+      || !expectation.frozen_state
+      || typeof expectation.match_id !== "string") {
+      return { name: this.name, passed: false, detail: "expectation failed schema validation" }
+    }
+
+    ctx.log(`§v2.1.0 Late-join follower: probing own partition for ${expectation.match_id} range=[${expectation.expected_first_seq}..${expectation.expected_last_seq}]`)
+    return this.runHistoryProbe(ctx, expectation)
+  }
+
+  // Shared probe: connect to THIS shard's configured history URL (its own
+  // partition node), validate the full frozen range and reconstructed state.
+  private async runHistoryProbe(
+    ctx: ScenarioContext,
+    expectation: LateJoinExpectation,
+  ): Promise<{ name: string; passed: boolean; detail: string }> {
+    const testMatch = expectation.match_id
+    const expectedFirstSeq = expectation.expected_first_seq
+    const expectedLastSeq = expectation.expected_last_seq
+    const frozenState = expectation.frozen_state
     const historyExpected = expectedLastSeq - expectedFirstSeq + 1
 
-    // §3.1: Step 3 — Freeze the committed state snapshot at the target head
-    // This is the exact publisher-committed state that replay must match.
-    // No fallback (score >= 0, clock >= 0) may count as successful reconstruction.
-    const frozenState = prefillResult.frozenState
-
     // §3.1: Step 4 — Buffer capacity proof
-    // The test must not be able to evict its own expected prefix during catch-up.
-    // During catch-up (estimated ~2s), the publisher continues publishing live events.
-    // required_capacity = expected history depth + live arrivals during catch-up
-    // capacity_margin = buffer_capacity - required_capacity
     const estimatedCatchUpMs = 2000
     const liveArrivalMargin = Math.ceil((estimatedCatchUpMs / 1000) * ESTIMATED_EVENTS_PER_SEC)
     const requiredCapacity = historyExpected + liveArrivalMargin + HISTORY_SAFETY_MARGIN
@@ -85,7 +176,7 @@ export class LateJoinScenario implements Scenario {
     const startTime = ctx.clock.now()
 
     try {
-      // §3.1: Step 6 — Connect to /history/ endpoint
+      // §3.1: Step 6 — Connect to /history/ endpoint on this shard's partition node
       const url = `${ctx.config.historyUrl}/history/${testMatch}`
       const subscription = await ctx.eventStream.connect(url)
 
@@ -113,8 +204,6 @@ export class LateJoinScenario implements Scenario {
             receivedLastSeq = data.canonical_seq
 
             // §3.1.A: Reconstruct score/clock from replay using the actual event schema.
-            // clock.period is a string ("1H"/"2H"), clock.elapsed_seconds is a number.
-            // No fallback defaults — null means reconstruction failed.
             if (data.canonical_seq <= expectedLastSeq
               && data.score && typeof data.score.home === "number" && typeof data.score.away === "number"
               && data.clock && typeof data.clock.period === "string" && typeof data.clock.elapsed_seconds === "number") {
@@ -141,7 +230,7 @@ export class LateJoinScenario implements Scenario {
       // published before the deterministic prefill.
       const { missing, duplicates, outOfOrder } = this.validateHistoryRange(historyEvents, expectedFirstSeq, expectedLastSeq)
 
-      // §3.1.C/E: Missing prefix detection — check that the required first seq exists in received stream
+      // §3.1.C/E: Missing prefix detection
       const receivedRequiredSeqs = new Set<number>()
       for (const raw of historyEvents) {
         try {
@@ -159,7 +248,7 @@ export class LateJoinScenario implements Scenario {
       const clockMatches = this.compareClock(reconstructedState, frozenState)
       const headMatches = receivedLastSeq >= expectedLastSeq
 
-      // §3.1.E: Count events within the required range only (pre-prefill events are noise)
+      // §3.1.E: Count events within the required range only
       const requiredRangeCount = receivedRequiredSeqs.size
 
       // §3.1: Step 11 — Wire delivery accounting (expected is independent of received)
@@ -167,6 +256,8 @@ export class LateJoinScenario implements Scenario {
       ctx.metrics.incrementLateJoinHistoryReceived(requiredRangeCount)
 
       const detail = [
+        `role=${this.role}`,
+        `partition_node=${ctx.config.historyUrl}`,
         `expected_first_seq=${expectedFirstSeq}`,
         `oldest_required_seq=${expectedFirstSeq}`,
         `received_first_seq=${receivedFirstSeq}`,
@@ -188,8 +279,7 @@ export class LateJoinScenario implements Scenario {
         `buffer_capacity=${NCHAN_BUFFER_CAPACITY}`,
         `buffer_safety_margin=${HISTORY_SAFETY_MARGIN}`,
         `live_arrival_margin=${liveArrivalMargin}`,
-        `prefill_events=${prefillResult.published}`,
-        `prefill_ms=${publishDuration}`,
+        `prefill_events=${expectation.prefill_events}`,
         `active_start=${ctx._activePopulationStart ?? this.pool.size}`,
         `active_peak=${(ctx._activePopulationStart ?? this.pool.size) + 1}`,
         `active_end=${this.pool.size}`,
@@ -272,8 +362,6 @@ export class LateJoinScenario implements Scenario {
 
   // §3.1: Compare reconstructed score with the exact frozen state snapshot
   // No fallback: null frozenState means publisher never committed → comparison fails.
-  // The frozen state from head tracker uses { period: string; elapsed: number }.
-  // The reconstructed state from events uses { period: string; elapsed_seconds: number }.
   private compareScore(
     reconstructed: ReconstructedState | null,
     frozenState: { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null,
@@ -284,8 +372,6 @@ export class LateJoinScenario implements Scenario {
   }
 
   // §3.1.A: Compare reconstructed clock with the frozen state snapshot.
-  // Frozen state: { period: string ("1H"/"2H"), elapsed: number }
-  // Reconstructed: { period: string ("1H" or "2H"), elapsed_seconds: number }
   private compareClock(
     reconstructed: ReconstructedState | null,
     frozenState: { seq: number; score: { home: number; away: number }; clock: { period: string; elapsed: number } } | null,

@@ -14,6 +14,7 @@ const STALE_V204 = path.join(REPO_ROOT, "internal_docs/LIVE_MATCH_CENTRE_POC_EXP
 const POC_V204 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_4.md")
 const POC_V205_REFERENCE = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_5.md")
 const POC_V206 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md")
+const POC_V210 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md")
 const MILESTONES = path.join(REPO_ROOT, "internal_docs/LIVE_MATCH_CENTRE_ASSIGNMENT_MILESTONES (3).md")
 
 function read(p: string): string {
@@ -21,10 +22,13 @@ function read(p: string): string {
 }
 
 describe("contract governance", () => {
-  it("exactly one canonical active successor contract exists", () => {
-    const s = read(POC_V206)
-    assert.match(s, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
-    assert.match(s, /Contract Version: v2\.0\.6/)
+  it("exactly one canonical active contract exists and predecessors are historical", () => {
+    const active = read(POC_V210)
+    assert.match(active, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
+    assert.match(active, /Contract Version: v2\.1\.0/)
+    const pocV206 = read(POC_V206)
+    assert.match(pocV206, /\[SUPERSEDED — HISTORICAL EVIDENCE ONLY\]/)
+    assert.doesNotMatch(pocV206, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
     const pocReference = read(POC_V205_REFERENCE)
     assert.match(pocReference, /NON-CANONICAL IMPLEMENTATION REFERENCE/)
     assert.match(pocReference, /LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5\.md/)
@@ -108,7 +112,27 @@ describe("contract governance", () => {
       assert.match(source, /ACTIVE_CONTRACT_VERSION/, `${relative} must use the canonical producer`)
       assert.doesNotMatch(source, /contract_version:\s*["']v2\.0\./, `${relative} must not hard-code a version`)
     }
-    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.0\.6"/)
+    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.1\.0"/)
+  })
+
+  it("freezes the partitioned fan-out acceptance-recovery semantics in v2.1.0", () => {
+    const contract = read(POC_V210)
+    for (const rule of [
+      /partition\(shard i\) = i/,
+      /each event\s+exactly\s+once, via partition p0/,
+      /RESTART_TARGET_SHARD/,
+      /paths\.spare_probe/,
+      /paths\.failover_drill/,
+      /oom_kill_events[^\n]*invalidates the run/,
+      /seeds = 42, 43, 44/,
+      /GLOBAL_RUNS = 3/,
+      /late-join histogram count/,
+      /87\.5% of NCHAN_MEMORY_GB/,
+      /coefficient of variation <= 15%/,
+      /INCONCLUSIVE > REJECT > ACCEPT/,
+    ]) assert.match(contract, rule)
+    assert.match(contract, /Milestone 3 remains the governing milestone/)
+    assert.match(contract, /m3-c89159e88822-q5/)
   })
 
   it("freezes the post-q5 correction semantics and Terminal A decision inside poc", () => {

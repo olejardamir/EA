@@ -342,7 +342,20 @@ One command starts the experiment, it terminates with a measured summary, and no
 
 # Milestone 3 — Run the Frozen POC and Produce Evidence
 
-**Status: DONE — campaign verdict INCONCLUSIVE (machine-owned; handed to Milestone 4)**
+**Status: IN PROGRESS — acceptance recovery executing (q5 INCONCLUSIVE preserved below)**
+
+> **Recovery note (2026-08-21).** The first qualifying campaign
+> (`m3-c89159e88822-q5`, contract v2.0.5) ended INCONCLUSIVE and is preserved
+> unchanged at `internal_docs/m3_evidence/m3-c89159e88822-q5/`. Milestone-4
+> reconciliation chose Terminal A: the single-primary fan-out assumption is
+> withdrawn. Acting on that decision, Milestone 3 reopens **under the same
+> milestone name** (no "M3b") to repair the POC into a horizontally partitioned
+> Nchan fan-out topology (4 partition nodes + spare replacement node, shared
+> Redis canonical store), freeze contract v2.1.0, and produce a fresh repeated
+> 100,000-viewer qualifying campaign (seeds 42/43/44) targeting machine verdict
+> ACCEPT. Governing instruction artifact:
+> `internal_docs/MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`.
+> The historical q5 record below is retained verbatim.
 
 Qualifying source SHA: `c89159e8882206de9fffa2b170a38d76854288ce`
 Contract: v2.0.5

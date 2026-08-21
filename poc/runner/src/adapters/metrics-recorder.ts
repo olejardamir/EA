@@ -60,6 +60,7 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   private serverInitiatedDisconnects = 0
   private networkFailures = 0
   private shutdownCleanupDisconnects = 0
+  private plannedRestartDisconnects = 0
   // §3.5: Publisher scheduler lag
   private schedulerLagHistogram = new StreamingHistogram()
   // §4.25: Per-phase histogram isolation — separate histograms per named phase
@@ -172,6 +173,7 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   incrementServerInitiatedDisconnects(): void { this.serverInitiatedDisconnects++ }
   incrementNetworkFailures(): void { this.networkFailures++ }
   incrementShutdownCleanup(): void { this.shutdownCleanupDisconnects++ }
+  incrementPlannedRestartDisconnects(): void { this.plannedRestartDisconnects++ }
 
   // §3.5: Publisher scheduler lag
   recordSchedulerLag(ms: number): void { this.schedulerLagHistogram.record(ms) }
@@ -234,6 +236,7 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
       server_initiated_disconnects: this.serverInitiatedDisconnects,
       network_failures: this.networkFailures,
       shutdown_cleanup_disconnects: this.shutdownCleanupDisconnects,
+      planned_restart_disconnects: this.plannedRestartDisconnects,
       // §4.25: Histogram sample population metadata
       fan_out_sample_count: this.fanOutHistogram.count,
       fan_out_overflow_count: this.fanOutHistogram.overflows,

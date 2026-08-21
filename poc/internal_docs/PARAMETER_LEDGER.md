@@ -1,6 +1,6 @@
 # Parameter Explainability Ledger (§AI / §6.44)
 
-Active contract: `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md`. v2.0.5 and q5 are historical.
+Active contract: `poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md` (partitioned fan-out freeze). v2.0.6, v2.0.5 and q5 are historical; rows below remain accurate except where v2.1.0 supersedes them (per-partition ownership, spare node, restart drill roles).
 
 Every result-affecting non-assignment constant has a value, unit, classification, rationale, and usage location.
 

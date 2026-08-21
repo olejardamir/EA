@@ -68,6 +68,27 @@ export interface ScenarioContext {
   _restartReplay?: {
     literal_restart?: RestartPathResult
     cross_node?: RestartPathResult
+    // §v2.1.0: partitioned-topology restart paths
+    spare_probe?: RestartPathResult
+    failover_drill?: RestartPathResult
+  }
+  // §v2.1.0: planned partition-failover pool health (target shard only)
+  _failoverHealth?: {
+    attempted: number
+    reestablished: number
+    failed: number
+    gaps: number
+    duplicates: number
+    order_violations: number
+    planned_disconnects: number
+    restart_ms: number
+  }
+  // §v2.1.0: run identity for structured evidence binding (set by main.ts)
+  _runIdentity?: {
+    campaignId: string
+    experimentRunId: string
+    runIndex: number
+    shardId: number
   }
   // §3.11.C: Per-scenario active population tracking for peak-load scenarios
   _lateJoinActivePopulation?: { start: number; peak: number; end: number }

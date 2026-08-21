@@ -86,6 +86,12 @@ services:
       NCHAN_PUB_URL: "http://localhost:8080"
       NCHAN_SUB_URL: "http://localhost:8081"
       NCHAN2_SUB_URL: "http://localhost:18081"
+      # §v2.1.0: nchan-2 doubles as the spare/replacement node in the single-shard
+      # evidence topology — explicit spare wiring for the partitioned restart drill.
+      NCHAN_SPARE_PUB_URL: "http://localhost:18080"
+      NCHAN_SPARE_SUB_URL: "http://localhost:18081"
+      NCHAN_SPARE_CONTROL_URL: "http://localhost:18889"
+      RESTART_TARGET_SHARD: "1"
       NCHAN_CONTROL_URL: "http://localhost:18888"
       REDIS_URL: "redis://localhost:6379"
       TARGET_CONNECTIONS: "100000"

@@ -17,6 +17,12 @@ export interface ExperimentConfig {
   seed: number
   runProfile: "smoke" | "evidence"
   runMode: "single" | "evidence" | "coordinated-shard"
+  // v2.1.0: partitioned-topology wiring — spare node + restart drill target
+  nchanSpareSubUrl: string
+  nchanSparePubUrl?: string
+  nchanSpareControlUrl: string
+  restartTargetShard: number
+  nchanMemoryGb: number
 }
 
 function requirePositiveInt(value: string | undefined, name: string, fallback?: number): number {
@@ -80,5 +86,17 @@ export function loadConfig(): ExperimentConfig {
       : process.env.RUN_MODE === "coordinated-shard"
         ? "coordinated-shard"
         : "single",
+    // v2.1.0: spare node + restart drill wiring (empty strings = feature absent)
+    nchanSpareSubUrl: process.env.NCHAN_SPARE_SUB_URL
+      ? requireUrl(process.env.NCHAN_SPARE_SUB_URL, "NCHAN_SPARE_SUB_URL", "")
+      : "",
+    nchanSparePubUrl: process.env.NCHAN_SPARE_PUB_URL
+      ? requireUrl(process.env.NCHAN_SPARE_PUB_URL, "NCHAN_SPARE_PUB_URL", "")
+      : undefined,
+    nchanSpareControlUrl: process.env.NCHAN_SPARE_CONTROL_URL ?? "",
+    // §v2.1.0: 1-based shard number; default 4 = last shard (index 3), matching
+    // the coordinator's restartTargetShard = shardCount - 1.
+    restartTargetShard: requirePositiveInt(process.env.RESTART_TARGET_SHARD, "RESTART_TARGET_SHARD", 4) - 1,
+    nchanMemoryGb: requirePositiveInt(process.env.NCHAN_MEMORY_GB, "NCHAN_MEMORY_GB", 8),
   }
 }

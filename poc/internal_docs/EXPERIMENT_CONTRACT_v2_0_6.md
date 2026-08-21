@@ -1,6 +1,8 @@
+> **[SUPERSEDED — HISTORICAL EVIDENCE ONLY]** Superseded by `poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md` (partitioned fan-out acceptance-recovery freeze). This correction freeze is historical machinery; it MUST NOT be referenced as active.
+
 # Experiment Contract v2.0.6 — Post-Inconclusive Correction Freeze
 
-Status: **FROZEN — CANONICAL ACTIVE**
+Status: **SUPERSEDED — HISTORICAL**
 
 Contract Version: v2.0.6
 

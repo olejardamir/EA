@@ -5,8 +5,11 @@
 # the container.
 #
 # NGINX_CONF env var selects which nginx config to load:
-#   /etc/nginx/nginx.conf        (default, primary nchan)
-#   /etc/nginx/nchan-2.conf      (nchan-2 replacement node)
+#   /etc/nginx/nginx.conf        (default, partition node p0)
+#   /etc/nginx/nchan-2.conf      (partition node p1)
+#   /etc/nginx/nchan-3.conf      (partition node p2)
+#   /etc/nginx/nchan-4.conf      (partition node p3)
+#   /etc/nginx/nchan-spare.conf  (spare replacement node)
 #   /etc/nginx/nchan-portable.conf (portable bridge networking)
 set -u
 

@@ -21,6 +21,18 @@ export interface ConnectionPoolConfig {
   onCanonicalHead?: (matchId: string, canonicalSeq: number) => void
 }
 
+// v2.1.0: planned partition-restart failover state — captured Last-Event-ID resume
+// positions for every pooled viewer, taken before the partition node is restarted.
+export interface PlannedFailoverToken {
+  saved: Array<{ entry: ConnectionEntry; lastEventId: string | null }>
+}
+
+export interface PlannedFailoverResult {
+  attempted: number
+  reestablished: number
+  failed: number
+}
+
 export class ConnectionPool {
   private connections: ConnectionEntry[] = []
   private config: ConnectionPoolConfig
@@ -270,35 +282,7 @@ export class ConnectionPool {
         mode: "steady",
       }
 
-      subscription.onEvent((evt) => {
-        if (!this._running) return
-        if (evt.type === "message") {
-          this.handleMessage(entry, evt.event.data, evt.event.id)
-        } else if (evt.type === "error") {
-          // §4.3: Terminal stream error — remove from active pool immediately
-          // §4.17/§3.14: Disconnect attribution — classify error by cause
-          // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
-          // §3.10.E: Attribution is gated on actual removal. A repeated terminal event for an
-          // already-removed entry must not increment the category a second time:
-          // exactly one terminal connection produces one attribution category, one active
-          // removal, and one dropped increment.
-          const msg = evt.error?.message ?? ""
-          if (this.removeEntry(entry)) {
-            if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
-              this.metrics.incrementNetworkFailures()
-            } else if (/stream ended/i.test(msg)) {
-              // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
-              this.metrics.incrementServerInitiatedDisconnects()
-            } else if (/abort/i.test(msg)) {
-              // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
-              this.metrics.incrementUnexpectedClientDisconnects()
-            } else {
-              // §4.17: Unexpected client-side stream termination
-              this.metrics.incrementUnexpectedClientDisconnects()
-            }
-          }
-        }
-      })
+      this.wireEntry(entry)
 
       const count = this.subscribersByChannel.get(matchId) ?? 0
       this.subscribersByChannel.set(matchId, count + 1)
@@ -308,6 +292,120 @@ export class ConnectionPool {
       this.metrics.incrementConnectionFailures()
       return null
     }
+  }
+
+  // v2.1.0: shared terminal-event wiring for initial connects and failover reconnects.
+  private wireEntry(entry: ConnectionEntry): void {
+    entry.subscription.onEvent((evt) => {
+      if (!this._running) return
+      if (evt.type === "message") {
+        this.handleMessage(entry, evt.event.data, evt.event.id)
+      } else if (evt.type === "error") {
+        // §4.3: Terminal stream error — remove from active pool immediately
+        // §4.17/§3.14: Disconnect attribution — classify error by cause
+        // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
+        // §3.10.E: Attribution is gated on actual removal. A repeated terminal event for an
+        // already-removed entry must not increment the category a second time:
+        // exactly one terminal connection produces one attribution category, one active
+        // removal, and one dropped increment.
+        const msg = evt.error?.message ?? ""
+        if (this.removeEntry(entry)) {
+          if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
+            this.metrics.incrementNetworkFailures()
+          } else if (/stream ended/i.test(msg)) {
+            // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
+            this.metrics.incrementServerInitiatedDisconnects()
+          } else if (/abort/i.test(msg)) {
+            // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
+            this.metrics.incrementUnexpectedClientDisconnects()
+          } else {
+            // §4.17: Unexpected client-side stream termination
+            this.metrics.incrementUnexpectedClientDisconnects()
+          }
+        }
+      }
+    })
+  }
+
+  // §v2.1.0 — Phase A of the planned partition-restart failover. Captures every pooled
+  // viewer's Last-Event-ID resume position, closes each subscription client-side BEFORE
+  // the partition node dies (the closed flag suppresses terminal error events, so none
+  // of these disconnects can be misattributed as server-initiated), and removes the
+  // entries from the pool with dedicated planned_restart attribution. The publisher's
+  // expected-delivery accounting stops counting these viewers immediately (they are out
+  // of the pool), keeping live expected/received symmetric across the outage window.
+  beginPlannedFailover(): PlannedFailoverToken {
+    const saved = this.connections.map((entry) => ({ entry, lastEventId: entry.subscription.lastEventId }))
+    for (const { entry } of saved) {
+      try {
+        entry.subscription.close()
+      } catch {}
+      const idx = this.connections.indexOf(entry)
+      if (idx >= 0) {
+        this.connections.splice(idx, 1)
+        const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+        this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
+        this.metrics.setActiveConnections(this.connections.length)
+        this.metrics.incrementPlannedRestartDisconnects()
+      }
+    }
+    return { saved }
+  }
+
+  // §v2.1.0 — Phase B: reconnect every saved viewer to the replacement sub URL with its
+  // captured Last-Event-ID. Nchan replays exactly the missed range before resuming live
+  // delivery (validated by cross-node probes). Trackers are preserved and entries run in
+  // "reconnect" mode during replay so replayed frames do not inflate live-delivery
+  // accounting; any gap/duplicate/order violation across the failover window still lands
+  // in globally-gated counters. The pool's sub URL is switched to the replacement node
+  // (replacement semantics: viewers stay on the spare after the drill).
+  async completePlannedFailover(
+    stream: EventStream,
+    token: PlannedFailoverToken,
+    newSubUrl: string,
+  ): Promise<PlannedFailoverResult> {
+    let reestablished = 0
+    let failed = 0
+    const batchSize = 50
+    for (let start = 0; start < token.saved.length; start += batchSize) {
+      if (!this._running) break
+      const batch = token.saved.slice(start, start + batchSize)
+      await Promise.allSettled(batch.map(async ({ entry, lastEventId }) => {
+        this.metrics.incrementConnectionsAttempted()
+        try {
+          const url = `${newSubUrl}/sub/${entry.matchId}`
+          const subscription = await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
+          entry.subscription = subscription
+          entry.mode = "reconnect"
+          this.wireEntry(entry)
+          this.connections.push(entry)
+          const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+          this.subscribersByChannel.set(entry.matchId, count + 1)
+          this.metrics.incrementConnectionsEstablished()
+          reestablished++
+        } catch {
+          this.metrics.incrementConnectionFailures()
+          failed++
+        }
+      }))
+      await new Promise((r) => setTimeout(r, 50))
+    }
+    this.metrics.setActiveConnections(this.connections.length)
+    this.config.subUrl = newSubUrl
+    return { attempted: token.saved.length, reestablished, failed }
+  }
+
+  // §v2.1.0 — After the failover replay window has settled, promote failover entries back
+  // to steady mode so subsequent live deliveries resume normal live-delivery accounting.
+  promoteEntriesToSteady(): number {
+    let promoted = 0
+    for (const entry of this.connections) {
+      if (entry.mode === "reconnect") {
+        entry.mode = "steady"
+        promoted++
+      }
+    }
+    return promoted
   }
 
   async disconnectAll(): Promise<void> {

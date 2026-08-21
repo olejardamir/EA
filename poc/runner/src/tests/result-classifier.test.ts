@@ -105,6 +105,10 @@ function baseMetrics(overrides: Partial<AggregatedMetrics> = {}): AggregatedMetr
     server_initiated_disconnects: 0,
     network_failures: 0,
     shutdown_cleanup_disconnects: 0,
+    planned_restart_disconnects: 0,
+    restart_failover_gaps: 0,
+    restart_failover_duplicates: 0,
+    restart_failover_order_violations: 0,
     schema_validation_errors: 0,
     missing_transport_id: 0,
     fan_out_sample_count: 0,
@@ -403,9 +407,26 @@ describe("classifyResult", () => {
   })
 
   it("REJECT when nchan_memory exceeds threshold", () => {
-    const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: 7000 }), true, true)
+    // §v2.1.0 envelope rule: gate at 87.5% of NCHAN_MEMORY_GB (default 8 GiB
+    // → 7168 MB). 7200 MB exceeds that frozen envelope.
+    const result = classifyResult(baseMetrics({ nchan_memory_mb_peak: 7200 }), true, true)
     assert.equal(result.verdict, "REJECT")
     assert.ok(result.checks.find((c) => c.name === "nchan_memory")!.passed === false)
+  })
+
+  it("nchan_memory gate follows the frozen per-node container envelope", () => {
+    // Inside the default 8 GiB envelope (7000 < 7168) the check passes.
+    const withinDefault = classifyResult(baseMetrics({ nchan_memory_mb_peak: 7000 }), true, true)
+    assert.equal(withinDefault.checks.find((c) => c.name === "nchan_memory")!.passed, true)
+    // A smaller frozen envelope tightens the gate proportionally (6 GiB → 5376 MB).
+    process.env.NCHAN_MEMORY_GB = "6"
+    try {
+      const tightened = classifyResult(baseMetrics({ nchan_memory_mb_peak: 5500 }), true, true)
+      assert.equal(tightened.verdict, "REJECT")
+      assert.ok(tightened.checks.find((c) => c.name === "nchan_memory")!.passed === false)
+    } finally {
+      delete process.env.NCHAN_MEMORY_GB
+    }
   })
 
   it("REJECT when redis_memory exceeds threshold", () => {

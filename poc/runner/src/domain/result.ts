@@ -201,6 +201,11 @@ export interface AggregatedMetrics {
   network_failures: number
   // §3.14: Frozen as one cleanup operation per disconnectAll call (0 or 1), not per-connection
   shutdown_cleanup_disconnects: number
+  // v2.1.0: planned partition-restart failover accounting
+  planned_restart_disconnects: number
+  restart_failover_gaps: number
+  restart_failover_duplicates: number
+  restart_failover_order_violations: number
   // §4.9: Redis connected-client peak
   redis_connected_clients_peak: number | null
   // §3.8: Nchan/Redis CPU percent peaks

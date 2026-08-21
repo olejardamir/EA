@@ -48,6 +48,8 @@ export interface MetricsRecorder {
   incrementServerInitiatedDisconnects(): void
   incrementNetworkFailures(): void
   incrementShutdownCleanup(): void
+  // v2.1.0: planned partition-restart failover disconnects (client-side, pre-emptive)
+  incrementPlannedRestartDisconnects(): void
   // §3.5: Event-publisher scheduler lag
   recordSchedulerLag(ms: number): void
   // §3.7: Per-client gauge metrics
@@ -109,6 +111,7 @@ export interface MetricsSnapshot {
   server_initiated_disconnects: number
   network_failures: number
   shutdown_cleanup_disconnects: number
+  planned_restart_disconnects: number
   // §4.25: Histogram sample population metadata
   fan_out_sample_count: number
   fan_out_overflow_count: number

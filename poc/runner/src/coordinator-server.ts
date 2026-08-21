@@ -30,6 +30,8 @@ const coordinator = new GlobalExperimentCoordinator({
   shardCount,
   globalTarget,
   seed,
+  // §v2.1.0: 1-based env (default = last shard) → 0-based coordinator index
+  restartTargetShard: (parsePositiveInt(process.env.RESTART_TARGET_SHARD ?? String(shardCount), "RESTART_TARGET_SHARD") - 1),
 })
 const resultPath = process.env.GLOBAL_RESULT_PATH ?? "/tmp/evidence/global-result.json"
 const maxRunMs = parsePositiveInt(process.env.COORDINATOR_MAX_RUN_MS ?? `${12 * 60_000}`, "COORDINATOR_MAX_RUN_MS")

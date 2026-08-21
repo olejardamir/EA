@@ -1,5 +1,5 @@
 import {
-  hasExactRestartStructuredEvidence,
+  hasExactRestartPathEvidence,
   hasNoFabricatedRestartPaths,
   mergeHistograms,
   restartEvidenceMatchesRun,
@@ -68,23 +68,40 @@ function globalRunRestartEvidenceError(run: GlobalExperimentResult): string | nu
   const owners = run.shard_results.filter((shard) => shard.publisher_owner)
   if (owners.length !== 1) return `restart publisher owners ${owners.length}; expected exactly 1`
   if (run.publisher_owner_shard_id !== owners[0].shard_id) return "restart publisher owner disagrees with global identity"
+  // §v2.1.0: the drill targets exactly one non-owner partition (shard i ↔ partition i)
+  const targetShardId = run.shard_count - 1
+  if (owners[0].shard_id === targetShardId) return "restart target partition must not be the publisher-owner partition"
 
   for (const shard of run.shard_results) {
     const records = shard.scenarios.filter((scenario) => scenario.name === "restart-replacement")
     if (records.length !== 1) return `shard ${shard.shard_id} restart record count ${records.length}; expected 1`
     const restart = records[0]
+    const identity = {
+      campaign_id: run.campaign_id,
+      experiment_run_id: run.experiment_run_id,
+      run_index: run.run_index,
+      shard_id: shard.shard_id,
+    }
     if (shard.publisher_owner) {
-      if (!restart.participated || !restart.passed || !hasExactRestartStructuredEvidence(restart.structured)) {
-        return `publisher-owner shard ${shard.shard_id} lacks exact restart evidence`
+      if (!restart.participated || !restart.passed || !hasExactRestartPathEvidence(restart.structured, "spare_probe")) {
+        return `publisher-owner shard ${shard.shard_id} lacks exact spare-probe restart evidence`
       }
-      if (!restartEvidenceMatchesRun(restart.structured, {
-        campaign_id: run.campaign_id,
-        experiment_run_id: run.experiment_run_id,
-        run_index: run.run_index,
-        shard_id: shard.shard_id,
-      })) return `publisher-owner shard ${shard.shard_id} restart evidence is stale or misbound`
+      if (!restartEvidenceMatchesRun(restart.structured, identity)) {
+        return `publisher-owner shard ${shard.shard_id} restart evidence is stale or misbound`
+      }
+    } else if (shard.shard_id === targetShardId) {
+      if (!restart.participated || !restart.passed || !hasExactRestartPathEvidence(restart.structured, "failover_drill")) {
+        return `restart-target shard ${shard.shard_id} lacks exact failover-drill evidence`
+      }
+      if (!restartEvidenceMatchesRun(restart.structured, identity)) {
+        return `restart-target shard ${shard.shard_id} restart evidence is stale or misbound`
+      }
+      const pool = (restart.structured as Record<string, unknown> | undefined)?.pool as Record<string, unknown> | undefined
+      if (!pool || pool.failed !== 0 || pool.gaps !== 0 || pool.duplicates !== 0 || pool.order_violations !== 0) {
+        return `restart-target shard ${shard.shard_id} failover pool health is not clean`
+      }
     } else if (restart.participated || !restart.passed || !hasNoFabricatedRestartPaths(restart.structured)) {
-      return `non-publisher shard ${shard.shard_id} restart non-participation is invalid`
+      return `bystander shard ${shard.shard_id} restart non-participation is invalid`
     }
   }
   return null
@@ -141,10 +158,17 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
     const error = globalRunRestartEvidenceError(run)
     if (error) reasons.push(`global run ${run.run_index} restart evidence: ${error}`)
     if (!run.histograms?.burst || run.histograms.burst.count === 0) reasons.push(`global run ${run.run_index} burst histogram is empty`)
-    if (!run.histograms?.late_join || run.histograms.late_join.count !== 1) reasons.push(`global run ${run.run_index} late-join sample count ${run.histograms?.late_join?.count ?? "missing"}; expected 1`)
+    // §v2.1.0: one late-join sample per shard per run
+    if (!run.histograms?.late_join || run.histograms.late_join.count !== run.shard_count) {
+      reasons.push(`global run ${run.run_index} late-join sample count ${run.histograms?.late_join?.count ?? "missing"}; expected ${run.shard_count} (one per partition)`)
+    }
     const redisMemory = run.resources?.redis?.memory_used_bytes
     if (typeof redisMemory !== "number" || !Number.isFinite(redisMemory) || redisMemory < 0) {
       reasons.push(`global run ${run.run_index} Redis memory_used_bytes is missing or invalid`)
+    }
+    // §v2.1.0: per-partition resource evidence must be complete and numeric
+    if (!run.resources?.nchan_partitions || run.resources.nchan_partitions.length !== run.shard_count) {
+      reasons.push(`global run ${run.run_index} per-partition resource evidence incomplete`)
     }
   }
 
@@ -177,7 +201,9 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
   const fanOut = mergeHistograms(runs.map((run) => run.histograms?.fan_out?.distribution ?? EMPTY_DISTRIBUTION))
   const lateJoin = mergeHistograms(runs.map((run) => run.histograms?.late_join?.distribution ?? EMPTY_DISTRIBUTION))
   const burst = mergeHistograms(runs.map((run) => run.histograms?.burst?.distribution ?? EMPTY_DISTRIBUTION))
-  if (lateJoin.count < runs.length) reasons.push(`campaign late-join cohort ${lateJoin.count} < required ${runs.length}`)
+  if (lateJoin.count < runs.length * (runs[0]?.shard_count ?? 1)) {
+    reasons.push(`campaign late-join cohort ${lateJoin.count} < required ${runs.length * (runs[0]?.shard_count ?? 1)}`)
+  }
   const correctnessCounters: Record<string, number> = {}
   for (const run of runs) {
     for (const [name, value] of Object.entries(run.correctness_counters)) {

@@ -64,6 +64,8 @@ export interface ShardResourceEvidence {
   generator: Record<string, number | null>
   nchan: Record<string, number | null>
   redis: Record<string, number | null>
+  // §v2.1.0: spare-node evidence — recorded by the restart-target shard only
+  spare?: Record<string, number | null>
 }
 
 export interface ShardScenarioEvidence {
@@ -145,7 +147,13 @@ export interface GlobalExperimentResult {
   }
   correctness_counters: Record<string, number>
   per_shard_generator_validity: Array<{ shard_id: number; validity: ShardValidity }>
-  resources: { nchan: Record<string, number | null>; redis: Record<string, number | null> }
+  resources: {
+    // §v2.1.0: per-partition node evidence — one entry per fan-out partition
+    nchan_partitions: Array<{ shard_id: number; partition_id: number; evidence: Record<string, number | null> }>
+    // §v2.1.0: spare-node evidence from the restart-target shard (null if absent)
+    nchan_spare: Record<string, number | null> | null
+    redis: Record<string, number | null>
+  }
   scenario_results: Array<{
     name: ShardScenarioEvidence["name"]
     passed: boolean
@@ -218,6 +226,15 @@ export function hasExactRestartStructuredEvidence(structured: unknown): boolean 
   return isExactRestartPathEvidence(record.literal_restart) && isExactRestartPathEvidence(record.cross_node)
 }
 
+// §v2.1.0: partitioned-topology restart evidence — the named path must be an
+// exact independently-frozen canonical range result.
+export function hasExactRestartPathEvidence(structured: unknown, pathKey: "spare_probe" | "failover_drill"): boolean {
+  if (!structured || typeof structured !== "object") return false
+  const paths = (structured as Record<string, unknown>).paths
+  if (!paths || typeof paths !== "object") return false
+  return isExactRestartPathEvidence((paths as Record<string, unknown>)[pathKey])
+}
+
 export function hasNoFabricatedRestartPaths(structured: unknown): boolean {
   if (!structured || typeof structured !== "object") return true
   const paths = (structured as Record<string, unknown>).paths
@@ -236,10 +253,6 @@ export function restartEvidenceMatchesRun(
     && record.shard_id === expected.shard_id
 }
 
-function hasExactRestartEvidence(scenario: ShardScenarioEvidence): boolean {
-  return hasExactRestartStructuredEvidence(scenario.structured)
-}
-
 export class GlobalExperimentCoordinator {
   readonly experimentRunId: string
   readonly campaignId: string
@@ -247,6 +260,8 @@ export class GlobalExperimentCoordinator {
   readonly globalTarget: number
   readonly seed: number
   readonly bucketMs: number
+  // §v2.1.0: the shard whose partition node is literally restarted in the drill
+  readonly restartTargetShard: number
 
   private registrations = new Map<number, ShardRegistration>()
   private barriers = new Map<string, BarrierState>()
@@ -261,6 +276,7 @@ export class GlobalExperimentCoordinator {
     globalTarget: number
     seed: number
     bucketMs?: number
+    restartTargetShard?: number
   }) {
     if (!Number.isInteger(options.shardCount) || options.shardCount < 1) throw new Error("shardCount must be positive")
     if (!Number.isInteger(options.globalTarget) || options.globalTarget < 1) throw new Error("globalTarget must be positive")
@@ -271,6 +287,10 @@ export class GlobalExperimentCoordinator {
     this.globalTarget = options.globalTarget
     this.seed = options.seed
     this.bucketMs = options.bucketMs ?? 1000
+    this.restartTargetShard = options.restartTargetShard ?? options.shardCount - 1
+    if (!Number.isInteger(this.restartTargetShard) || this.restartTargetShard < 0 || this.restartTargetShard >= this.shardCount) {
+      throw new Error("restartTargetShard must be a valid shard id")
+    }
   }
 
   register(registration: ShardRegistration): { experiment_run_id: string; seed: number; global_target: number } {
@@ -419,7 +439,11 @@ export class GlobalExperimentCoordinator {
     const mergedBurst = mergeHistograms(shardResults.map((result) => result.histograms.burst ?? emptyHistogram()))
     if (mergedFanOut.count === 0) validityReasons.push("global fan-out histogram is empty")
     if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
-    if (mergedLateJoin.count !== 1) validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly 1 publisher-owner sample`)
+    // §v2.1.0: one late-join sample per shard — every independent history/fan-out
+    // ownership domain must be probed against the owner-frozen expectation.
+    if (mergedLateJoin.count !== this.shardCount) {
+      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount} (one per partition)`)
+    }
 
     const correctnessCounters: Record<string, number> = {}
     for (const result of shardResults) {
@@ -427,7 +451,7 @@ export class GlobalExperimentCoordinator {
         correctnessCounters[name] = (correctnessCounters[name] ?? 0) + value
       }
     }
-    for (const name of ["missing_sequences", "duplicates", "out_of_order", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations"]) {
+    for (const name of ["missing_sequences", "duplicates", "out_of_order", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations"]) {
       if ((correctnessCounters[name] ?? 0) > 0) rejectReasons.push(`${name}=${correctnessCounters[name]}`)
     }
 
@@ -439,28 +463,60 @@ export class GlobalExperimentCoordinator {
       const active = activeEvidence.scenarios[phaseName] ?? null
       let passed = participants.length > 0 && participants.every(({ scenario }) => scenario.passed)
       if (name === "restart-replacement") {
+        // §v2.1.0: partition-targeted drill — exactly one owner record with
+        // spare-probe evidence, exactly one target-shard record with failover-drill
+        // evidence and a clean pool, every other shard a clean bystander.
         const ownerRecords = records.filter(({ owner }) => owner)
         const nonOwnerRecords = records.filter(({ owner }) => !owner)
         const validOwner = ownerRecords.length === 1
           && ownerRecords[0].scenario.participated
           && ownerRecords[0].scenario.passed
-          && hasExactRestartEvidence(ownerRecords[0].scenario)
+          && hasExactRestartPathEvidence(ownerRecords[0].scenario.structured, "spare_probe")
           && restartEvidenceMatchesRun(ownerRecords[0].scenario.structured, {
             campaign_id: this.campaignId,
             experiment_run_id: this.experimentRunId,
             run_index: ownerResult?.run_index ?? -1,
             shard_id: ownerRecords[0].shardId,
           })
-        const validNonOwners = nonOwnerRecords.length === Math.max(0, this.shardCount - 1)
-          && nonOwnerRecords.every(({ scenario }) => !scenario.participated
+        const targetRecords = nonOwnerRecords.filter(({ shardId }) => shardId === this.restartTargetShard)
+        const targetStructured = targetRecords[0]?.scenario.structured as Record<string, unknown> | undefined
+        const targetPool = targetStructured?.pool as Record<string, unknown> | undefined
+        const validTarget = targetRecords.length === 1
+          && targetRecords[0].scenario.participated
+          && targetRecords[0].scenario.passed
+          && hasExactRestartPathEvidence(targetRecords[0].scenario.structured, "failover_drill")
+          && !!targetPool
+          && targetPool.failed === 0
+          && targetPool.gaps === 0
+          && targetPool.duplicates === 0
+          && targetPool.order_violations === 0
+          && typeof targetPool.reestablished === "number" && targetPool.reestablished > 0
+          && restartEvidenceMatchesRun(targetRecords[0].scenario.structured, {
+            campaign_id: this.campaignId,
+            experiment_run_id: this.experimentRunId,
+            run_index: ownerResult?.run_index ?? -1,
+            shard_id: this.restartTargetShard,
+          })
+        const bystanderRecords = nonOwnerRecords.filter(({ shardId }) => shardId !== this.restartTargetShard)
+        const validBystanders = bystanderRecords.length === Math.max(0, this.shardCount - 2)
+          && bystanderRecords.every(({ scenario }) => !scenario.participated
             && scenario.passed
             && hasNoFabricatedRestartPaths(scenario.structured))
-        passed = validOwner && validNonOwners
-        if (!validNonOwners) validityReasons.push("restart non-owner participation/evidence is invalid")
+        passed = validOwner && validTarget && validBystanders
+        if (!validOwner) validityReasons.push("restart publisher-owner spare-probe evidence is invalid")
+        if (!validTarget) validityReasons.push(`restart target-shard ${this.restartTargetShard} failover-drill evidence is invalid`)
+        if (!validBystanders) validityReasons.push("restart bystander participation/evidence is invalid")
       }
       if (!passed) rejectReasons.push(`${name} scenario failed or had no participant`)
       if (active) {
-        const requiredMin = name === "reconnect" ? Math.floor(this.globalTarget * 0.9) : this.globalTarget
+        // §v2.1.0: the restart phase transiently dips while the target partition is
+        // drained and failed over — floor relaxed to 70% of global target for that
+        // phase only. All other phases hold their frozen minimums.
+        const requiredMin = name === "reconnect"
+          ? Math.floor(this.globalTarget * 0.9)
+          : name === "restart-replacement"
+            ? Math.floor(this.globalTarget * 0.7)
+            : this.globalTarget
         if (active.active_min < requiredMin) rejectReasons.push(`${name} active minimum ${active.active_min} < ${requiredMin}`)
       } else {
         validityReasons.push(`${name} has no complete aligned active-population evidence`)
@@ -486,11 +542,29 @@ export class GlobalExperimentCoordinator {
       }
     }
 
-    // Shared DUT/Redis resources are observed exactly once by the publisher-owner
-    // shard. They are not summed across duplicated observations.
+    // §v2.1.0: per-partition resource evidence — each shard reports its own fan-out
+    // node; the spare comes from the restart-target shard; shared Redis from the
+    // publisher-owner. Observations are never summed across duplicated reporters.
     const resources = {
-      nchan: ownerResult?.resources.nchan ?? {},
+      nchan_partitions: shardResults.map((result) => ({
+        shard_id: result.shard_id,
+        partition_id: result.shard_id,
+        evidence: result.resources.nchan,
+      })),
+      nchan_spare: (() => {
+        const target = shardResults.find((result) => result.shard_id === this.restartTargetShard)
+        return target?.resources.spare ?? null
+      })(),
       redis: ownerResult?.resources.redis ?? {},
+    }
+    if (resources.nchan_partitions.length !== this.shardCount) {
+      validityReasons.push(`per-partition resource evidence covers ${resources.nchan_partitions.length}/${this.shardCount} partitions`)
+    }
+    for (const partition of resources.nchan_partitions) {
+      const oomKills = partition.evidence.oom_kill_events
+      if (typeof oomKills !== "number" || !Number.isFinite(oomKills)) {
+        validityReasons.push(`partition ${partition.partition_id} mandatory OOM-kill evidence is missing or invalid`)
+      }
     }
     const redisMemoryUsedBytes = resources.redis.memory_used_bytes
     if (typeof redisMemoryUsedBytes !== "number" || !Number.isFinite(redisMemoryUsedBytes) || redisMemoryUsedBytes < 0) {

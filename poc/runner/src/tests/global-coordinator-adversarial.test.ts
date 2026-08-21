@@ -13,7 +13,10 @@ import type {
   ShardRegistration,
 } from "../application/global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
-import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
+import {
+  validOwnerRestartStructuredEvidence,
+  validTargetRestartStructuredEvidence,
+} from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -58,6 +61,11 @@ function fullSampleSet(shardId: number, activeCurrent = 50): AlignedSample[] {
 
 function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> = {}): ShardExperimentResult {
   const owner = shardId === 0
+  // §v2.1.0 role model with shardCount=2: shard 0 = publisher owner (spare
+  // probe), shard 1 = restart target (failover drill); no bystanders.
+  const restartStructured = owner
+    ? validOwnerRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 0, shard_id: 0 })
+    : validTargetRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 0, shard_id: 1 })
   return {
     contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
@@ -85,7 +93,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     samples: fullSampleSet(shardId),
     histograms: {
       fan_out: histogram([10, 20]),
-      late_join: histogram(owner ? [5] : []),
+      late_join: histogram([5]),
       burst: histogram([15]),
     },
     correctness_counters: {
@@ -102,15 +110,15 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     },
     resources: {
       generator: {},
-      nchan: owner ? { memory_peak_run_bytes: 1000 } : {},
+      nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: owner ? { memory_used_bytes: 500 } : {},
     },
     scenarios: [
-      { name: "late-join", participated: owner, passed: true, detail: "ok" },
+      { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
       { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: "ok", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
+      { name: "restart-replacement", participated: true, passed: true, detail: "ok", structured: restartStructured },
     ],
     ...overrides,
   }
@@ -136,22 +144,27 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
     const owner = shardResult(0)
     const restart = owner.scenarios.find((scenario) => scenario.name === "restart-replacement")!
-    const structured = validRestartStructuredEvidence()
-    structured.paths.literal_restart.received_last_seq = 18
-    structured.paths.literal_restart.received_required_count = 7
-    structured.paths.literal_restart.missing_required = 1
-    structured.paths.literal_restart.missing_required_sequences = [17]
-    structured.paths.literal_restart.out_of_range_after_count = 1
-    structured.paths.literal_restart.target_reached = false
-    structured.paths.literal_restart.passed = false
+    const structured = validOwnerRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 0, shard_id: 0 })
+    const spareProbe = (structured.paths as Record<string, any>).spare_probe
+    spareProbe.received_last_seq = 18
+    spareProbe.received_required_count = 7
+    spareProbe.missing_required = 1
+    spareProbe.missing_required_sequences = [17]
+    spareProbe.out_of_range_after_count = 1
+    spareProbe.target_reached = false
+    spareProbe.passed = false
     restart.passed = true
     restart.structured = structured
 
     coordinator.submitResult(owner)
     coordinator.submitResult(shardResult(1))
     const result = coordinator.buildGlobalResult()
+    // §v2.1.0: tampered path evidence is an integrity failure — the aggregate
+    // can never be ACCEPT and the stale passed boolean cannot rescue it.
     assert.equal(result.scenario_results.find((scenario) => scenario.name === "restart-replacement")?.passed, false)
-    assert.equal(result.verdict, "REJECT")
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.equal(result.global_direct_accept_eligible, false)
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("restart publisher-owner spare-probe evidence is invalid")))
   })
 
   it("rejects out-of-range and non-integer shard IDs", () => {

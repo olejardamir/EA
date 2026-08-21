@@ -36,10 +36,22 @@ describe("Milestone 2 infrastructure contract", () => {
 
   it("freezes exactly four 25k coordinated shards with one publisher owner", () => {
     const compose = read("compose.evidence-100k.yaml")
-    assert.equal((compose.match(/TARGET_CONNECTIONS: "25000"/g) ?? []).length, 4)
-    assert.equal((compose.match(/RUN_MODE: "coordinated-shard"/g) ?? []).length, 4)
+    // §M3-R: the shared shard environment is declared once via a YAML anchor
+    // and inherited by all four shards through merge keys — the frozen values
+    // must appear exactly once in the anchor, and every shard must inherit it.
+    assert.match(compose, /environment: &runner-env/)
+    assert.equal((compose.match(/<<: \*runner-env/g) ?? []).length, 3)
+    assert.equal((compose.match(/TARGET_CONNECTIONS: "25000"/g) ?? []).length, 1)
+    assert.equal((compose.match(/RUN_MODE: "coordinated-shard"/g) ?? []).length, 1)
     assert.equal((compose.match(/PUBLISHER_OWNER: "true"/g) ?? []).length, 1)
     assert.equal((compose.match(/PUBLISHER_OWNER: "false"/g) ?? []).length, 3)
+    for (const shard of ["runner-shard-0", "runner-shard-1", "runner-shard-2", "runner-shard-3"]) {
+      assert.match(compose, new RegExp(`^  ${shard}:$`, "m"))
+    }
+    // §v2.1.0: four partition nodes plus one spare replacement node.
+    for (const node of ["nchan-p0", "nchan-p1", "nchan-p2", "nchan-p3", "nchan-spare"]) {
+      assert.match(compose, new RegExp(`^  ${node}:$`, "m"))
+    }
     assert.match(compose, /GLOBAL_TARGET: "100000"/)
   })
 

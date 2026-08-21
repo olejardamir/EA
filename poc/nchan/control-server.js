@@ -5,6 +5,11 @@ const fs = require("fs")
 const { execFile } = require("child_process")
 const { execSync } = require("child_process")
 const PORT = parseInt(process.env.CONTROL_PORT || "18888", 10)
+// §M3-R: Partitioned topology — every node runs this same control server with
+// its own config path, stub_status port and CPU floor supplied by the launcher.
+const NGINX_CONF = process.env.NGINX_CONF || "/etc/nginx/nginx.conf"
+const NGINX_STATUS_PORT = parseInt(process.env.NGINX_STATUS_PORT || "8080", 10)
+const MIN_CPU_QUOTA = parseInt(process.env.MIN_CPU_QUOTA || "4", 10)
 
 function readCgroupFile(path) {
   try {
@@ -163,9 +168,9 @@ const server = http.createServer((req, res) => {
       reason: null,
     }
 
-    // Read worker_processes from nginx config
+    // Read worker_processes from the node's actual nginx config
     try {
-      const conf = fs.readFileSync("/etc/nginx/nginx.conf", "utf-8")
+      const conf = fs.readFileSync(NGINX_CONF, "utf-8")
       const wpMatch = conf.match(/worker_processes\s+(\d+)/)
       if (wpMatch) result.worker_processes = parseInt(wpMatch[1], 10)
       const wcMatch = conf.match(/worker_connections\s+(\d+)/)
@@ -174,14 +179,17 @@ const server = http.createServer((req, res) => {
 
     // Query stub_status
     try {
-      const status = execSync("curl -sf http://127.0.0.1:8080/nginx_status 2>/dev/null", { encoding: "utf-8", timeout: 3000 })
+      const status = execSync(`curl -sf http://127.0.0.1:${NGINX_STATUS_PORT}/nginx_status 2>/dev/null`, { encoding: "utf-8", timeout: 3000 })
       const lines = status.trim().split("\n")
       // Active connections: N
       const activeMatch = lines[0]?.match(/Active connections:\s+(\d+)/)
       if (activeMatch) result.nginx_active = parseInt(activeMatch[1], 10)
       // server accepts handled requests
       //  reading: N writing: N waiting: N
-      const rwMatch = lines[2]?.match(/reading:\s+(\d+)\s+writing:\s+(\d+)/)
+      // §M3-R: locate the Reading/Writing line wherever it appears (stub_status
+      // emits it as the 4th line; earlier code wrongly indexed lines[2]).
+      const rwLine = lines.find((l) => /Reading:\s+\d+\s+Writing:\s+\d+/.test(l))
+      const rwMatch = rwLine?.match(/Reading:\s+(\d+)\s+Writing:\s+(\d+)/)
       if (rwMatch) {
         result.nginx_reading = parseInt(rwMatch[1], 10)
         result.nginx_writing = parseInt(rwMatch[2], 10)
@@ -273,8 +281,8 @@ const server = http.createServer((req, res) => {
     if (usableCapacity === null || usableCapacity < requestedTarget) {
       reasons.push(`usable_sse_capacity=${usableCapacity} < ${requestedTarget}`)
     }
-    if (result.cpu_quota && result.cpu_quota < 4) {
-      reasons.push(`cpu_quota=${result.cpu_quota} < 4 (need >= 4 for DUT — frozen primary Nchan 4-CPU limit)`)
+    if (result.cpu_quota && result.cpu_quota < MIN_CPU_QUOTA) {
+      reasons.push(`cpu_quota=${result.cpu_quota} < ${MIN_CPU_QUOTA} (node CPU floor from launcher env)`)
     }
 
     result.sufficient = reasons.length === 0

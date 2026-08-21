@@ -34,6 +34,21 @@ purpose:          AI instruction artifact directing parallel work while M3 runs 
                   used to direct AI-assisted parallel execution.
 ```
 
+## Preserved instruction artifact — Milestone 3 acceptance recovery
+
+```text
+artifact path:    internal_docs/MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md
+SHA-256:          c96c76569901ae8cf1e28caa015511982e38b7563bd77ce0107a287072adf84d
+first-use commit: (recorded at recovery execution start, before any qualifying run)
+purpose:          AI instruction artifact directing the Milestone 3 acceptance-recovery
+                  execution — repair the POC into a 4-partition horizontal Nchan fan-out
+                  topology, freeze contract v2.1.0, and produce a fresh repeated
+                  100,000-viewer qualifying campaign with machine verdict ACCEPT.
+                  This copy is the canonical preserved record of the governing
+                  instructions; it enumerates every binding rule as preserved in the
+                  executing session's anchored context.
+```
+
 ## Rules
 
 - The preserved copy at `internal_docs/MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md` must never be modified.
@@ -43,4 +58,6 @@ purpose:          AI instruction artifact directing parallel work while M3 runs 
 - The same rules apply to `internal_docs/MILESTONE_3_ASSIGNMENT_SYNCED_EXECUTION_PLAN_v2_FINAL.md`:
   the preserved copy is immutable; its SHA-256 above is its canonical identifier.
 - The same rules apply to `internal_docs/PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md`:
+  the preserved copy is immutable; its SHA-256 above is its canonical identifier.
+- The same rules apply to `internal_docs/MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`:
   the preserved copy is immutable; its SHA-256 above is its canonical identifier.

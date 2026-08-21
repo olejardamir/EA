@@ -1,8 +1,33 @@
 import type { RestartPathResult, Scenario, ScenarioContext } from "./scenario.js"
+import type { ConnectionPool } from "../application/connection-pool.js"
 
 // A small accepted range is deliberately created after each resume cursor. This
 // prevents a vacuous restart PASS when the publisher happens to be between ticks.
 const RESTART_REPLAY_DEPTH = 8
+
+// §v2.1.0: role-based participation in the partition-targeted restart drill.
+// - owner: publishes the frozen range and probes the SPARE node (cross-node
+//   replacement evidence; safe because the spare carries no pool viewers).
+// - target: owns the drill partition (shard i ↔ partition i); drains its pool
+//   with planned attribution, literally restarts its own node, fails every
+//   viewer over to the spare with Last-Event-ID resume, and proves exact-range
+//   replay plus zero failover-window correctness deltas.
+// - bystander: records non-participation with no fabricated paths.
+export type RestartScenarioRole = "owner" | "target" | "bystander"
+
+export interface NchanRestartOptions {
+  role: RestartScenarioRole
+  ownSubUrl: string
+  ownPubUrl: string
+  spareSubUrl: string
+  controlUrl: string
+  pool: ConnectionPool
+  restartTargetShard: number
+  shardId: number
+  // Resume-probe completion window. Production default 15s; tests inject a
+  // short bound so adversarial incomplete ranges do not stall suites.
+  probeTimeoutMs?: number
+}
 
 export interface RestartRangeEvaluationInput {
   transportResumeId: string | null
@@ -89,532 +114,322 @@ function canonicalSequences(frames: string[]): number[] {
 
 export class NchanRestartScenario implements Scenario {
   name = "nchan-restart"
-  private nchan1SubUrl: string
-  private nchan1PubUrl: string
-  private nchan2SubUrl: string
-  private controlUrl: string
+  private opts: NchanRestartOptions
 
-  constructor(nchan1SubUrl: string, nchan1PubUrl: string, nchan2SubUrl: string, controlUrl: string) {
-    this.nchan1SubUrl = nchan1SubUrl
-    this.nchan1PubUrl = nchan1PubUrl
-    this.nchan2SubUrl = nchan2SubUrl
-    this.controlUrl = controlUrl
+  // §v2.1.0: settle window after mass failover — lets Last-Event-ID replay and
+  // resumed live delivery flow through every pool tracker before deltas are read.
+  private static readonly FAILOVER_SETTLE_MS = 12_000
+
+  constructor(opts: NchanRestartOptions) {
+    this.opts = opts
   }
 
   async execute(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    // §4.14: When both nchan-2 and control server are available (evidence mode),
-    // run BOTH literal restart AND cross-node tests to satisfy both §19 procedure
-    // (literal restart) and §E clarification (cross-node replacement).
-    // When only one is available, run that one.
-    if (this.nchan2SubUrl && this.controlUrl) {
-      const literal = await this.literalRestartTest(ctx)
-      if (!literal.passed) return literal
-      const crossNode = await this.crossNodeTest(ctx)
-      if (!crossNode.passed) return crossNode
+    const startPop = ctx._activePopulationStart ?? 0
+    try {
+      if (this.opts.role === "owner") {
+        return await this.spareProbeTest(ctx)
+      }
+      if (this.opts.role === "target") {
+        return await this.failoverDrillTest(ctx)
+      }
       return {
         name: this.name,
         passed: true,
-        detail: `literal-restart+cross-node: ${literal.detail} | ${crossNode.detail}`,
+        detail: `not-participating: restart drill targeted at partition ${this.opts.restartTargetShard} (shard ${this.opts.restartTargetShard})`,
       }
+    } finally {
+      // §3.11.C: Record active population for this scenario
+      ctx._restartActivePopulation = { start: startPop, peak: startPop, end: startPop }
     }
-    if (this.nchan2SubUrl) {
-      return this.crossNodeTest(ctx)
-    }
-    if (this.controlUrl) {
-      return this.literalRestartTest(ctx)
-    }
-    return { name: this.name, passed: true, detail: "skipped (no nchan-2 or control server)" }
   }
 
-  // §E/§18: Cross-node Redis history resume test
-  private async crossNodeTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    ctx.log("--- PHASE: NCHAN RESTART (cross-node Redis history) ---")
-
-    const testMatch = ctx.matchIds[0]
-    const recordedEvents: string[] = []
+  // Shared: connect one probe subscriber and wait for live frames.
+  private async collectLiveEvents(
+    ctx: ScenarioContext,
+    subUrl: string,
+    minEvents: number,
+    timeoutMs: number,
+  ): Promise<{ ok: boolean; lastEventId: string | null; lastSeq: number | null }> {
     let lastEventId: string | null = null
-
-    ctx.log(`Connecting to nchan-1 for ${testMatch}...`)
-    const sub1Url = `${this.nchan1SubUrl}/sub/${testMatch}`
-
+    const frames: string[] = []
+    const sub = await ctx.eventStream.connect(subUrl)
     try {
-      const sub1 = await ctx.eventStream.connect(sub1Url)
-
       const received = await new Promise<boolean>((resolve) => {
         const timeout = setTimeout(() => {
-          sub1.close()
+          sub.close()
           resolve(false)
-        }, 10_000)
-
-        sub1.onEvent((evt) => {
+        }, timeoutMs)
+        sub.onEvent((evt) => {
           if (evt.type !== "message") return
-          recordedEvents.push(evt.event.data)
+          frames.push(evt.event.data)
           if (evt.event.id) lastEventId = evt.event.id
-
-          if (recordedEvents.length >= 3) {
+          if (frames.length >= minEvents) {
             clearTimeout(timeout)
-            sub1.close()
+            sub.close()
             resolve(true)
           }
         })
       })
+      if (!received) return { ok: false, lastEventId, lastSeq: null }
+      let lastSeq: number | null = null
+      for (const raw of canonicalSequences(frames)) lastSeq = raw
+      return { ok: true, lastEventId, lastSeq }
+    } catch (err) {
+      try { sub.close() } catch {}
+      throw err
+    }
+  }
 
-      if (!received || recordedEvents.length < 3) {
-        ctx.log("Nchan-1: failed to receive enough events")
-        return { name: this.name, passed: false, detail: "nchan-1: insufficient events" }
+  // Shared: reconnect one probe with Last-Event-ID and evaluate the frozen range.
+  private async resumeProbe(
+    ctx: ScenarioContext,
+    subUrl: string,
+    lastEventId: string | null,
+    expectedFirstSeq: number,
+    expectedLastSeq: number,
+    accounting: "cross_node" | "failover",
+  ): Promise<RestartPathResult> {
+    const expectedCount = expectedLastSeq - expectedFirstSeq + 1
+    const sub = await ctx.eventStream.connect(subUrl, lastEventId ?? undefined)
+    const replayEvents: string[] = []
+    let replayComplete = false
+
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        if (replayComplete) return
+        replayComplete = true
+        clearInterval(poll)
+        clearTimeout(timeout)
+        sub.close()
+        resolve()
       }
+      const timeout = setTimeout(finish, this.opts.probeTimeoutMs ?? 15_000)
+      const poll = setInterval(() => {
+        const received = canonicalSequences(replayEvents)
+        const inRange = new Set(received.filter((s) => s >= expectedFirstSeq && s <= expectedLastSeq))
+        if (inRange.size >= expectedCount) finish()
+      }, 100)
 
-      ctx.log(`Nchan-1: received ${recordedEvents.length} events, lastEventId=${lastEventId}`)
-
-      let lastSeq1: number | null = null
-      for (const raw of recordedEvents) {
+      sub.onEvent((evt) => {
+        if (evt.type !== "message" || replayComplete) return
+        replayEvents.push(evt.event.data)
         try {
-          const data = JSON.parse(raw)
-          if (typeof data.canonical_seq === "number") lastSeq1 = data.canonical_seq
+          const seq = JSON.parse(evt.event.data).canonical_seq
+          if (typeof seq === "number" && seq > expectedLastSeq) {
+            // Ordered delivery guarantees required sequences arrive before any
+            // beyond-range frame; reaching one before completion means loss.
+            finish()
+          }
         } catch {}
-      }
-
-      // §3.11/§3.13: Deliberately create and freeze a non-empty accepted range
-      // BEFORE connecting to nchan-2. publishPrefill is serialized per match, so
-      // its last accepted sequence is an unambiguous replacement boundary.
-      const frozenExpectedFirstSeq1 = lastSeq1 !== null ? lastSeq1 + 1 : null
-      const acceptedRange = await ctx.publisher.publishPrefill(testMatch, RESTART_REPLAY_DEPTH)
-      const headAtReplacement = acceptedRange.lastSeq
-
-      // §3.9.D: Never fall back to expectedCount=1 or accept an empty range.
-      if (acceptedRange.published !== RESTART_REPLAY_DEPTH || frozenExpectedFirstSeq1 === null || headAtReplacement < frozenExpectedFirstSeq1) {
-        ctx.log(`§3.9 Cross-node: invalid frozen range (first=${frozenExpectedFirstSeq1}, head=${headAtReplacement})`)
-        return { name: this.name, passed: false, detail: `cross-node: invalid frozen range first=${frozenExpectedFirstSeq1} head=${headAtReplacement}` }
-      }
-
-      const frozenExpectedCount1 = headAtReplacement - frozenExpectedFirstSeq1 + 1
-
-      ctx.log("Waiting 500ms before connecting to nchan-2...")
-      await ctx.sleep(500)
-
-      ctx.log(`Connecting to nchan-2 for ${testMatch} (lastEventId=${lastEventId})...`)
-      const sub2Url = `${this.nchan2SubUrl}/sub/${testMatch}`
-      const sub2 = await ctx.eventStream.connect(sub2Url, lastEventId)
-
-      // §3.2.C: Build the frozen expected set for exact-range membership tracking
-      const frozenExpectedSet = new Set<number>()
-      for (let s = frozenExpectedFirstSeq1; s <= headAtReplacement; s++) frozenExpectedSet.add(s)
-
-      const replayEvents: string[] = []
-      let replayComplete = false
-
-      const replayResult = await new Promise<{
-        ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null;
-        requiredReceived: Set<number>; outOfRangeBefore: number; outOfRangeAfter: number;
-        duplicateRequired: number; requiredOutOfOrder: boolean;
-      }>((resolve) => {
-        let prevSeq: number | null = null
-        const seenSeqs = new Set<number>()
-        const requiredReceived = new Set<number>()
-        let firstSeq: number | null = null
-        let lastSeq: number | null = null
-        let outOfRangeBefore = 0
-        let outOfRangeAfter = 0
-        let duplicateRequired = 0
-        let requiredOutOfOrder = false
-
-        const timeout = setTimeout(() => {
-          sub2.close()
-          resolve({ ok: false, gap: false, dup: false, firstSeq, lastSeq,
-            requiredReceived, outOfRangeBefore, outOfRangeAfter,
-            duplicateRequired, requiredOutOfOrder })
-        }, 10_000)
-
-        sub2.onEvent((evt) => {
-          if (evt.type !== "message" || replayComplete) return
-          replayEvents.push(evt.event.data)
-
-          try {
-            const data = JSON.parse(evt.event.data)
-            if (typeof data.canonical_seq === "number") {
-              const seq = data.canonical_seq as number
-              if (firstSeq === null) firstSeq = seq
-              lastSeq = seq
-
-              if (prevSeq !== null && seq < prevSeq) {
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder: true })
-                return
-              }
-
-              if (seenSeqs.has(seq)) {
-                if (frozenExpectedSet.has(seq)) duplicateRequired++
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-                return
-              }
-
-              seenSeqs.add(seq)
-
-              // §3.2.C: Only count canonical sequences within the frozen expected range
-              if (frozenExpectedSet.has(seq)) {
-                requiredReceived.add(seq)
-                // §3.2.C: Track out-of-order within required set
-                if (requiredReceived.size > 1) {
-                  const prevRequired = seq - 1
-                  if (frozenExpectedSet.has(prevRequired) && !requiredReceived.has(prevRequired)) {
-                    requiredOutOfOrder = true
-                  }
-                }
-              } else if (seq < frozenExpectedFirstSeq1) {
-                outOfRangeBefore++
-              } else {
-                outOfRangeAfter++
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-                return
-              }
-
-              prevSeq = seq
-
-              // §3.2.C: Completion requires ALL required sequences, not just seq >= target
-              if (requiredReceived.size === frozenExpectedCount1) {
-                replayComplete = true
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-              }
-            }
-          } catch {}
-        })
       })
+    })
 
-      // §3.9.E: Missing prefix detection
-      const missingPrefix = frozenExpectedFirstSeq1 !== null
-        && replayResult.firstSeq !== null
-        && replayResult.firstSeq !== frozenExpectedFirstSeq1
+    const pathResult = evaluateRestartRequiredRange({
+      transportResumeId: lastEventId,
+      expectedFirstSeq,
+      expectedLastSeq,
+      receivedSequences: canonicalSequences(replayEvents),
+      recoveryMs: 0,
+    })
 
-      ctx.log(`Nchan-2 replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} requiredOutOfOrder=${replayResult.requiredOutOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} requiredReceived=${replayResult.requiredReceived.size}/${frozenExpectedCount1} outOfRangeBefore=${replayResult.outOfRangeBefore} outOfRangeAfter=${replayResult.outOfRangeAfter} duplicateRequired=${replayResult.duplicateRequired}`)
-
-      // §3.2.E/§3.9.F: The exact-set evaluator is the sole producer of
-      // structured values and PASS for both restart paths.
-      const pathResult = evaluateRestartRequiredRange({
-        transportResumeId: lastEventId,
-        expectedFirstSeq: frozenExpectedFirstSeq1,
-        expectedLastSeq: headAtReplacement,
-        receivedSequences: canonicalSequences(replayEvents),
-        recoveryMs: 0,
-      })
-      ctx._restartReplay ??= {}
-      ctx._restartReplay.cross_node = pathResult
-
-      // §3.9.E: Wire delivery accounting — separate from literal restart
-      ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount1)
-      ctx.metrics.incrementRestartReplayReceived(pathResult.received_required_count)
-      // §3.9: Separated cross-node metrics
-      ctx.metrics.incrementCrossNodeExpected(frozenExpectedCount1)
+    // Wire delivery accounting — replay is not live delivery.
+    ctx.metrics.incrementRestartReplayExpected(expectedCount)
+    ctx.metrics.incrementRestartReplayReceived(pathResult.received_required_count)
+    if (accounting === "cross_node") {
+      ctx.metrics.incrementCrossNodeExpected(expectedCount)
       ctx.metrics.incrementCrossNodeReceived(pathResult.received_required_count)
+    }
+    return pathResult
+  }
+
+  // §v2.1.0 owner role: cross-node replacement evidence against the SPARE node.
+  // The spare is idle (no pool viewers), so probing it is safe mid-run. This proves
+  // publish→replicate→resume semantics on the replacement node without touching p0.
+  private async spareProbeTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+    ctx.log("--- PHASE: NCHAN RESTART (owner: spare-node cross-node probe) ---")
+    if (!this.opts.spareSubUrl) {
+      return { name: this.name, passed: false, detail: "owner: no spare node configured" }
+    }
+    const testMatch = ctx.matchIds[0]
+    try {
+      ctx.log(`Connecting to spare for ${testMatch}...`)
+      const live = await this.collectLiveEvents(ctx, `${this.opts.spareSubUrl}/sub/${testMatch}`, 3, 15_000)
+      if (!live.ok || live.lastSeq === null || !live.lastEventId) {
+        return { name: this.name, passed: false, detail: `spare-probe: insufficient live events on spare (ok=${live.ok})` }
+      }
+      ctx.log(`Spare live replication confirmed: lastSeq=${live.lastSeq}`)
+
+      // Owner publishes the frozen range — serialized per match via publishPrefill.
+      const frozenExpectedFirstSeq = live.lastSeq + 1
+      const acceptedRange = await ctx.publisher.publishPrefill(testMatch, RESTART_REPLAY_DEPTH)
+      const headAtProbe = acceptedRange.lastSeq
+      if (acceptedRange.published !== RESTART_REPLAY_DEPTH || headAtProbe < frozenExpectedFirstSeq) {
+        return { name: this.name, passed: false, detail: `spare-probe: invalid frozen range first=${frozenExpectedFirstSeq} head=${headAtProbe}` }
+      }
+
+      await ctx.sleep(500)
+      ctx.log(`Resuming on spare with lastEventId=${live.lastEventId}, range=[${frozenExpectedFirstSeq}..${headAtProbe}]`)
+      const pathResult = await this.resumeProbe(
+        ctx,
+        `${this.opts.spareSubUrl}/sub/${testMatch}`,
+        live.lastEventId,
+        frozenExpectedFirstSeq,
+        headAtProbe,
+        "cross_node",
+      )
+      ctx._restartReplay ??= {}
+      ctx._restartReplay.spare_probe = pathResult
 
       return {
         name: this.name,
         passed: pathResult.passed,
         detail: [
-          `type=cross-node`,
-          `events=${replayEvents.length}`,
-          `gap=${pathResult.missing_required > 0}`,
+          `type=spare-probe`,
+          `missing=${pathResult.missing_required}`,
           `dup=${pathResult.duplicates}`,
           `outOfOrder=${pathResult.out_of_order}`,
-          `missingPrefix=${pathResult.missing_prefix}`,
-          `missing=${pathResult.missing_required_sequences.join(",")}`,
           `outBefore=${pathResult.out_of_range_before_count}`,
           `outAfter=${pathResult.out_of_range_after_count}`,
           `targetReached=${pathResult.target_reached}`,
-          `resumeTransportId=${lastEventId}`,
-          `expectedFirstSeq=${frozenExpectedFirstSeq1}`,
-          `receivedFirstSeq=${pathResult.received_first_seq}`,
-          `receivedLastSeq=${pathResult.received_last_seq}`,
-          `expectedCount=${frozenExpectedCount1}`,
+          `expectedCount=${pathResult.expected_count}`,
           `receivedCount=${pathResult.received_required_count}`,
-          `recoveryMs=N/A`,
         ].join(" "),
       }
     } catch (err) {
-      ctx.log(`Nchan restart test failed: ${err}`)
+      ctx.log(`Owner spare probe failed: ${err}`)
       return { name: this.name, passed: false, detail: `error: ${err}` }
     }
   }
 
-  // §E/§6.7: Literal Nchan process restart test
-  private async literalRestartTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
-    ctx.log("--- PHASE: NCHAN RESTART (literal process restart) ---")
-
+  // §v2.1.0 target role: literal partition restart + planned mass failover to spare.
+  // Shard owns partition viewers; it drains them client-side (planned attribution),
+  // restarts its OWN node via its own control server, fails every viewer over to the
+  // spare with Last-Event-ID resume, then verifies exact-range replay AND zero
+  // failover-window correctness deltas across the whole pool.
+  private async failoverDrillTest(ctx: ScenarioContext): Promise<{ name: string; passed: boolean; detail: string }> {
+    ctx.log("--- PHASE: NCHAN RESTART (target: literal partition restart + planned failover) ---")
+    if (!this.opts.spareSubUrl || !this.opts.controlUrl) {
+      return { name: this.name, passed: false, detail: "target: spare node or control server not configured" }
+    }
     const testMatch = ctx.matchIds[0]
-    const recordedEvents: string[] = []
-    let lastEventId: string | null = null
-
-    ctx.log(`Connecting to nchan for ${testMatch}...`)
-    const subUrl = `${this.nchan1SubUrl}/sub/${testMatch}`
-
     try {
-      const sub1 = await ctx.eventStream.connect(subUrl)
-
-      const received = await new Promise<boolean>((resolve) => {
-        const timeout = setTimeout(() => {
-          sub1.close()
-          resolve(false)
-        }, 10_000)
-
-        sub1.onEvent((evt) => {
-          if (evt.type !== "message") return
-          recordedEvents.push(evt.event.data)
-          if (evt.event.id) lastEventId = evt.event.id
-
-          if (recordedEvents.length >= 3) {
-            clearTimeout(timeout)
-            sub1.close()
-            resolve(true)
-          }
-        })
-      })
-
-      if (!received || recordedEvents.length < 3) {
-        ctx.log("Nchan: failed to receive enough events before restart")
-        return { name: this.name, passed: false, detail: "insufficient events pre-restart" }
+      // Step 1: dedicated probe on own node captures the resume cursor.
+      ctx.log(`Connecting drill probe to own partition for ${testMatch}...`)
+      const live = await this.collectLiveEvents(ctx, `${this.opts.ownSubUrl}/sub/${testMatch}`, 3, 15_000)
+      if (!live.ok || live.lastSeq === null || !live.lastEventId) {
+        return { name: this.name, passed: false, detail: `failover-drill: insufficient live events pre-restart (ok=${live.ok})` }
       }
 
-      let lastSeq: number | null = null
-      for (const raw of recordedEvents) {
-        try {
-          const data = JSON.parse(raw)
-          if (typeof data.canonical_seq === "number") lastSeq = data.canonical_seq
-        } catch {}
+      // Step 2: freeze upper bound from the global canonical head (fed by ALL pool
+      // viewers across partitions). Wait until at least one event lands above the
+      // probe cursor so the range can never be empty (§3.9.D).
+      const frozenExpectedFirstSeq = live.lastSeq + 1
+      const deadline = Date.now() + 10_000
+      let headAtRestart = ctx.headTracker.getHead(testMatch)
+      while (headAtRestart < frozenExpectedFirstSeq && Date.now() < deadline) {
+        await ctx.sleep(200)
+        headAtRestart = ctx.headTracker.getHead(testMatch)
       }
-
-      ctx.log(`Pre-restart: ${recordedEvents.length} events, lastSeq=${lastSeq}, lastEventId=${lastEventId}`)
-
-      // §3.11/§3.13: Deliberately publish and freeze a non-empty canonical
-      // range BEFORE restart. This makes the literal-restart assertion test real
-      // retained history rather than accepting an idle/empty interval.
-      const frozenExpectedFirstSeq = lastSeq !== null ? lastSeq + 1 : null
-      const acceptedRange = await ctx.publisher.publishPrefill(testMatch, RESTART_REPLAY_DEPTH)
-      const headAtRestart = acceptedRange.lastSeq
-
-      // §3.9.D: Do not fall back to expectedCount=1 or allow an empty range.
-      if (acceptedRange.published !== RESTART_REPLAY_DEPTH || frozenExpectedFirstSeq === null || headAtRestart < frozenExpectedFirstSeq) {
-        ctx.log(`§3.9 Literal restart: invalid frozen range (first=${frozenExpectedFirstSeq}, head=${headAtRestart})`)
-        return { name: this.name, passed: false, detail: `literal: invalid frozen range first=${frozenExpectedFirstSeq} head=${headAtRestart}` }
+      if (headAtRestart < frozenExpectedFirstSeq) {
+        return { name: this.name, passed: false, detail: `failover-drill: invalid frozen range first=${frozenExpectedFirstSeq} head=${headAtRestart}` }
       }
+      ctx.log(`Frozen failover range [${frozenExpectedFirstSeq}..${headAtRestart}], pool=${this.opts.pool.size}`)
 
-      const frozenExpectedCount = headAtRestart - frozenExpectedFirstSeq + 1
+      // Step 3: snapshot correctness counters, drain pool with planned attribution.
+      const before = ctx.metrics.snapshot()
+      const token = this.opts.pool.beginPlannedFailover()
 
-      // Step 2: Trigger literal Nchan process restart via control server
-      ctx.log(`Triggering literal Nchan restart via ${this.controlUrl}...`)
+      // Step 4: literal restart of this shard's own partition node.
+      ctx.log(`Triggering literal partition restart via ${this.opts.controlUrl}...`)
       const restartStart = Date.now()
       try {
-        const resp = await fetch(`${this.controlUrl}/restart`, {
-          method: "POST",
-          signal: AbortSignal.timeout(5000),
-        })
+        const resp = await fetch(`${this.opts.controlUrl}/restart`, { method: "POST", signal: AbortSignal.timeout(5000) })
         if (!resp.ok) {
-          ctx.log(`Control server returned ${resp.status}`)
           return { name: this.name, passed: false, detail: `control server returned ${resp.status}` }
         }
       } catch (err) {
-        ctx.log(`Failed to reach control server: ${err}`)
         return { name: this.name, passed: false, detail: `control server unreachable: ${err}` }
       }
 
-      // Step 3: Wait for Nchan to recover (poll healthcheck)
-      ctx.log("Waiting for Nchan to recover...")
-      const healthUrl = `${this.nchan1PubUrl}/pub/healthcheck`
-      const recovered = await new Promise<boolean>((resolve) => {
-        const deadline = Date.now() + 30_000
-        const poll = async () => {
-          while (Date.now() < deadline) {
-            try {
-              const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) })
-              if (resp.ok) { resolve(true); return }
-            } catch {}
-            await ctx.sleep(500)
-          }
-          resolve(false)
-        }
-        poll()
-      })
+      // Step 5: fail the entire pool over to the spare with Last-Event-ID resume.
+      ctx.log(`Failing over ${token.saved.length} viewers to ${this.opts.spareSubUrl}...`)
+      const failover = await this.opts.pool.completePlannedFailover(ctx.eventStream, token, this.opts.spareSubUrl)
 
+      // Step 6: exact-range replay proof from the drill probe on the spare.
+      const pathResult = await this.resumeProbe(
+        ctx,
+        `${this.opts.spareSubUrl}/sub/${testMatch}`,
+        live.lastEventId,
+        frozenExpectedFirstSeq,
+        headAtRestart,
+        "failover",
+      )
+      ctx._restartReplay ??= {}
+      ctx._restartReplay.failover_drill = pathResult
+
+      // Step 7: settle window — replay + live flow through pool trackers.
+      await ctx.sleep(NchanRestartScenario.FAILOVER_SETTLE_MS)
+      const promoted = this.opts.pool.promoteEntriesToSteady()
+
+      // Step 8: failover-window correctness deltas across the entire pool.
+      const after = ctx.metrics.snapshot()
+      const gaps = (after.missing_sequences - before.missing_sequences) + (after.reconnect_gaps - before.reconnect_gaps)
+      const duplicates = (after.duplicates - before.duplicates) + (after.reconnect_duplicates - before.reconnect_duplicates)
+      const orderViolations = (after.out_of_order - before.out_of_order) + (after.reconnect_order_violations - before.reconnect_order_violations)
+
+      // Step 9: the restarted partition must recover (replacement semantics —
+      // it rejoins empty; viewers intentionally stay on the spare).
+      const healthUrl = `${this.opts.ownPubUrl}/pub/healthcheck`
+      let recovered = false
+      const recoveryDeadline = Date.now() + 30_000
+      while (Date.now() < recoveryDeadline) {
+        try {
+          const resp = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) })
+          if (resp.ok) { recovered = true; break }
+        } catch {}
+        await ctx.sleep(500)
+      }
       const restartMs = Date.now() - restartStart
       if (!recovered) {
-        ctx.log(`Nchan did not recover within 30s after restart`)
-        return { name: this.name, passed: false, detail: `restart recovery timeout (${restartMs}ms)` }
+        return { name: this.name, passed: false, detail: `partition node did not recover within 30s (${restartMs}ms)` }
       }
-      ctx.log(`Nchan recovered in ${restartMs}ms`)
+      ctx.log(`Partition recovered in ${restartMs}ms; promoted ${promoted} entries to steady`)
 
-      // Step 4: Reconnect with Last-Event-ID and verify history replay
-      ctx.log(`Reconnecting with lastEventId=${lastEventId}...`)
-      const sub2 = await ctx.eventStream.connect(subUrl, lastEventId)
-
-      // §3.2.C: Build the frozen expected set for exact-range membership tracking
-      const frozenExpectedSet = new Set<number>()
-      for (let s = frozenExpectedFirstSeq; s <= headAtRestart; s++) frozenExpectedSet.add(s)
-
-      const replayEvents: string[] = []
-      let replayComplete = false
-
-      const replayResult = await new Promise<{
-        ok: boolean; gap: boolean; dup: boolean; firstSeq: number | null; lastSeq: number | null;
-        requiredReceived: Set<number>; outOfRangeBefore: number; outOfRangeAfter: number;
-        duplicateRequired: number; requiredOutOfOrder: boolean;
-      }>((resolve) => {
-        let prevSeq: number | null = null
-        const seenSeqs = new Set<number>()
-        const requiredReceived = new Set<number>()
-        let firstSeq: number | null = null
-        let lastSeq: number | null = null
-        let outOfRangeBefore = 0
-        let outOfRangeAfter = 0
-        let duplicateRequired = 0
-        let requiredOutOfOrder = false
-
-        const timeout = setTimeout(() => {
-          sub2.close()
-          resolve({ ok: false, gap: false, dup: false, firstSeq, lastSeq,
-            requiredReceived, outOfRangeBefore, outOfRangeAfter,
-            duplicateRequired, requiredOutOfOrder })
-        }, 15_000)
-
-        sub2.onEvent((evt) => {
-          if (evt.type !== "message" || replayComplete) return
-          replayEvents.push(evt.event.data)
-
-          try {
-            const data = JSON.parse(evt.event.data)
-            if (typeof data.canonical_seq === "number") {
-              const seq = data.canonical_seq as number
-              if (firstSeq === null) firstSeq = seq
-              lastSeq = seq
-
-              if (prevSeq !== null && seq < prevSeq) {
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder: true })
-                return
-              }
-
-              if (seenSeqs.has(seq)) {
-                if (frozenExpectedSet.has(seq)) duplicateRequired++
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: false, dup: true, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-                return
-              }
-
-              seenSeqs.add(seq)
-
-              // §3.2.C: Only count canonical sequences within the frozen expected range
-              if (frozenExpectedSet.has(seq)) {
-                requiredReceived.add(seq)
-                // §3.2.C: Track out-of-order within required set
-                if (requiredReceived.size > 1) {
-                  const prevRequired = seq - 1
-                  if (frozenExpectedSet.has(prevRequired) && !requiredReceived.has(prevRequired)) {
-                    requiredOutOfOrder = true
-                  }
-                }
-              } else if (seq < frozenExpectedFirstSeq) {
-                outOfRangeBefore++
-              } else {
-                outOfRangeAfter++
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: false, gap: true, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-                return
-              }
-
-              prevSeq = seq
-
-              // §3.2.D: Completion requires ALL required sequences, not just seq >= target
-              if (requiredReceived.size === frozenExpectedCount) {
-                replayComplete = true
-                clearTimeout(timeout)
-                sub2.close()
-                resolve({ ok: true, gap: false, dup: false, firstSeq, lastSeq,
-                  requiredReceived, outOfRangeBefore, outOfRangeAfter,
-                  duplicateRequired, requiredOutOfOrder })
-              }
-            }
-          } catch {}
-        })
-      })
-
-      // §3.9.B: Missing prefix detection
-      const missingPrefix = frozenExpectedFirstSeq !== null
-        && replayResult.firstSeq !== null
-        && replayResult.firstSeq !== frozenExpectedFirstSeq
-
-      ctx.log(`Post-restart replay: events=${replayEvents.length} ok=${replayResult.ok} gap=${replayResult.gap} dup=${replayResult.dup} requiredOutOfOrder=${replayResult.requiredOutOfOrder} missingPrefix=${missingPrefix} resumeTransportId=${lastEventId} firstSeq=${replayResult.firstSeq} lastSeq=${replayResult.lastSeq} restartMs=${restartMs} requiredReceived=${replayResult.requiredReceived.size}/${frozenExpectedCount} outOfRangeBefore=${replayResult.outOfRangeBefore} outOfRangeAfter=${replayResult.outOfRangeAfter} duplicateRequired=${replayResult.duplicateRequired}`)
-
-      const pathResult = evaluateRestartRequiredRange({
-        transportResumeId: lastEventId,
-        expectedFirstSeq: frozenExpectedFirstSeq,
-        expectedLastSeq: headAtRestart,
-        receivedSequences: canonicalSequences(replayEvents),
-        recoveryMs: restartMs,
-      })
-      ctx._restartReplay ??= {}
-      ctx._restartReplay.literal_restart = pathResult
-
-      // §3.11/§3.13: Wire delivery accounting — frozen expected range from pre-restart head observation
-      ctx.metrics.incrementRestartReplayExpected(frozenExpectedCount)
-      ctx.metrics.incrementRestartReplayReceived(pathResult.received_required_count)
-      // §3.9: Separated literal restart metrics
-      ctx.metrics.incrementLiteralRestartExpected(frozenExpectedCount)
-      ctx.metrics.incrementLiteralRestartReceived(pathResult.received_required_count)
+      const poolPassed = failover.failed === 0 && gaps === 0 && duplicates === 0 && orderViolations === 0
+      ctx._failoverHealth = {
+        attempted: failover.attempted,
+        reestablished: failover.reestablished,
+        failed: failover.failed,
+        gaps,
+        duplicates,
+        order_violations: orderViolations,
+        planned_disconnects: after.planned_restart_disconnects - before.planned_restart_disconnects,
+        restart_ms: restartMs,
+      }
 
       return {
         name: this.name,
-        passed: pathResult.passed,
+        passed: pathResult.passed && poolPassed,
         detail: [
-          `type=literal-restart`,
-          `events=${replayEvents.length}`,
-          `gap=${pathResult.missing_required > 0}`,
-          `dup=${pathResult.duplicates}`,
-          `outOfOrder=${pathResult.out_of_order}`,
-          `missingPrefix=${pathResult.missing_prefix}`,
-          `missing=${pathResult.missing_required_sequences.join(",")}`,
-          `outBefore=${pathResult.out_of_range_before_count}`,
-          `outAfter=${pathResult.out_of_range_after_count}`,
-          `targetReached=${pathResult.target_reached}`,
-          `resumeTransportId=${lastEventId}`,
-          `expectedFirstSeq=${frozenExpectedFirstSeq}`,
-          `receivedFirstSeq=${pathResult.received_first_seq}`,
-          `receivedLastSeq=${pathResult.received_last_seq}`,
-          `expectedCount=${frozenExpectedCount}`,
-          `receivedCount=${pathResult.received_required_count}`,
+          `type=failover-drill`,
+          `attempted=${failover.attempted}`,
+          `reestablished=${failover.reestablished}`,
+          `failed=${failover.failed}`,
+          `gaps=${gaps}`,
+          `dups=${duplicates}`,
+          `ooo=${orderViolations}`,
+          `plannedDisconnects=${ctx._failoverHealth.planned_disconnects}`,
           `restartMs=${restartMs}`,
-          `active_start=${ctx._activePopulationStart ?? 0}`,
-          `active_peak=${ctx._activePopulationStart ?? 0}`,
-          `active_end=${ctx._activePopulationStart ?? 0}`,
+          `rangeMissing=${pathResult.missing_required}`,
+          `rangeDup=${pathResult.duplicates}`,
+          `rangeOutOfOrder=${pathResult.out_of_order}`,
+          `targetReached=${pathResult.target_reached}`,
         ].join(" "),
       }
     } catch (err) {
-      ctx.log(`Nchan literal restart test failed: ${err}`)
+      ctx.log(`Failover drill failed: ${err}`)
       return { name: this.name, passed: false, detail: `error: ${err}` }
-    } finally {
-      // §3.11.C: Record active population for this scenario
-      const startPop = ctx._activePopulationStart ?? 0
-      ctx._restartActivePopulation = { start: startPop, peak: startPop, end: startPop }
     }
   }
 }

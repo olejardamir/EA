@@ -1,6 +1,6 @@
-# Metric Coverage Matrix — Active v2.0.6
+# Metric Coverage Matrix — Active v2.1.0
 
-Every result-affecting v2.0.6 metric has a producer, validity rule, machine-readable destination and focused coverage. The active correction contract is `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md`; v2.0.5 and q5 are historical. Shard metrics are never presented as global unless they pass through the simultaneous global coordinator.
+Every result-affecting v2.1.0 metric has a producer, validity rule, machine-readable destination and focused coverage. The active contract is `poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md` (partitioned fan-out freeze); v2.0.6, v2.0.5 and q5 are historical. Rows below remain accurate except where v2.1.0 supersedes them (per-partition resource evidence incl. numeric `oom_kill_events`, per-shard late-join samples merged to shard count, role-exact restart drill evidence). Shard metrics are never presented as global unless they pass through the simultaneous global coordinator.
 
 | Metric/evidence | Producer | Frozen rule | Machine-readable destination | Focused coverage |
 |---|---|---|---|---|

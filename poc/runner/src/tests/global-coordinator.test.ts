@@ -13,7 +13,11 @@ import type {
   ShardRegistration,
 } from "../application/global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
-import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
+import {
+  bystanderRestartStructuredEvidence,
+  validOwnerRestartStructuredEvidence,
+  validTargetRestartStructuredEvidence,
+} from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -61,6 +65,11 @@ function scenarioSamples(shardId: number): AlignedSample[] {
 
 function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> = {}): ShardExperimentResult {
   const owner = shardId === 0
+  // §v2.1.0 role model with shardCount=2: shard 0 = publisher owner (spare
+  // probe), shard 1 = restart target (failover drill); no bystanders.
+  const restartStructured = owner
+    ? validOwnerRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 0, shard_id: 0 })
+    : validTargetRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 0, shard_id: 1 })
   return {
     contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
@@ -88,7 +97,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     samples: scenarioSamples(shardId),
     histograms: {
       fan_out: histogram([10 + shardId * 10, 20 + shardId * 10]),
-      late_join: histogram(owner ? [100] : []),
+      late_join: histogram([100]),
       burst: histogram([30 + shardId * 10]),
     },
     correctness_counters: {
@@ -105,15 +114,15 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     },
     resources: {
       generator: { cpu_percent_of_capacity_peak: 50 },
-      nchan: owner ? { memory_peak_run_bytes: 1000 } : {},
+      nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: owner ? { memory_peak_run_bytes: 500, memory_used_bytes: 500 } : {},
     },
     scenarios: [
-      { name: "late-join", participated: owner, passed: true, detail: owner ? "exact full history" : "owner-only" },
+      { name: "late-join", participated: true, passed: true, detail: "exact full history" },
       { name: "burst", participated: owner, passed: true, detail: owner ? "authoritative burst" : "owner-only" },
       { name: "reconnect", participated: true, passed: true, detail: "all clients re-established" },
       { name: "slow-consumer", participated: true, passed: true, detail: "independent offered/consumed proof" },
-      { name: "restart-replacement", participated: owner, passed: true, detail: owner ? "non-empty exact ranges" : "owner-only", ...(owner ? { structured: validRestartStructuredEvidence() } : {}) },
+      { name: "restart-replacement", participated: true, passed: true, detail: owner ? "spare-probe exact range" : "failover-drill exact range", structured: restartStructured },
     ],
     ...overrides,
   }
@@ -193,7 +202,7 @@ describe("GlobalExperimentCoordinator", () => {
     assert.equal(result.active_population.global_active_peak, 100)
     assert.equal(result.publisher_owner_shard_id, 0)
     assert.equal(result.workload_rates.events_published, 100)
-    assert.equal(result.resources.nchan.memory_peak_run_bytes, 1000)
+    assert.equal(result.resources.nchan_partitions[0].evidence.memory_peak_run_bytes, 1000)
     assert.equal(result.histograms.fan_out.count, 4)
     assert.equal(result.verdict, "ACCEPT")
     assert.equal(result.global_direct_accept_eligible, true)

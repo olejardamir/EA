@@ -69,6 +69,9 @@ COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
 
 COPY nchan.conf /etc/nginx/nginx.conf
 COPY nchan-2.conf /etc/nginx/nchan-2.conf
+COPY nchan-3.conf /etc/nginx/nchan-3.conf
+COPY nchan-4.conf /etc/nginx/nchan-4.conf
+COPY nchan-spare.conf /etc/nginx/nchan-spare.conf
 COPY nchan-portable.conf /etc/nginx/nchan-portable.conf
 
 # §E/§6.7: Test-only restart control server and script
@@ -76,7 +79,9 @@ COPY control-server.js /usr/local/bin/control-server.js
 COPY nchan-restart.sh /usr/local/bin/nchan-restart.sh
 RUN chmod +x /usr/local/bin/nchan-restart.sh
 
-EXPOSE 8080 8081 18080 18081 18888
+# §M3-R: All node ports (partition nodes p0-p3 + spare) — informational only;
+# the evidence topology uses host networking.
+EXPOSE 8080 8081 18080 18081 28080 28081 38080 38081 48080 48081 18888 18889 28888 38889 48888
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

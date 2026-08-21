@@ -3,12 +3,24 @@ import assert from "node:assert/strict"
 import { aggregateGlobalCampaign } from "../application/global-campaign.js"
 import type { GlobalExperimentResult, ShardExperimentResult } from "../application/global-coordinator.js"
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
-import { validRestartStructuredEvidence } from "./restart-evidence-fixture.js"
+import {
+  bystanderRestartStructuredEvidence,
+  validOwnerRestartStructuredEvidence,
+  validTargetRestartStructuredEvidence,
+} from "./restart-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
 function campaignShard(index: number, shardId: number): ShardExperimentResult {
   const owner = shardId === 0
+  // §v2.1.0 role model with shard_count=4: shard 0 = publisher owner (spare
+  // probe), shard 3 = restart target (failover drill), shards 1-2 bystanders.
+  const restartIdentity = { campaign_id: "campaign-1", experiment_run_id: `run-${index}`, run_index: index }
+  const restartStructured = owner
+    ? validOwnerRestartStructuredEvidence({ ...restartIdentity, shard_id: 0 })
+    : shardId === 3
+      ? validTargetRestartStructuredEvidence({ ...restartIdentity, shard_id: 3 })
+      : bystanderRestartStructuredEvidence()
   return {
     contract_version: ACTIVE_CONTRACT_VERSION,
     aggregate_scope: "shard",
@@ -29,20 +41,18 @@ function campaignShard(index: number, shardId: number): ShardExperimentResult {
     samples: [],
     histograms: {
       fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] },
-      late_join: { max_ms: 30_000, total_count: owner ? 1 : 0, overflow_count: 0, buckets: owner ? [[20, 1]] : [] },
+      late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[30, 1]] },
     },
     correctness_counters: {},
     workload: { events_published: owner ? 100 : 0, phase_rates: [] },
-    resources: { generator: {}, nchan: owner ? { memory_peak_run_bytes: 1000 } : {}, redis: owner ? { memory_used_bytes: 500 } : {} },
+    resources: { generator: {}, nchan: { memory_peak_run_bytes: 1000 }, redis: owner ? { memory_used_bytes: 500 } : {} },
     scenarios: [{
       name: "restart-replacement",
-      participated: owner,
+      participated: owner || shardId === 3,
       passed: true,
-      detail: owner ? "exact owner evidence" : "not-participating",
-      structured: owner
-        ? validRestartStructuredEvidence({ experiment_run_id: `run-${index}`, run_index: index })
-        : { paths: {} },
+      detail: owner ? "exact spare-probe evidence" : shardId === 3 ? "exact failover-drill evidence" : "not-participating",
+      structured: restartStructured,
     }],
   }
 }
@@ -73,18 +83,25 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
     workload_rates: { events_published: 100, phase_rates: [] },
     histograms: {
       fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
-      late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] } },
+      late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[20, 4]] } },
       burst: { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[30, 4]] } },
     },
     correctness_counters: { missing_sequences: 0 },
     per_shard_generator_validity: [],
-    resources: { nchan: {}, redis: { memory_used_bytes: 500 } },
+    resources: {
+      nchan_partitions: [0, 1, 2, 3].map((shard_id) => ({ shard_id, partition_id: shard_id, evidence: { memory_peak_run_bytes: 1000 } as Record<string, number | null> })),
+      nchan_spare: null,
+      redis: { memory_used_bytes: 500 },
+    },
     scenario_results: [{
       name: "restart-replacement",
       passed: true,
-      participant_shard_ids: [0],
+      participant_shard_ids: [0, 3],
       active_population: null,
-      details: [{ shard_id: 0, participated: true, detail: "exact restart paths", structured: validRestartStructuredEvidence({ experiment_run_id: `run-${index}`, run_index: index }) }],
+      details: [
+        { shard_id: 0, participated: true, detail: "exact spare-probe restart evidence", structured: validOwnerRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: `run-${index}`, run_index: index, shard_id: 0 }) },
+        { shard_id: 3, participated: true, detail: "exact failover-drill restart evidence", structured: validTargetRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: `run-${index}`, run_index: index, shard_id: 3 }) },
+      ],
     }],
     shard_results: [0, 1, 2, 3].map((shardId) => campaignShard(index, shardId)),
     validity: { valid: true, reasons: [] },
@@ -155,18 +172,19 @@ describe("repeated simultaneous-global campaign aggregation", () => {
 
   it("does not let stale global ACCEPT booleans bypass exact restart evidence", () => {
     const stale = globalRun(1)
-    const structured = stale.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
-    structured.paths.cross_node.received_required_count = 7
-    structured.paths.cross_node.missing_required = 1
-    structured.paths.cross_node.missing_required_sequences = [17]
-    structured.paths.cross_node.target_reached = false
-    structured.paths.cross_node.passed = false
+    const structured = stale.shard_results[0].scenarios[0].structured as ReturnType<typeof validOwnerRestartStructuredEvidence>
+    const spareProbe = (structured.paths as Record<string, any>).spare_probe
+    spareProbe.received_required_count = 7
+    spareProbe.missing_required = 1
+    spareProbe.missing_required_sequences = [17]
+    spareProbe.target_reached = false
+    spareProbe.passed = false
 
     const result = aggregateGlobalCampaign([globalRun(0), stale, globalRun(2)])
     assert.equal(result.validity.valid, false)
     assert.equal(result.verdict, "INCONCLUSIVE")
     assert.equal(result.global_direct_accept_eligible, false)
-    assert.match(result.validity.reasons.join(" "), /publisher-owner shard 0 lacks exact restart evidence/)
+    assert.match(result.validity.reasons.join(" "), /publisher-owner shard 0 lacks exact spare-probe restart evidence/)
   })
 
   it("accepts one exact owner and three legitimate non-participants", () => {
@@ -177,19 +195,20 @@ describe("repeated simultaneous-global campaign aggregation", () => {
 
   it("rejects out-of-range substitution in owner restart evidence", () => {
     const run = globalRun(1)
-    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
-    evidence.paths.literal_restart.received_last_seq = 18
-    evidence.paths.literal_restart.out_of_range_after_count = 1
+    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validOwnerRestartStructuredEvidence>
+    const spareProbe = (evidence.paths as Record<string, any>).spare_probe
+    spareProbe.received_last_seq = 18
+    spareProbe.out_of_range_after_count = 1
     const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
-    assert.match(result.validity.reasons.join(" "), /lacks exact restart evidence/)
+    assert.match(result.validity.reasons.join(" "), /lacks exact spare-probe restart evidence/)
   })
 
   it("rejects a non-owner that falsely claims restart participation", () => {
     const run = globalRun(1)
     run.shard_results[1].scenarios[0].participated = true
-    run.shard_results[1].scenarios[0].structured = validRestartStructuredEvidence({ experiment_run_id: "run-1", run_index: 1, shard_id: 1 })
+    run.shard_results[1].scenarios[0].structured = validTargetRestartStructuredEvidence({ campaign_id: "campaign-1", experiment_run_id: "run-1", run_index: 1, shard_id: 1 })
     const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
-    assert.match(result.validity.reasons.join(" "), /non-publisher shard 1/)
+    assert.match(result.validity.reasons.join(" "), /bystander shard 1 restart non-participation is invalid/)
   })
 
   it("rejects multiple publisher owners", () => {
@@ -208,7 +227,7 @@ describe("repeated simultaneous-global campaign aggregation", () => {
 
   it("rejects stale restart evidence copied from another run", () => {
     const run = globalRun(1)
-    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validRestartStructuredEvidence>
+    const evidence = run.shard_results[0].scenarios[0].structured as ReturnType<typeof validOwnerRestartStructuredEvidence>
     evidence.experiment_run_id = "run-0"
     const result = aggregateGlobalCampaign([globalRun(0), run, globalRun(2)])
     assert.match(result.validity.reasons.join(" "), /stale or misbound/)

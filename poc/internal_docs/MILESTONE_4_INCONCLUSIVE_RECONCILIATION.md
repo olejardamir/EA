@@ -104,3 +104,17 @@ M4 chooses Terminal A. q5 did not validate the architecture and its machine verd
 The architecture must be reframed around explicit horizontal connection partitioning and capacity isolation—multiple independently bounded fan-out nodes/fleet shards with routing and failure-domain ownership—or a different fan-out technology. Any later test must target that revised assumption. It must not silently raise the current primary’s worker or memory limit and call the same design validated.
 
 Accordingly, no new qualifying 100,000-viewer M3 campaign is launched. The v2.0.6 M2 re-audit and reduced non-qualifying validation of corrected machinery completed against executable source `b143e6679269b99cc04be20eee98c3ba96e8dd1b`; the exact record is in `MILESTONE_2_POST_Q5_REAUDIT.md`. Those validations do not replace q5 and cannot produce an architecture ACCEPT.
+
+## Supersession note (2026-08-21) — Terminal A is being acted on
+
+Milestone 3 has been reopened under the same milestone name to execute Terminal A:
+the POC is being repaired into the horizontally partitioned fan-out shape this
+document requires (4 partition nodes + one spare replacement node, shared Redis
+canonical store, single-owner publication, partition-targeted planned-drain
+restart with spare failover). A new canonical contract v2.1.0 governs the revised
+topology; a fresh repeated 100,000-viewer qualifying campaign will be launched
+only from frozen source. Nothing above is rewritten: q5 remains INCONCLUSIVE
+under v2.0.5, this document remains the historical reconciliation record, and the
+new campaign is a new experiment targeting the revised assumption — not a rerun
+or reinterpretation of q5. Governing artifact:
+`internal_docs/MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`.
