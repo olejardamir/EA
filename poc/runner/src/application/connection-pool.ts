@@ -1,4 +1,4 @@
-import type { Subscription } from "../ports/event-stream.js"
+import type { Subscription, SubscriptionEvent } from "../ports/event-stream.js"
 import type { EventStream } from "../ports/event-stream.js"
 import type { MetricsRecorder } from "../ports/metrics.js"
 import type { Clock } from "../ports/clock.js"
@@ -317,35 +317,41 @@ export class ConnectionPool {
 
   // v2.1.0: shared terminal-event wiring for initial connects and failover reconnects.
   private wireEntry(entry: ConnectionEntry): void {
-    entry.subscription.onEvent((evt) => {
-      if (!this._running) return
-      if (evt.type === "message") {
-        this.handleMessage(entry, evt.event.data, evt.event.id)
-      } else if (evt.type === "error") {
-        // §4.3: Terminal stream error — remove from active pool immediately
-        // §4.17/§3.14: Disconnect attribution — classify error by cause
-        // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
-        // §3.10.E: Attribution is gated on actual removal. A repeated terminal event for an
-        // already-removed entry must not increment the category a second time:
-        // exactly one terminal connection produces one attribution category, one active
-        // removal, and one dropped increment.
-        const msg = evt.error?.message ?? ""
-        if (this.removeEntry(entry)) {
-          if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
-            this.metrics.incrementNetworkFailures()
-          } else if (/stream ended/i.test(msg)) {
-            // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
-            this.metrics.incrementServerInitiatedDisconnects()
-          } else if (/abort/i.test(msg)) {
-            // §3.14: Client-side abort (AbortController or manual abort) — attributed as unexpected
-            this.metrics.incrementUnexpectedClientDisconnects()
-          } else {
-            // §4.17: Unexpected client-side stream termination
-            this.metrics.incrementUnexpectedClientDisconnects()
-          }
+    entry.subscription.onEvent((evt) => this.processEntryEvent(entry, evt))
+  }
+
+  // §M3-RACE-4: the per-event body of wireEntry, extracted so a pre-wire
+  // observer wrapper can forward buffered frames through the IDENTICAL pool
+  // path (message accounting, tracker classification, terminal-error
+  // attribution) while the initialization buffer flushes.
+  private processEntryEvent(entry: ConnectionEntry, evt: SubscriptionEvent): void {
+    if (!this._running) return
+    if (evt.type === "message") {
+      this.handleMessage(entry, evt.event.data, evt.event.id)
+    } else if (evt.type === "error") {
+      // §4.3: Terminal stream error — remove from active pool immediately
+      // §4.17/§3.14: Disconnect attribution — classify error by cause
+      // §3.10: Exact-once — removeEntry() handles connections_dropped increment and channel decrement.
+      // §3.10.E: Attribution is gated on actual removal. A repeated terminal event for an
+      // already-removed entry must not increment the category a second time:
+      // exactly one terminal connection produces one attribution category, one active
+      // removal, and one dropped increment.
+      const msg = evt.error?.message ?? ""
+      if (this.removeEntry(entry)) {
+        if (/ECONNREFUSED|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|network|fetch failed/i.test(msg)) {
+          this.metrics.incrementNetworkFailures()
+        } else if (/stream ended/i.test(msg)) {
+          // §4.17: Server ended the stream (graceful shutdown or Nchan restart)
+          this.metrics.incrementServerInitiatedDisconnects()
+        } else if (/abort/i.test(msg)) {
+          // §3.14: Client-side abort (AbortController or manual abort)
+          this.metrics.incrementUnexpectedClientDisconnects()
+        } else {
+          // §4.17: Unexpected client-side stream termination
+          this.metrics.incrementUnexpectedClientDisconnects()
         }
       }
-    })
+    }
   }
 
   // §v2.1.0 — Phase A of the planned partition-restart failover. Captures every pooled
@@ -440,14 +446,42 @@ export class ConnectionPool {
   // Last-Event-ID. Same wiring path as completePlannedFailover(): tracker preserved,
   // reconnect mode during the replay window (replayed frames stay out of live
   // accounting), pool counters updated. Caller promotes back to steady afterwards.
-  async reattachAfterReplayProbe(stream: EventStream, entry: ConnectionEntry, lastEventId: string | null): Promise<boolean> {
+  //
+  // §M3-RACE-4: `preWireHandler` is registered BEFORE wireEntry() so the §M3-RACE
+  // initialization-buffer flush reaches it — a probe collector attached only after
+  // this method returns misses every frame that flushed to the pool handler alone
+  // in between (observed as 81.8% replay coverage on busy channels). While `wired`
+  // is false, the wrapper ALSO forwards each event through processEntryEvent so
+  // tracker/reconnect/terminal-error accounting stays identical to a pool-handler-
+  // first flush. Exactly-once holds structurally: the flush and wireEntry() run in
+  // one synchronous block with no await between them, so no event can interleave —
+  // buffered frames forward once here, post-wire live frames take the normal
+  // single-dispatch path.
+  async reattachAfterReplayProbe(
+    stream: EventStream,
+    entry: ConnectionEntry,
+    lastEventId: string | null,
+    preWireHandler?: (evt: SubscriptionEvent) => void,
+  ): Promise<boolean> {
     this.metrics.incrementConnectionsAttempted()
     try {
       const url = `${this.config.subUrl}/sub/${entry.matchId}`
       const subscription = await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
       entry.subscription = subscription
+      // Reconnect mode must be active before any frame can flow, including
+      // frames flushed from the initialization buffer below.
       entry.mode = "reconnect"
-      this.wireEntry(entry)
+      if (preWireHandler) {
+        let wired = false
+        subscription.onEvent((evt) => {
+          if (!wired) this.processEntryEvent(entry, evt)
+          preWireHandler(evt)
+        })
+        this.wireEntry(entry)
+        wired = true
+      } else {
+        this.wireEntry(entry)
+      }
       this.connections.push(entry)
       const count = this.subscribersByChannel.get(entry.matchId) ?? 0
       this.subscribersByChannel.set(entry.matchId, count + 1)

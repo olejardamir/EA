@@ -64,6 +64,27 @@ class MockSubscription implements Subscription {
   }
 }
 
+// §M3-RACE-4 double: mirrors production sse-http-client initialization-buffer
+// semantics — frames arriving while ZERO handlers exist are retained in order
+// and flushed exactly once to ALL handlers at first registration. A plain
+// MockSubscription drops pre-handler frames and cannot reproduce the race.
+class BufferedMockSubscription extends MockSubscription {
+  private pending: SubscriptionEvent[] = []
+  override emit(evt: SubscriptionEvent): void {
+    if (this.handlers.length === 0) this.pending.push(evt)
+    else super.emit(evt)
+  }
+  override onEvent(h: (event: SubscriptionEvent) => void): void {
+    const wasEmpty = this.handlers.length === 0
+    super.onEvent(h)
+    if (wasEmpty && this.pending.length > 0) {
+      const buffered = this.pending
+      this.pending = []
+      for (const evt of buffered) this.emit(evt)
+    }
+  }
+}
+
 function messageEvt(matchId: string, seq: number, id?: string): Extract<SubscriptionEvent, { type: "message" }> {
   return {
     type: "message",
@@ -532,6 +553,79 @@ describe("SlowConsumerScenario", () => {
     assert.ok(m.catchup_drained_count >= 0)
     // The live frame beyond detach-head must NOT inflate replay coverage.
     assert.ok(m.replay_probe_expected_missed === m.replay_probe_replayed)
+  })
+
+  it("§M3-RACE-4: pre-wire collector sees the buffered replay head and pool accounting stays exact", async () => {
+    // Production race: Nchan starts streaming the replay burst as soon as the
+    // reattach response attaches; those frames land in the SSE client's
+    // initialization buffer and flush to whichever handler registers FIRST.
+    // The old scenario attached its collector only after reattachAfterReplayProbe
+    // returned, so wireEntry's pool handler consumed the whole burst and the
+    // probe under-counted its own coverage (observed 81.8% < 95%). The collector
+    // is now registered pre-wire, and the pool wrapper forwards the same burst
+    // into handleMessage exactly once, so tracker/reconnect accounting is
+    // identical to a pool-handler-first flush.
+    const { pool, stream, metrics } = makePool({ count: 4 })
+    await connectViewers(pool, stream, 4)
+    const slowEntry = pool.entries[0] as ConnectionEntry
+
+    const ctx = mockCtx(pool.entries as ConnectionEntry[], 0.25, { "match-001": 12 })
+    for (let seq = 1; seq <= 3; seq++) pool.handleMessage(slowEntry, messageEvt("match-001", seq).event.data, `id-${seq}`)
+    assert.equal(slowEntry.tracker.lastSeq, 3)
+
+    // The reattach connect emits the entire burst synchronously inside
+    // connect() — no handler can exist yet, so BufferedMockSubscription
+    // retains it and flushes at the first registration (the pre-wire one).
+    // ctx.eventStream is used ONLY for the probe reattach here (initial
+    // viewers connected via makePool's own stream), so every call is the
+    // reattach and must return the buffered subscription.
+    ;(ctx.eventStream as any).connect = async (url: string, lastEventId?: string | null) => {
+      const sub = new BufferedMockSubscription(lastEventId ?? null)
+      for (const seq of [4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) sub.emit(messageEvt("match-001", seq))
+      return sub
+    }
+
+    const scenario = new SlowConsumerScenario(pool)
+    await scenario.execute(ctx)
+
+    const m = scenario.slowMetrics!
+    assert.equal(m.replay_probe_selected, 1)
+    assert.equal(m.replay_probe_reattached, 1)
+    assert.equal(m.replay_probe_expected_missed, 9, "head 12 − consumed 3")
+    assert.equal(m.replay_probe_replayed, 9, "buffered replay head must reach the pre-wire collector")
+    assert.equal(m.replay_recovery_pct, 100)
+    // Pool pipeline observed the same burst exactly once through the wrapper:
+    // the tracker advanced across replay+live without duplicate or gap noise.
+    assert.equal(slowEntry.tracker.lastSeq, 13)
+    assert.equal(metrics.counts["reconnect_duplicates"] ?? 0, 0, "double dispatch would surface here")
+    assert.equal(metrics.counts["reconnect_gaps"] ?? 0, 0, "a starved tracker would surface here")
+  })
+
+  it("§M3-RACE-4: quiet probe window still leaves the tracker caught up for steady promotion", async () => {
+    // If only the collector saw the buffered burst, a channel with NO live
+    // traffic during the window would promote with a stale tracker and the
+    // first steady frame would be misclassified as a GAP into missing_sequences.
+    const { pool, stream, metrics } = makePool({ count: 4 })
+    await connectViewers(pool, stream, 4)
+    const slowEntry = pool.entries[0] as ConnectionEntry
+
+    const ctx = mockCtx(pool.entries as ConnectionEntry[], 0.25, { "match-001": 12 })
+    for (let seq = 1; seq <= 3; seq++) pool.handleMessage(slowEntry, messageEvt("match-001", seq).event.data, `id-${seq}`)
+
+    ;(ctx.eventStream as any).connect = async (url: string, lastEventId?: string | null) => {
+      const sub = new BufferedMockSubscription(lastEventId ?? null)
+      for (const seq of [4, 5, 6, 7, 8, 9, 10, 11, 12]) sub.emit(messageEvt("match-001", seq)) // replay only
+      return sub
+    }
+
+    const scenario = new SlowConsumerScenario(pool)
+    await scenario.execute(ctx)
+
+    assert.equal(scenario.slowMetrics!.replay_probe_replayed, 9)
+    assert.equal(slowEntry.tracker.lastSeq, 12, "wrapper forwarded the full replay range to the tracker")
+    const before = metrics.counts["missing_sequences"] ?? 0
+    pool.handleMessage(slowEntry, messageEvt("match-001", 13).event.data, "id-13")
+    assert.equal(metrics.counts["missing_sequences"] ?? 0, before, "post-promotion live frame must be clean")
   })
 
   it("failed reattaches cannot vanish from the probe denominator (masking prevention)", async () => {

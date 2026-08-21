@@ -341,6 +341,9 @@ interface ReplayProbeRecord {
   entry: ConnectionEntry
   detachedId: string | null
   collector: ((evt: SubscriptionEvent) => void) | null
+  // §M3-RACE-4: the subscription-level handler is the pool's forwarding wrapper,
+  // so window teardown disarms the observer instead of removing a handler.
+  disarm: (() => void) | null
   consumedHead: number
   headAtDetach: number
   expectedMissed: number
@@ -491,6 +494,7 @@ export class SlowConsumerScenario implements Scenario {
         entry,
         detachedId,
         collector: null,
+        disarm: null,
         consumedHead,
         headAtDetach,
         expectedMissed: Math.max(0, headAtDetach - consumedHead),
@@ -502,10 +506,16 @@ export class SlowConsumerScenario implements Scenario {
     }
     if (probeRecords.length > 0) await ctx.sleep(REPLAY_PROBE_SETTLE_MS)
     for (const rec of probeRecords) {
-      const ok = await this.pool.reattachAfterReplayProbe(ctx.eventStream, rec.entry, rec.detachedId)
-      if (!ok) continue
-      rec.reattached = true
+      // §M3-RACE-4: the collector must be registered BEFORE wireEntry() runs
+      // inside reattachAfterReplayProbe — the §M3-RACE initialization buffer
+      // flushes to handlers at first registration, and any post-return attach
+      // dispatches the replay head to the pool handler only (observed: 81.8%
+      // coverage on busy channels). Passing it as preWireHandler guarantees
+      // the collector observes the full buffered burst in arrival order while
+      // the pool wrapper keeps tracker/reconnect accounting exact.
+      let armed = true
       const collector = (evt: SubscriptionEvent) => {
+        if (!armed) return
         if (evt.type !== "message") return
         const seq = extractSeq(evt.event.data)
         if (seq === null) return
@@ -516,12 +526,15 @@ export class SlowConsumerScenario implements Scenario {
         if (seq > rec.consumedHead && seq <= rec.headAtDetach) rec.replayed++
         else if (seq > rec.headAtDetach) rec.liveDuringProbe++
       }
+      const ok = await this.pool.reattachAfterReplayProbe(ctx.eventStream, rec.entry, rec.detachedId, collector)
+      if (!ok) continue
+      rec.reattached = true
       rec.collector = collector
-      rec.entry.subscription.onEvent(collector)
+      rec.disarm = () => { armed = false }
     }
     if (probeRecords.some(r => r.reattached)) await ctx.sleep(REPLAY_PROBE_WINDOW_MS)
     for (const rec of probeRecords) {
-      if (rec.collector && rec.reattached) rec.entry.subscription.removeEventHandler?.(rec.collector)
+      if (rec.reattached) rec.disarm?.()
       rec.entry.deferredDelivery = false
     }
     this.pool.promoteEntriesToSteady()
