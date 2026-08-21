@@ -88,6 +88,21 @@ v2.1.0 declared itself FROZEN, but the implementation subsequently changed in wa
                                      inside the range is caught by missing_
                                      required/duplicates/ordering. Frames BELOW
                                      the consumed position remain a defect.
+11. slow-consumer probe transient   the mandatory Last-Event-ID replay probe
+                                     detaches exactly its selected clients
+                                     mid-phase and reattaches them inside the
+                                     same measured window, so the aligned
+                                     slow-consumer active minimum can sit
+                                     below the full target by the harness's
+                                     own planned action. The allowance is
+                                     derived from reported evidence — the sum
+                                     of per-shard replay_probe_selected — is
+                                     capped at the frozen slow-cohort fraction
+                                     (5% of global target), and is zero when
+                                     no probe evidence exists. Any disconnect
+                                     beyond the probed cohort still fails the
+                                     gate. The aligned global active peak gate
+                                     (>= 100,000) is untouched.
 ```
 
 ## Frozen topology
@@ -298,7 +313,7 @@ ACCEPT cannot coexist with: OOM kill > 0, fatal worker death,
 
 Histogram rules: sparse-bucket distributions merged losslessly at shard→global→campaign; overflow counts retained; percentiles recomputed from merged populations, never averaged; zero samples is missing evidence, not zero latency.
 
-Population gates: aligned global active peak >= 100,000 (never 65k/75k/90k substitutes); late-join/burst/slow-consumer phases hold full target minimum; reconnect >= 90%; restart-replacement >= 70%.
+Population gates: aligned global active peak >= 100,000 (never 65k/75k/90k substitutes); late-join/burst phases hold full target minimum; slow-consumer holds full target minus the evidence-derived probe-transient allowance (drift item 11); reconnect >= 90%; restart-replacement >= 70%.
 
 Surge gate: starting population, attempted/established additions, elapsed time, final population, existing-viewer correctness deltas, and surge latency are measured globally and per partition; ACCEPT requires the frozen +40,000/120 s requirement.
 

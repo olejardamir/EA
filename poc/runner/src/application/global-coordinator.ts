@@ -19,6 +19,11 @@ export const COORDINATED_PHASES = [
   "final-metrics",
 ] as const
 
+// §v2.1.1 drift item 11: frozen slow-cohort fraction (contract §workload). Used
+// only to CAP the slow-consumer probe-transient active-population allowance —
+// never to relax any other gate.
+const SLOW_COHORT_FRACTION = 0.05
+
 export type CoordinatedPhase = typeof COORDINATED_PHASES[number]
 export type BarrierBoundary = "start" | "end"
 
@@ -521,11 +526,29 @@ export class GlobalExperimentCoordinator {
         // §v2.1.0: the restart phase transiently dips while the target partition is
         // drained and failed over — floor relaxed to 70% of global target for that
         // phase only. All other phases hold their frozen minimums.
-        const requiredMin = name === "reconnect"
+        let requiredMin = name === "reconnect"
           ? Math.floor(this.globalTarget * 0.9)
           : name === "restart-replacement"
             ? Math.floor(this.globalTarget * 0.7)
             : this.globalTarget
+        if (name === "slow-consumer") {
+          // §v2.1.1 drift item 11: the mandatory Last-Event-ID replay probe
+          // detaches exactly its selected clients mid-phase and reattaches them
+          // inside the same measured window, so the aligned active minimum can
+          // transiently sit below the full target by the harness's own planned
+          // action. The allowance is derived from the reported evidence — the
+          // sum of per-shard replay_probe_selected — never a free constant, is
+          // capped at the frozen slow-cohort fraction (5%) so malformed or
+          // adversarial evidence cannot collapse the floor, and is zero when no
+          // probe evidence exists. Any uncontrolled disconnect beyond the
+          // probed cohort still fails this gate.
+          const probeSelectedSum = records.reduce((sum, { scenario }) => {
+            const value = scenario.structured?.replay_probe_selected
+            return sum + (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0)
+          }, 0)
+          const allowance = Math.min(probeSelectedSum, Math.floor(this.globalTarget * SLOW_COHORT_FRACTION))
+          requiredMin = this.globalTarget - allowance
+        }
         if (active.active_min < requiredMin) rejectReasons.push(`${name} active minimum ${active.active_min} < ${requiredMin}`)
       } else {
         validityReasons.push(`${name} has no complete aligned active-population evidence`)

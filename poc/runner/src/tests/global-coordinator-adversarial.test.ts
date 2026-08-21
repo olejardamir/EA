@@ -441,3 +441,78 @@ describe("isExactRestartPathEvidence live-tail semantics", () => {
     assert.equal(restartEvidenceMatchesRun(structured, { campaign_id: "c1", experiment_run_id: "r1", run_index: 1, shard_id: 0 }), false)
   })
 })
+
+describe("§v2.1.1 drift item 11: slow-consumer probe-transient allowance", () => {
+  // The mandatory Last-Event-ID replay probe detaches exactly its selected
+  // clients mid-phase; the aligned slow-consumer active minimum may sit below
+  // the full target by exactly that planned cohort — derived from reported
+  // evidence, capped at the frozen 5% cohort fraction, zero without evidence.
+  function sampleSetWithSlowDip(shardId: number, dip: number): AlignedSample[] {
+    return fullSampleSet(shardId).map((sample) =>
+      sample.phase === "slow-consumer" ? { ...sample, active_current: 50 - dip } : sample
+    )
+  }
+
+  function withSlowProbe(result: ShardExperimentResult, selected: number | null, dip: number): ShardExperimentResult {
+    const scenarios = result.scenarios.map((scenario) =>
+      scenario.name === "slow-consumer"
+        ? { ...scenario, ...(selected === null ? {} : { structured: { replay_probe_selected: selected } }) }
+        : scenario
+    )
+    return { ...result, samples: sampleSetWithSlowDip(result.shard_id, dip), scenarios }
+  }
+
+  async function buildWith(dip0: number, sel0: number | null, dip1: number, sel1: number | null) {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0))
+    coordinator.register(registration(1))
+    await completeBarriers(coordinator)
+    coordinator.submitResult(withSlowProbe(shardResult(0), sel0, dip0))
+    coordinator.submitResult(withSlowProbe(shardResult(1), sel1, dip1))
+    return coordinator.buildGlobalResult()
+  }
+
+  it("accepts a dip exactly equal to the evidence-derived probed cohort", async () => {
+    const result = await buildWith(2, 2, 1, 1)
+    assert.equal(result.verdict, "ACCEPT")
+  })
+
+  it("rejects a dip beyond the probed cohort", async () => {
+    const result = await buildWith(3, 2, 1, 1)
+    assert.equal(result.verdict, "REJECT")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 96 < 97")))
+  })
+
+  it("gives no allowance without structured probe evidence", async () => {
+    const result = await buildWith(1, null, 1, null)
+    assert.equal(result.verdict, "REJECT")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 98 < 100")))
+  })
+
+  it("ignores malformed probe-selected evidence", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0))
+    coordinator.register(registration(1))
+    await completeBarriers(coordinator)
+    const malformed = withSlowProbe(shardResult(0), null, 1)
+    malformed.scenarios = malformed.scenarios.map((scenario) =>
+      scenario.name === "slow-consumer" ? { ...scenario, structured: { replay_probe_selected: "many" } } : scenario
+    )
+    coordinator.submitResult(malformed)
+    coordinator.submitResult(withSlowProbe(shardResult(1), null, 1))
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "REJECT")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 98 < 100")))
+  })
+
+  it("caps the allowance at the frozen slow-cohort fraction (5%)", async () => {
+    // Claimed cohort 100 (50+50) would collapse the floor to 0 without the cap;
+    // cap = floor(100 * 0.05) = 5. A dip of 8 must still fail...
+    const rejected = await buildWith(4, 50, 4, 50)
+    assert.equal(rejected.verdict, "REJECT")
+    assert.ok(rejected.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 92 < 95")))
+    // ...and a dip of exactly 5 passes.
+    const accepted = await buildWith(3, 50, 2, 50)
+    assert.equal(accepted.verdict, "ACCEPT")
+  })
+})
