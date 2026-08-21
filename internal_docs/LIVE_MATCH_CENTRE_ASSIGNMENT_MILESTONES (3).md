@@ -342,7 +342,24 @@ One command starts the experiment, it terminates with a measured summary, and no
 
 # Milestone 3 — Run the Frozen POC and Produce Evidence
 
-**Status: NOT STARTED**
+**Status: DONE — campaign verdict INCONCLUSIVE (machine-owned; handed to Milestone 4)**
+
+Qualifying source SHA: `c89159e8882206de9fffa2b170a38d76854288ce`
+Contract: v2.0.5
+Global runs: 3
+Seeds: 42,43,44
+Campaign verdict: INCONCLUSIVE
+Evidence manifest: `internal_docs/m3_evidence/m3-c89159e88822-q5/MILESTONE_3_EVIDENCE_MANIFEST.md`
+
+Summary of the measured outcome (full detail in the manifest): run 0 aborted before any
+shard result was collected; runs 1–2 completed all coordinated phases but were ruled
+invalid because all four generator shards saturated (CPU/event-loop) — the environment,
+not a frozen DUT criterion, prevented a defensible conclusion. Additional machine-recorded
+facts: global active peak 65,015–66,251 of the 100,000 target; surge established only
+~30–41% of attempted connections while nchan exhausted its frozen worker_connections
+limit; cross-run dispersion 173% against the frozen 15% bound. Per plan §20/§32 this is
+a valid INCONCLUSIVE: no manual override to ACCEPT or REJECT, no reruns appended, result
+preserved outside `poc/` and handed to M4.
 
 ## Goal
 

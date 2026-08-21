@@ -20,4 +20,9 @@ and q3 (host reboot mid-run-0, §29 external interruption).
 Console captured live in campaign-console.log.
 
 ## Disposition
-PENDING — machine aggregator owns the verdict. No human override.
+COMPLETED 2026-08-20 23:20 -04:00. Machine aggregator verdict: **INCONCLUSIVE**
+(run 0 global abort 0/4 shards; runs 1-2 invalid on generator saturation; dispersion
+173% >> 15%; surge establishment collapse; peak 65-66k < 100k target). Evidence
+exported from the volume, console↔volume match verified, checksums in
+`checksums.sha256`, full results in `MILESTONE_3_EVIDENCE_MANIFEST.md`.
+No human override applied. Result handed to Milestone 4.
