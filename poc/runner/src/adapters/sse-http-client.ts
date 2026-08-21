@@ -98,6 +98,12 @@ class SSESubscription implements Subscription {
     return this._handlers.length > 0 ? this._handlers[this._handlers.length - 1] : null
   }
 
+  // §M3-HVR: Remove a specific handler (slow-consumer replay probe collector teardown)
+  removeEventHandler(handler: (event: SubscriptionEvent) => void): void {
+    const idx = this._handlers.indexOf(handler)
+    if (idx >= 0) this._handlers.splice(idx, 1)
+  }
+
   pause(): void {
     this._res?.pause()
   }

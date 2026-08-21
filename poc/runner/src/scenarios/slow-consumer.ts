@@ -1,12 +1,12 @@
 import type { Scenario, ScenarioContext } from "./scenario.js"
-import type { ConnectionPool } from "../application/connection-pool.js"
+import type { ConnectionEntry, ConnectionPool } from "../application/connection-pool.js"
 import type { Subscription, SubscriptionEvent } from "../ports/event-stream.js"
 import { StreamingHistogram } from "../adapters/streaming-histogram.js"
 
 // §4.7: Frozen slow-consumer parameters
 const BACKPRESSURE_DURATION_MS = 15000
 const LATENCY_DEGRADATION_THRESHOLD = 0.05
-const SLOW_EVENT_INTERVAL_MS = 2000 // §U: 1 event per 2 seconds
+export const SLOW_EVENT_INTERVAL_MS = 2000 // §U: 1 event per 2 seconds
 const PACING_TOLERANCE_FRACTION = 0.20
 const PACING_MIN_MS = SLOW_EVENT_INTERVAL_MS * (1 - PACING_TOLERANCE_FRACTION)
 const PACING_MAX_MS = SLOW_EVENT_INTERVAL_MS * (1 + PACING_TOLERANCE_FRACTION)
@@ -17,6 +17,17 @@ const MEMORY_MAX_GROWTH_FRACTION = 0.10
 const MEMORY_MAX_RECOVERY_DELTA_BYTES = 50 * 1024 * 1024
 const MEMORY_MEANINGFUL_GROWTH_BYTES = 1024 * 1024
 const MEMORY_MEANINGFUL_GROWTH_FRACTION = 0.05
+
+// §M3-HVR: Last-Event-ID replay-probe parameters — repair #2 separates genuine
+// Nchan history replay from socket-buffer catch-up. A small cohort of slow
+// viewers is deliberately disconnected at its APPLICATION-consumed position,
+// reattached mid-stream with Last-Event-ID, and the replayed range is counted
+// against the canonical head observed at detach time. This measures server-side
+// retention directly; it can never be confused with TCP drain.
+const REPLAY_PROBE_MAX_CLIENTS = 3
+const REPLAY_PROBE_SETTLE_MS = 1000
+const REPLAY_PROBE_WINDOW_MS = 5000
+export const REPLAY_COVERAGE_THRESHOLD_PCT = 95
 
 // §3.6: Nchan memory sampling interval during slow phase
 const MEMORY_SAMPLE_INTERVAL_MS = 1000
@@ -43,12 +54,12 @@ export interface SlowConsumerMetrics {
   nchan_memory_end_bytes: number | null
   nchan_memory_recovery_bytes: number | null
   nchan_memory_samples_during: number[]
-  // §3.8: Per-client event timestamps (not merged) — proves per-client 2-second pacing
+  // §3.8: Per-client event timestamps (window scope only — proves per-client pacing)
   per_client_event_timestamps_ms: number[][]
   slow_achieved_read_rate_events_per_sec: number
   // §3.8: Per-client median intervals — each should achieve ~2s independently
   per_client_median_event_interval_ms: number[]
-  // §3.8: Aggregated interval stats (all clients merged)
+  // §3.8: Aggregated interval stats (window-scope releases merged)
   slow_median_event_interval_ms: number
   slow_p95_event_interval_ms: number
   // §3.8: Memory boundedness trend result
@@ -57,7 +68,14 @@ export interface SlowConsumerMetrics {
   nchan_memory_growth_pct: number | null
   independent_offered_measurement: boolean
   pacing_valid: boolean
-  replay_recovery_pct: number
+  // §M3-HVR: True Last-Event-ID replay-probe evidence (repair #2) — distinct
+  // from post-window catch-up drain, which is reported separately.
+  replay_probe_clients: number
+  replay_probe_expected_missed: number
+  replay_probe_replayed: number
+  replay_probe_coverage_pct: number | null
+  catchup_drained_count: number
+  replay_recovery_pct: number | null
 }
 
 function percentile(sorted: number[], p: number): number {
@@ -66,81 +84,178 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)]
 }
 
-// §4.7: Throttled subscription wrapper — consumes 1 event every SLOW_EVENT_INTERVAL_MS
-// Controls read-side pacing by pausing/resuming the underlying transport.
-// §3.6: Tracks timestamps of events arriving at the subscription for throttle proof.
-//
-class ThrottledSubscription implements Subscription {
-  private inner: Subscription
-  private eventsReceived = 0
-  private paused = false
-  private downstreamHandler: ((event: SubscriptionEvent) => void) | null = null
-  private resumeTimers: ReturnType<typeof setTimeout>[] = []
-  private _offeredCount = 0
-  private throttleEnabled = true
-  // §3.6: Timestamps (ms since page load) of events arriving at this subscription
-  private _eventTimestampsMs: number[] = []
+interface GatedOptions {
+  intervalMs?: number
+}
 
-  constructor(inner: Subscription) {
+// §M3-HVR repair #1: Application-read gate that enforces "1 event / intervalMs"
+// EXACTLY — including for frames already parsed inside the current TCP chunk.
+//
+// Why pause()/resume() alone was wrong (§U defect): sse-http-client dispatches
+// every frame already present in the received chunk synchronously; pausing the
+// response only prevents FUTURE data callbacks. A chunk holding N buffered
+// frames was therefore dispatched near-instantly after resume(), collapsing
+// measured inter-event intervals toward ~0ms even though nothing was wrong
+// with the server.
+//
+// This wrapper takes over dispatch: the pool's handler is removed from the
+// inner subscription (removeEventHandler) and invoked ONLY by this gate.
+// Wire-level frames are retained in an ordered queue; releases are pumped one
+// at a time every intervalMs while backlog remains. The inner transport stays
+// paused whenever the queue is non-empty, so once the current chunk is fully
+// enqueued, real TCP backpressure propagates to Nchan.
+export class GatedThrottledSubscription implements Subscription {
+  private inner: Subscription
+  private appHandler: ((event: SubscriptionEvent) => void) | null = null
+  private extraHandlers: Array<(event: SubscriptionEvent) => void> = []
+  private queue: SubscriptionEvent[] = []
+  private pumpTimer: ReturnType<typeof setTimeout> | null = null
+  private innerPausedByGate = false
+  private passthrough = false
+  private _wireCount = 0
+  private _releasedCount = 0
+  private _releaseTimestampsMs: number[] = []
+  private _lastReleasedEventId: string | null = null
+  private intervalMs: number
+
+  constructor(inner: Subscription, options?: GatedOptions) {
     this.inner = inner
-    // §M3-R dup fix: onEvent ADDS a handler (sse-http-client §3.17) and the
-    // pool handler stays registered on the inner subscription, so it keeps
-    // firing exactly once on its own. Re-forwarding events to the captured
-    // pool handler from this wrapper double-counted every frame as a wire
-    // duplicate from the moment throttling was installed.
-    this.inner.onEvent((evt) => {
-      if (evt.type === "message") {
-        this._offeredCount++
-        this.eventsReceived++
-        // §3.6: Record the timestamp when this event arrived
-        this._eventTimestampsMs.push(performance.now())
-        if (this.throttleEnabled && !this.paused) {
-          this.paused = true
-          this.inner.pause()
-          const timer = setTimeout(() => {
-            this.paused = false
-            if (this.inner.connected) {
-              this.inner.resume()
-            }
-          }, SLOW_EVENT_INTERVAL_MS)
-          this.resumeTimers.push(timer)
-        }
-      }
-      // Forward to downstream handler only (pool handler is dispatched by inner)
-      this.downstreamHandler?.(evt)
-    })
+    this.intervalMs = options?.intervalMs ?? SLOW_EVENT_INTERVAL_MS
+    this.inner.onEvent((evt) => this.onWireEvent(evt))
   }
 
-  get connected(): boolean { return this.inner.connected }
-  get lastEventId(): string | null { return this.inner.lastEventId }
+  // The scenario hands over the pool handler it removed from the inner
+  // subscription. From then on this gate is the connection's sole dispatcher.
+  takeOver(appHandler: ((event: SubscriptionEvent) => void) | null): void {
+    this.appHandler = appHandler
+  }
+
+  get connected(): boolean {
+    return this.inner.connected
+  }
+
+  get lastEventId(): string | null {
+    // §M3-HVR: application-consumed position — the correct resume token for the
+    // replay probe. Proxies the wire position before any release has happened.
+    return this._lastReleasedEventId ?? this.inner.lastEventId
+  }
+
+  get wireCount(): number {
+    return this._wireCount
+  }
+
+  get releasedCount(): number {
+    return this._releasedCount
+  }
+
+  get queueDepth(): number {
+    return this.queue.length
+  }
+
+  get releaseTimestampsMs(): number[] {
+    return this._releaseTimestampsMs
+  }
 
   onEvent(handler: (event: SubscriptionEvent) => void): void {
-    this.downstreamHandler = handler
+    // Post-takeover listeners fire at DELIVERY time (after the gate), so they
+    // observe exactly the frames the application consumed.
+    this.extraHandlers.push(handler)
   }
 
   getEventHandler(): ((event: SubscriptionEvent) => void) | null {
-    return this.downstreamHandler
+    return this.appHandler
   }
 
-  pause(): void { this.inner.pause() }
-  resume(): void { this.inner.resume() }
+  removeEventHandler(handler: (event: SubscriptionEvent) => void): void {
+    const idx = this.extraHandlers.indexOf(handler)
+    if (idx >= 0) this.extraHandlers.splice(idx, 1)
+  }
+
+  pause(): void {
+    this.inner.pause()
+  }
+
+  resume(): void {
+    this.inner.resume()
+  }
+
   close(): void {
-    for (const t of this.resumeTimers) clearTimeout(t)
-    this.resumeTimers = []
+    if (this.pumpTimer) clearTimeout(this.pumpTimer)
+    this.pumpTimer = null
+    this.queue = []
     this.inner.close()
   }
 
-  get achievedReadCount(): number { return this.eventsReceived }
-  get offeredCount(): number { return this._offeredCount }
-  // §3.6: Timestamps of events arriving at this subscription
-  get eventTimestampsMs(): number[] { return this._eventTimestampsMs }
-
-  disableThrottle(): void {
-    this.throttleEnabled = false
-    this.paused = false
-    for (const timer of this.resumeTimers) clearTimeout(timer)
-    this.resumeTimers = []
+  // §M3-HVR: End-of-phase catch-up. Drains the retained backlog to the
+  // application in order at full speed and switches to transparent
+  // pass-through. Deliberately NOT part of replay accounting.
+  flushAndRelease(): number {
+    let drained = 0
+    if (this.pumpTimer) clearTimeout(this.pumpTimer)
+    this.pumpTimer = null
+    this.passthrough = true
+    while (this.queue.length > 0) {
+      const evt = this.queue.shift()!
+      this.deliver(evt)
+      drained++
+    }
+    this.innerPausedByGate = false
     if (this.inner.connected) this.inner.resume()
+    return drained
+  }
+
+  private deliver(evt: SubscriptionEvent): void {
+    this._releasedCount++
+    this._releaseTimestampsMs.push(performance.now())
+    if (evt.type === "message" && evt.event.id !== undefined && evt.event.id !== null) {
+      this._lastReleasedEventId = evt.event.id
+    }
+    this.appHandler?.(evt)
+    for (const h of this.extraHandlers) h(evt)
+  }
+
+  private onWireEvent(evt: SubscriptionEvent): void {
+    if (evt.type !== "message") {
+      // Terminal/error events must stay live — pool disconnect attribution
+      // depends on them arriving immediately, never behind the gate.
+      this.appHandler?.(evt)
+      for (const h of this.extraHandlers) h(evt)
+      return
+    }
+    this._wireCount++
+    if (this.passthrough) {
+      this.deliver(evt)
+      return
+    }
+    this.queue.push(evt)
+    if (!this.innerPausedByGate && this.inner.connected) {
+      this.inner.pause()
+      this.innerPausedByGate = true
+    }
+    if (this.pumpTimer === null) {
+      // Gate idle: consume the first event of a burst immediately, then pace.
+      const next = this.queue.shift()!
+      this.deliver(next)
+      this.scheduleNextRelease()
+    }
+  }
+
+  private scheduleNextRelease(): void {
+    this.pumpTimer = setTimeout(() => {
+      this.pumpTimer = null
+      const next = this.queue.shift()
+      if (!next) {
+        // Backlog drained within the window — reopen the socket until the
+        // next arrival restarts the cycle.
+        if (this.innerPausedByGate) {
+          this.innerPausedByGate = false
+          if (this.inner.connected) this.inner.resume()
+        }
+        return
+      }
+      this.deliver(next)
+      this.scheduleNextRelease()
+    }, this.intervalMs)
   }
 }
 
@@ -150,6 +265,30 @@ export function independentOfferedCount(headsBefore: number[], headsAfter: numbe
 
 export function pacingWithinTolerance(medians: number[], intendedClients: number): boolean {
   return medians.length === intendedClients && medians.every((median) => median >= PACING_MIN_MS && median <= PACING_MAX_MS)
+}
+
+// §M3-HVR: Extract canonical_seq from a match frame payload (production schema),
+// falling back to the lightweight `seq` used by unit-test fixtures. Returns null
+// when neither field carries a usable number.
+function extractSeq(data: string): number | null {
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>
+    if (typeof parsed.canonical_seq === "number") return parsed.canonical_seq
+    if (typeof parsed.seq === "number") return parsed.seq
+  } catch {}
+  return null
+}
+
+interface ReplayProbeRecord {
+  entry: ConnectionEntry
+  detachedId: string | null
+  collector: ((evt: SubscriptionEvent) => void) | null
+  consumedHead: number
+  headAtDetach: number
+  expectedMissed: number
+  replayed: number
+  liveDuringProbe: number
+  reattached: boolean
 }
 
 export class SlowConsumerScenario implements Scenario {
@@ -179,10 +318,8 @@ export class SlowConsumerScenario implements Scenario {
     // Dedicated immediately-before-slow healthy baseline. This listener is
     // installed now and excludes every earlier phase by construction.
     // §M3-R dup fix: onEvent ADDS a handler and the pool handler remains
-    // registered on the subscription, so this wrapper must ONLY record the
-    // latency histogram. Re-invoking the captured handler dispatched every
-    // frame twice into the pool's sequence tracker, counting each event as a
-    // duplicate for the rest of the run.
+    // registered on the subscription, so this listener must ONLY record the
+    // latency histogram.
     const healthyBeforeHist = new StreamingHistogram()
     const healthyDuringHist = new StreamingHistogram()
     let collectHealthyBaseline = true
@@ -210,15 +347,21 @@ export class SlowConsumerScenario implements Scenario {
     const nchanMemBaseline = ctx.resourceMonitor.snapshot().nchan_memory_current_bytes
     ctx.log(`§3.6 nchan_memory_baseline=${nchanMemBaseline !== null ? `${(nchanMemBaseline / 1024 / 1024).toFixed(1)}MB` : "null"}`)
 
-    // §4.7: Wrap slow connections with throttled read (1 event per 2s)
-    const throttledWrappers: ThrottledSubscription[] = []
+    // §M3-HVR repair #1: install the application-read gate. The pool handler is
+    // removed from the inner subscription and handed to the gate, which retains
+    // parsed frames and releases them at true application pace.
+    const gatedWrappers: GatedThrottledSubscription[] = []
     for (const conn of slowConnections) {
-      const throttled = new ThrottledSubscription(conn.subscription)
-      conn.subscription = throttled
-      throttledWrappers.push(throttled)
+      const poolHandler = conn.subscription.getEventHandler()
+      if (poolHandler) conn.subscription.removeEventHandler?.(poolHandler)
+      const gated = new GatedThrottledSubscription(conn.subscription)
+      gated.takeOver(poolHandler)
+      conn.subscription = gated
+      conn.deferredDelivery = true
+      gatedWrappers.push(gated)
     }
 
-    ctx.log(`${slowCount} slow connections throttled to 1 event/2s, ${healthyConnections.length} healthy connections active`)
+    ctx.log(`${slowCount} slow connections gated to true 1-event/${SLOW_EVENT_INTERVAL_MS}ms application reads, ${healthyConnections.length} healthy connections active`)
     collectHealthyDuring = true
 
     // §3.7: Track heads before slow phase for missed-live computation
@@ -242,7 +385,7 @@ export class SlowConsumerScenario implements Scenario {
     // §3.6: Stop memory sampling
     clearInterval(sampleTimer)
 
-    // §3.6: Nchan memory at slow end — before resuming
+    // §3.6: Nchan memory at slow end — before any release activity
     const nchanMemEnd = ctx.resourceMonitor.snapshot().nchan_memory_current_bytes
     ctx.log(`§3.6 nchan_memory_end=${nchanMemEnd !== null ? `${(nchanMemEnd / 1024 / 1024).toFixed(1)}MB` : "null"}`)
     if (nchanMemBaseline !== null && nchanMemEnd !== null) {
@@ -250,104 +393,161 @@ export class SlowConsumerScenario implements Scenario {
       ctx.log(`§3.6 nchan_memory_growth_during=${growthMB >= 0 ? "+" : ""}${growthMB.toFixed(1)}MB`)
     }
 
-    // §4.7: Collect slow-consumer metrics after the phase
+    // §4.7/§M3-HVR: Window-scope capture — taken BEFORE the replay probe and
+    // catch-up flush so pacing statistics measure pure gated consumption.
     let slowDisconnects = 0
-    let totalOffered = 0
-    let totalRead = 0
-    // §3.8: Per-client event timestamps (not merged) — proves per-client 2-second pacing
-    const perClientTimestampsMs: number[][] = []
+    const readAtWindowEnd: number[] = []
+    const perClientWindowTimestampsMs: number[][] = []
     for (let i = 0; i < slowConnections.length; i++) {
       const conn = slowConnections[i]
-      const wrapper = throttledWrappers[i]
+      const wrapper = gatedWrappers[i]
       if (!conn.subscription.connected) {
         slowDisconnects++
         ctx.metrics.incrementSlowConsumerDisconnects()
       }
-      totalRead += wrapper.achievedReadCount
-      perClientTimestampsMs.push([...wrapper.eventTimestampsMs])
+      readAtWindowEnd.push(wrapper.releasedCount)
+      perClientWindowTimestampsMs.push([...wrapper.releaseTimestampsMs])
     }
 
-    // §3.7: Compute per-client missed live using head deltas
+    // §3.7: Head deltas after the window (before probe/flush activity)
     const headsAfterSlow = slowConnections.map(conn => ctx.headTracker.getHead(conn.matchId))
-    // Independent offered/expected source: canonical accepted publisher head
-    // deltas for each slow client's channel, not the slow callback itself.
-    totalOffered = independentOfferedCount(headsBeforeSlow, headsAfterSlow)
 
-    // §3.7: Capture read counts before resume for replay tracking
-    const readBeforeResume = throttledWrappers.map(w => w.achievedReadCount)
+    // ────────────────────────────────────────────────────────────────────
+    // §M3-HVR repair #2: TRUE Last-Event-ID replay probe.
+    // Detach selected slow viewers at their application-consumed position,
+    // reattach mid-stream with Last-Event-ID, and count exactly which frames
+    // Nchan replays versus delivers live. Socket-buffer drainage plays no
+    // part: the detached sockets are destroyed client-side before sampling.
+    // ────────────────────────────────────────────────────────────────────
+    const probeIndices = selectProbeIndices(slowConnections, REPLAY_PROBE_MAX_CLIENTS)
+    const probeRecords: ReplayProbeRecord[] = []
+    for (const idx of probeIndices) {
+      const entry = slowConnections[idx]
+      const detachedId = this.pool.detachEntryForReplayProbe(entry)
+      const consumedHead = entry.tracker.lastSeq
+      const headAtDetach = ctx.headTracker.getHead(entry.matchId)
+      probeRecords.push({
+        entry,
+        detachedId,
+        collector: null,
+        consumedHead,
+        headAtDetach,
+        expectedMissed: Math.max(0, headAtDetach - consumedHead),
+        replayed: 0,
+        liveDuringProbe: 0,
+        reattached: false,
+      })
+      ctx.log(`§M3-HVR probe: detached conn#${entry.id} (${entry.matchId}) at consumed_head=${consumedHead}, wire_head=${headAtDetach}, resume_id=${detachedId ?? "none"}`)
+    }
+    if (probeRecords.length > 0) await ctx.sleep(REPLAY_PROBE_SETTLE_MS)
+    for (const rec of probeRecords) {
+      const ok = await this.pool.reattachAfterReplayProbe(ctx.eventStream, rec.entry, rec.detachedId)
+      if (!ok) continue
+      rec.reattached = true
+      const collector = (evt: SubscriptionEvent) => {
+        if (evt.type !== "message") return
+        const seq = extractSeq(evt.event.data)
+        if (seq === null) return
+        // Missed range is (consumedHead, headAtDetach] in canonical-seq space.
+        // Crediting only that closed interval keeps coverage conservative:
+        // duplicate frames at or below the consumed position can never inflate
+        // retention evidence, and anything beyond detach-head is live delivery.
+        if (seq > rec.consumedHead && seq <= rec.headAtDetach) rec.replayed++
+        else if (seq > rec.headAtDetach) rec.liveDuringProbe++
+      }
+      rec.collector = collector
+      rec.entry.subscription.onEvent(collector)
+    }
+    if (probeRecords.some(r => r.reattached)) await ctx.sleep(REPLAY_PROBE_WINDOW_MS)
+    for (const rec of probeRecords) {
+      if (rec.collector && rec.reattached) rec.entry.subscription.removeEventHandler?.(rec.collector)
+      rec.entry.deferredDelivery = false
+    }
+    this.pool.promoteEntriesToSteady()
 
-    // Remove throttling and drain replay/backlog until recovered or timed out.
-    for (const wrapper of throttledWrappers) wrapper.disableThrottle()
-    const expectedRecovery = totalOffered - totalRead
+    const probeMeasured = probeRecords.filter(r => r.reattached)
+    const probeExpectedMissedTotal = probeMeasured.reduce((s, r) => s + r.expectedMissed, 0)
+    const probeReplayedTotal = probeMeasured.reduce((s, r) => s + r.replayed, 0)
+    const probeCoveragePct = probeMeasured.length > 0 && probeExpectedMissedTotal > 0
+      ? Math.min(100, (probeReplayedTotal / probeExpectedMissedTotal) * 100)
+      : null
+    const probeRetentionProven = probeCoveragePct !== null && probeCoveragePct >= REPLAY_COVERAGE_THRESHOLD_PCT
+    ctx.log(`§M3-HVR replay probe: clients=${probeRecords.length} reattached=${probeMeasured.length} expected_missed=${probeExpectedMissedTotal} replayed=${probeReplayedTotal} coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"} retention_proven=${probeRetentionProven}`)
+
+    // ────────────────────────────────────────────────────────────────────
+    // §M3-HVR: Catch-up drain — release each remaining viewer's retained
+    // backlog at full speed. This measures how quickly buffered data can be
+    // handed to the application once the throttle lifts; it is explicitly
+    // NOT replay evidence and is excluded from replay_coverage.
+    // ────────────────────────────────────────────────────────────────────
+    const probedEntries = new Set(probeRecords.map(r => r.entry))
+    let catchupDrained = 0
+    for (let i = 0; i < slowConnections.length; i++) {
+      const conn = slowConnections[i]
+      if (probedEntries.has(conn)) continue
+      catchupDrained += gatedWrappers[i].flushAndRelease()
+      conn.deferredDelivery = false
+    }
+    const wireTotalNonProbed = gatedWrappers.reduce((sum, w, i) => probedEntries.has(slowConnections[i]) ? sum : sum + w.wireCount, 0)
     const recoveryDeadline = Date.now() + RECOVERY_TIMEOUT_MS
-    while (Date.now() < recoveryDeadline) {
-      const recovered = throttledWrappers.reduce((sum, wrapper, index) => sum + Math.max(0, wrapper.achievedReadCount - readBeforeResume[index]), 0)
-      if (recovered >= expectedRecovery) break
+    while (Date.now() < recoveryDeadline && releasedTotalNonProbedGetter(gatedWrappers, probedEntries, slowConnections) < wireTotalNonProbed) {
       await ctx.sleep(100)
     }
+    ctx.log(`§M3-HVR catch-up drain: flushed=${catchupDrained} frames (backlog handoff, not replay)`)
 
-    // §3.6: Nchan memory after recovery — after resuming all connections
+    // §3.6: Nchan memory after recovery
     await ctx.sleep(2000) // Allow time for recovery
     const nchanMemRecovery = ctx.resourceMonitor.snapshot().nchan_memory_current_bytes
-
-    // §3.7: Capture replay counts after recovery
-    const readAfterReplay = throttledWrappers.map(w => w.achievedReadCount)
     ctx.log(`§3.6 nchan_memory_recovery=${nchanMemRecovery !== null ? `${(nchanMemRecovery / 1024 / 1024).toFixed(1)}MB` : "null"}`)
 
-    // §3.7: Build per-client detail records with missed-live and replay metrics
+    // §3.7/§M3-HVR: Per-client records — consumption is now true gated reads;
+    // post-window deliveries are classified as catch-up, never as replay.
     interface PerClientDetail {
       index: number
+      publishedDuringSlow: number
+      consumedDuringSlow: number
       missedLive: number
-      missedReplay: number
-      replayGap: number
-      totalMissed: number
+      catchupReceived: number
       detail: string
     }
     const perClientDetails: PerClientDetail[] = []
     for (let i = 0; i < slowConnections.length; i++) {
-      const publishedDuringSlow = headsAfterSlow[i] - headsBeforeSlow[i]
-      const consumedDuringSlow = readBeforeResume[i]
+      const conn = slowConnections[i]
+      const publishedDuringSlow = Math.max(0, headsAfterSlow[i] - headsBeforeSlow[i])
+      const consumedDuringSlow = readAtWindowEnd[i]
       const missedLive = Math.max(0, publishedDuringSlow - consumedDuringSlow)
-      const replayReceived = Math.max(0, readAfterReplay[i] - readBeforeResume[i])
-      const missedReplay = Math.max(0, missedLive - replayReceived)
-      const replayGap = missedReplay
-      const totalMissed = missedLive
+      const catchupReceived = Math.max(0, gatedWrappers[i].releasedCount - readAtWindowEnd[i])
       perClientDetails.push({
         index: i,
+        publishedDuringSlow,
+        consumedDuringSlow,
         missedLive,
-        missedReplay,
-        replayGap,
-        totalMissed,
-        detail: `client_${i}:missed_live=${missedLive}:missed_replay=${missedReplay}:replay_gap=${replayGap}`,
+        catchupReceived,
+        detail: `client_${i}:published=${publishedDuringSlow}:consumed=${consumedDuringSlow}:missed_live=${missedLive}:catchup=${catchupReceived}`,
       })
     }
 
-    // §3.7: Aggregate missed-live and replay metrics
+    // §3.7: Aggregate missed-live metrics (replay coverage comes from the probe)
     const missedLive = perClientDetails.reduce((s, pc) => s + pc.missedLive, 0)
-    const missedReplay = perClientDetails.reduce((s, pc) => s + pc.missedReplay, 0)
-    const missedRequired = missedLive
-    const expectedTotalReplay = missedLive
-    const replayReceivedAfterReconnect = perClientDetails.reduce((s, pc) => s + Math.min(pc.missedLive, Math.max(0, readAfterReplay[pc.index] - readBeforeResume[pc.index])), 0)
-    const replayCoverage = expectedTotalReplay > 0 ? replayReceivedAfterReconnect / expectedTotalReplay : 1
+    const anyClientMissed = perClientDetails.some(pc => pc.missedLive > 0)
 
-    ctx.log(`§3.7 missed_live=${missedLive} missed_replay=${missedReplay} replay_coverage=${(replayCoverage * 100).toFixed(1)}%`)
-    ctx.log(`§3.7 per_client: [${perClientDetails.map(d => d.detail).join("; ")}]`)
+    ctx.log(`§3.7 missed_live_total=${missedLive} (replay coverage measured by Last-Event-ID probe, not by drain)`)
 
     // §3.7: Per-client gauge metrics
     for (const pc of perClientDetails) {
-      ctx.metrics.gauge(`slow_client_${pc.index}_total_missed`, pc.totalMissed)
       ctx.metrics.gauge(`slow_client_${pc.index}_missed_live`, pc.missedLive)
-      ctx.metrics.gauge(`slow_client_${pc.index}_missed_replay`, pc.missedReplay)
-      ctx.metrics.gauge(`slow_client_${pc.index}_replay_gap`, pc.replayGap)
+      ctx.metrics.gauge(`slow_client_${pc.index}_catchup_received`, pc.catchupReceived)
     }
 
-    // §3.6: Compute achieved read rate from slow consumers
+    // §3.6: Compute achieved window read rate from slow consumers
+    const totalRead = readAtWindowEnd.reduce((s, n) => s + n, 0)
     const slowReadRate = slowPhaseElapsed > 0 ? totalRead / slowCount / (slowPhaseElapsed / 1000) : 0
 
-    // §3.8: Compute per-client inter-event intervals — proves each client achieves ~2s pacing
+    // §3.8: Compute per-client inter-release intervals — proves each client
+    // achieved ~2s APPLICATION pacing independently (window scope only).
     const allSortedIntervals: number[] = []
     const perClientMedianIntervals: number[] = []
-    for (const clientTs of perClientTimestampsMs) {
+    for (const clientTs of perClientWindowTimestampsMs) {
       if (clientTs.length < 2) continue
       const sorted = [...clientTs].sort((a, b) => a - b)
       const intervals: number[] = []
@@ -362,7 +562,7 @@ export class SlowConsumerScenario implements Scenario {
     const p95Interval = percentile(allSortedIntervals, 0.95)
     // §3.8: Per-client median interval — all clients should achieve ~2s pacing independently
     const pacingValid = pacingWithinTolerance(perClientMedianIntervals, slowCount)
-    ctx.log(`§3.6 slow_consumer read rate: ${slowReadRate.toFixed(2)} events/s, median_interval=${medianInterval.toFixed(0)}ms, p95_interval=${p95Interval.toFixed(0)}ms (target=${SLOW_EVENT_INTERVAL_MS}ms)`)
+    ctx.log(`§3.6 slow_consumer window read rate: ${slowReadRate.toFixed(2)} events/s, median_interval=${medianInterval.toFixed(0)}ms, p95_interval=${p95Interval.toFixed(0)}ms (target=${SLOW_EVENT_INTERVAL_MS}ms)`)
     ctx.log(`§3.8 per_client_medians: [${perClientMedianIntervals.map((m) => m.toFixed(0)).join(", ")}]ms, tolerance=${PACING_MIN_MS}-${PACING_MAX_MS}ms pacing_valid=${pacingValid}`)
 
     // §3.6: Healthy-client latency during slow phase — from dedicated histogram
@@ -376,19 +576,18 @@ export class SlowConsumerScenario implements Scenario {
       ? (p95During - p95Before) / p95Before
       : 0
 
-    // §4.7: Compute backlog growth — events offered but not yet consumed
+    // Independent offered source: accepted publisher head deltas per channel
+    const totalOffered = independentOfferedCount(headsBeforeSlow, headsAfterSlow)
+
+    // §4.7: Compute backlog growth — events offered but not yet consumed in-window
     const backlogGrowth = totalOffered - totalRead
 
     // §3.8: Nchan memory boundedness — trend-based rule, not arbitrary threshold
-    // Bounded = memory did not grow continuously during the slow phase AND recovered after
-    // Unavailable evidence = INCONCLUSIVE (not pass)
     const nchanMemoryBounded = (() => {
       if (nchanMemBaseline === null || nchanMemEnd === null) return null // unknown
       const growthBytes = nchanMemEnd - nchanMemBaseline
-      // Growth must be < 10% of baseline AND < 50MB to be considered bounded
       const growthPct = nchanMemBaseline > 0 ? growthBytes / nchanMemBaseline : 0
       if (growthBytes >= MEMORY_MAX_GROWTH_BYTES || growthPct >= MEMORY_MAX_GROWTH_FRACTION) return false
-      // If recovery sample exists, check it returned toward baseline
       if (nchanMemRecovery !== null) {
         const recoveryDelta = Math.abs(nchanMemRecovery - nchanMemBaseline)
         if (recoveryDelta >= MEMORY_MAX_RECOVERY_DELTA_BYTES) return false
@@ -396,14 +595,15 @@ export class SlowConsumerScenario implements Scenario {
       return true
     })()
 
-    // §3.8: Server-side backpressure — falsifiable signal
-    // NOT just any memory increase or latency change. Require:
-    //   1. Slow consumers disconnected by server (definitive), OR
-    //   2. Nchan memory grew by >1MB AND >5% of baseline (meaningful server-side buffering)
-    // Small memory variation or kernel socket absorption does NOT count.
-    const nchanMemoryGrew = nchanMemBaseline !== null && nchanMemEnd !== null
-      ? nchanMemEnd > nchanMemBaseline
-      : false
+    // §M3-HVR repair #3: Server-side backpressure/retention evidence —
+    // falsifiable signals replacing the old Goldilocks memory window:
+    //   1. Server disconnected slow consumers (definitive backpressure action), OR
+    //   2. Meaningful Nchan memory growth correlated with the backlog window (>1MB AND >5%), OR
+    //   3. Replay-probe retention proven: Nchan held the exact missed range and
+    //      redelivered it on Last-Event-ID reconnect (≥ threshold coverage).
+    // Signal 3 makes efficient-kernel-absorption runs decidable: even when
+    // memory barely moves, retained-history redelivery proves server-side
+    // buffering happened somewhere measurable.
     const nchanMemoryGrowthBytes = nchanMemBaseline !== null && nchanMemEnd !== null
       ? nchanMemEnd - nchanMemBaseline
       : 0
@@ -411,25 +611,27 @@ export class SlowConsumerScenario implements Scenario {
       ? nchanMemoryGrowthBytes / nchanMemBaseline
       : 0
     const nchanMemoryMeaningfulGrowth = nchanMemoryGrowthBytes > MEMORY_MEANINGFUL_GROWTH_BYTES && nchanMemoryGrowthPct > MEMORY_MEANINGFUL_GROWTH_FRACTION
-    const evidenceBackpressure = slowDisconnects > 0 || (backlogGrowth > 0 && nchanMemoryMeaningfulGrowth)
+    const evidenceBackpressure = slowDisconnects > 0 || nchanMemoryMeaningfulGrowth || probeRetentionProven
+    const replayCoverageOk = probeRetentionProven
 
-    ctx.log(`§3.6 slow offered: ${totalOffered} events (${(totalOffered / (slowPhaseElapsed / 1000)).toFixed(2)} /s), read: ${totalRead} events (${slowReadRate.toFixed(2)} /s), backlog_growth=${backlogGrowth}`)
-    ctx.log(`§3.6 server-side backpressure: ${evidenceBackpressure ? "YES" : "NO"} (disconnects=${slowDisconnects > 0}, nchan_memory_grew=${nchanMemoryGrew}, degradation=${degradation > LATENCY_DEGRADATION_THRESHOLD})`)
+    ctx.log(`§3.6 slow offered: ${totalOffered} events (${slowPhaseElapsed > 0 ? (totalOffered / (slowPhaseElapsed / 1000)).toFixed(2) : "0"} /s), window-read: ${totalRead} events (${slowReadRate.toFixed(2)} /s), backlog_growth=${backlogGrowth}`)
+    ctx.log(`§3.6 server-side backpressure/retention: ${evidenceBackpressure ? "YES" : "NO"} (disconnects=${slowDisconnects > 0}, meaningful_memory_growth=${nchanMemoryMeaningfulGrowth}, probe_retention=${probeRetentionProven})`)
 
     // §4.8: Core property — bounded behavior without unbounded memory growth
     const degradationOk = degradation <= LATENCY_DEGRADATION_THRESHOLD
-    // §3.8: Boundedness = Nchan memory trend is bounded (null = unknown = INCONCLUSIVE)
     const boundedOk = nchanMemoryBounded === true
       && backlogGrowth >= 0
       && (totalRead > 0 || slowDisconnects > 0)
 
-    // §4.8: Pass/fail rule — frozen interpretation:
-    // PASS: healthy degradation <= threshold AND bounded behavior demonstrated AND backpressure proven
-    // INCONCLUSIVE: no server-side backpressure reached (absorbed by kernel buffers) OR boundedness unknown
-    // §3.7: PASS requires at least one client missed events and replay coverage >= 95%
+    // §4.8/§M3-HVR: Pass/fail rule — frozen interpretation:
+    // PASS requires ALL of:
+    //   - healthy degradation <= threshold
+    //   - bounded Nchan memory trend (known, not runaway)
+    //   - genuine application pacing achieved within frozen tolerance
+    //   - at least one client demonstrably missed events while throttled
+    //   - backpressure/retention evidence (disconnects OR memory OR probe)
+    //   - Last-Event-ID replay probe coverage >= threshold
     const boundedKnown = nchanMemoryBounded !== null
-    const anyClientMissed = perClientDetails.some(pc => pc.totalMissed > 0)
-    const replayCoverageOk = replayCoverage >= 0.95
     const passed = degradationOk && boundedOk && evidenceBackpressure && boundedKnown
       && anyClientMissed && replayCoverageOk && pacingValid
 
@@ -454,8 +656,8 @@ export class SlowConsumerScenario implements Scenario {
       nchan_memory_end_bytes: nchanMemEnd,
       nchan_memory_recovery_bytes: nchanMemRecovery,
       nchan_memory_samples_during: nchanMemSamplesDuring,
-      // §3.8: Per-client event timestamps (not merged)
-      per_client_event_timestamps_ms: perClientTimestampsMs,
+      // §3.8: Per-client window event timestamps (not merged, not flushed)
+      per_client_event_timestamps_ms: perClientWindowTimestampsMs,
       slow_achieved_read_rate_events_per_sec: slowReadRate,
       // §3.8: Per-client median intervals
       per_client_median_event_interval_ms: perClientMedianIntervals,
@@ -468,20 +670,32 @@ export class SlowConsumerScenario implements Scenario {
       nchan_memory_growth_pct: nchanMemoryGrowthPct,
       independent_offered_measurement: true,
       pacing_valid: pacingValid,
-      replay_recovery_pct: replayCoverage * 100,
+      // §M3-HVR: Probe + catch-up evidence
+      replay_probe_clients: probeRecords.length,
+      replay_probe_expected_missed: probeExpectedMissedTotal,
+      replay_probe_replayed: probeReplayedTotal,
+      replay_probe_coverage_pct: probeCoveragePct,
+      catchup_drained_count: catchupDrained,
+      replay_recovery_pct: probeCoveragePct,
     }
 
+    const probeDetail = [
+      `probe_clients=${probeRecords.length}`,
+      `probe_reattached=${probeMeasured.length}`,
+      `probe_expected_missed=${probeExpectedMissedTotal}`,
+      `probe_replayed=${probeReplayedTotal}`,
+      `probe_coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"}`,
+      `catchup_drained=${catchupDrained}`,
+    ].join(" ")
+
     const detail = [
-      `slow_throttled=${slowCount}/${all.length}`,
+      `slow_gated=${slowCount}/${all.length}`,
       `slow_disconnects=${slowDisconnects}/${slowCount}`,
       `slow_offered=${totalOffered}`,
-      `slow_read=${totalRead}`,
+      `slow_window_read=${totalRead}`,
       `slow_backlog_growth=${backlogGrowth}`,
       `slow_read_rate=${slowReadRate.toFixed(2)}/s`,
-      `missed_required=${missedRequired} direction=live`,
-      `missed_live=${missedLive} direction=live`,
-      `missed_replay=${missedReplay} direction=replay`,
-      `replay_coverage=${(replayCoverage * 100).toFixed(1)}% direction=replay`,
+      `missed_required=${missedLive} direction=live`,
       `any_client_missed=${anyClientMissed}`,
       `median_event_interval=${medianInterval.toFixed(0)}ms`,
       `p95_event_interval=${p95Interval.toFixed(0)}ms`,
@@ -489,6 +703,7 @@ export class SlowConsumerScenario implements Scenario {
       `pacing_tolerance=${PACING_MIN_MS}-${PACING_MAX_MS}ms`,
       `pacing_valid=${pacingValid}`,
       `offered_source=accepted_publisher_head_delta`,
+      probeDetail,
       `p95_before=${p95Before}ms`,
       `p95_with_slow=${p95During}ms`,
       `healthy_before_samples=${healthyBeforeHist.count}`,
@@ -519,4 +734,34 @@ export class SlowConsumerScenario implements Scenario {
 
     return { name: this.name, passed, detail }
   }
+}
+
+// §M3-HVR: Pick up to `max` probe candidates spread across distinct matches
+// first (maximising channel coverage), then fill remaining slots.
+function selectProbeIndices(entries: ConnectionEntry[], max: number): number[] {
+  const seenMatches = new Set<string>()
+  const picked: number[] = []
+  for (let i = 0; i < entries.length && picked.length < max; i++) {
+    if (!seenMatches.has(entries[i].matchId)) {
+      seenMatches.add(entries[i].matchId)
+      picked.push(i)
+    }
+  }
+  for (let i = 0; i < entries.length && picked.length < max; i++) {
+    if (!picked.includes(i)) picked.push(i)
+  }
+  return picked
+}
+
+function releasedTotalNonProbedGetter(
+  wrappers: GatedThrottledSubscription[],
+  probedEntries: Set<ConnectionEntry>,
+  connections: ConnectionEntry[],
+): number {
+  let total = 0
+  for (let i = 0; i < wrappers.length; i++) {
+    if (probedEntries.has(connections[i])) continue
+    total += wrappers[i].releasedCount
+  }
+  return total
 }

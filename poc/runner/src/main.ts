@@ -147,12 +147,25 @@ async function main(): Promise<void> {
     clock,
   )
 
+  // §M3-HVR repair #5: Expected-delivery accounting scope. In coordinated mode
+  // exactly one shard owns the logical publisher workload and publishes to ALL
+  // partitions through the shared canonical Redis store, while every shard
+  // holds an equal target allocation. The owner's local pool therefore sees
+  // only ~1/shardCount of the true global subscriber population; counting it
+  // raw undercounted global expected fan-out by ~shardCount× and skewed the
+  // coordinator's aggregate delivery ratio. Scale the owner's per-channel
+  // count by shardCount (equal-allocation estimate); non-owner shards never
+  // start the publisher, so their counts stay local-scope and unused.
+  const expectedScopeMultiplier = coordinatedModeEarly && process.env.PUBLISHER_OWNER === "true"
+    ? Math.max(1, parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10) || 1)
+    : 1
+
   const publisher = new MatchEventPublisher({
     publisher: nchanPublisher,
     headTracker,
     burstMode: false,
     random,
-    getSubscriberCount: (channel) => pool.getSubscriberCount(channel),
+    getSubscriberCount: (channel) => pool.getSubscriberCount(channel) * expectedScopeMultiplier,
     onPublish: (channel, expected) => {
       metrics.incrementExpectedFanDeliveries(expected)
       // §3.13: Live expected from publisher at accepted-publish time using eligible subscriber count

@@ -289,7 +289,13 @@ export interface SlowConsumerMetrics {
   nchan_memory_growth_pct: number | null
   independent_offered_measurement?: boolean
   pacing_valid?: boolean
-  replay_recovery_pct?: number
+  // §M3-HVR: null = retention could not be measured (probe failed or nothing missed)
+  replay_recovery_pct?: number | null
+  replay_probe_clients?: number
+  replay_probe_expected_missed?: number
+  replay_probe_replayed?: number
+  replay_probe_coverage_pct?: number | null
+  catchup_drained_count?: number
 }
 
 export type Verdict = "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"

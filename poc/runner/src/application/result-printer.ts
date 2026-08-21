@@ -67,10 +67,16 @@ export function printSummary(
     console.log(`  Slow clients:      ${sc.slow_clients}/${sc.slow_clients + sc.healthy_clients}`)
     console.log(`  Slow offered:      ${sc.slow_offered_event_count} events`)
     console.log(`  Slow consumed:     ${sc.slow_application_read_count} events`)
-    // §3.8: offered == consumed with TCP backpressure (see ThrottledSubscription architectural note)
-    // The proof is in per-client inter-event timing, not count differential.
+    // §M3-HVR: offered vs consumed is expected to diverge under a deliberate
+    // application-read gate; pacing proof is per-client inter-release timing,
+    // and recovery evidence comes from the Last-Event-ID replay probe.
     console.log(`  Read rate:         ${sc.slow_achieved_read_rate_events_per_sec.toFixed(2)} events/s`)
     console.log(`  Median interval:   ${sc.slow_median_event_interval_ms.toFixed(0)}ms (target: 2000ms)`)
+    if (sc.pacing_valid !== undefined) console.log(`  Pacing valid:      ${sc.pacing_valid}`)
+    if (sc.replay_probe_clients !== undefined) {
+      console.log(`  Replay probe:      ${sc.replay_probe_replayed}/${sc.replay_probe_expected_missed} frames via ${sc.replay_probe_clients} client(s) — coverage ${sc.replay_probe_coverage_pct !== null && sc.replay_probe_coverage_pct !== undefined ? `${sc.replay_probe_coverage_pct.toFixed(1)}%` : "unmeasurable"}`)
+      console.log(`  Catch-up drain:    ${sc.catchup_drained_count ?? 0} frames (backlog handoff, not replay)`)
+    }
     console.log(`  Backlog growth:    ${sc.slow_backlog_growth} events`)
     console.log(`  Backpressure:      ${sc.evidence_server_side_backpressure_reached ? "YES" : "NO"}`)
     console.log(`  Healthy p95 before:${sc.healthy_p95_before_ms}ms`)
@@ -335,6 +341,15 @@ export function emitMachineReadableResult(
         nchan_memory_bounded: metrics.slow_consumer_metrics.nchan_memory_bounded,
         nchan_memory_growth_bytes: metrics.slow_consumer_metrics.nchan_memory_growth_bytes,
         nchan_memory_growth_pct: metrics.slow_consumer_metrics.nchan_memory_growth_pct,
+        // §M3-HVR: Last-Event-ID replay-probe evidence — retention measured at
+        // the server, separated from post-window catch-up drain.
+        pacing_valid: metrics.slow_consumer_metrics.pacing_valid,
+        replay_probe_clients: metrics.slow_consumer_metrics.replay_probe_clients,
+        replay_probe_expected_missed: metrics.slow_consumer_metrics.replay_probe_expected_missed,
+        replay_probe_replayed: metrics.slow_consumer_metrics.replay_probe_replayed,
+        replay_probe_coverage_pct: metrics.slow_consumer_metrics.replay_probe_coverage_pct,
+        catchup_drained_count: metrics.slow_consumer_metrics.catchup_drained_count,
+        replay_recovery_pct: metrics.slow_consumer_metrics.replay_recovery_pct,
       } : {}),
     },
     restart_metrics: {

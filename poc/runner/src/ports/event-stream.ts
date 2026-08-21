@@ -15,6 +15,9 @@ export interface Subscription {
   onEvent(handler: (event: SubscriptionEvent) => void): void
   // §3.17: Retrieve the currently-registered event handler (for handler chaining in slow-consumer)
   getEventHandler(): ((event: SubscriptionEvent) => void) | null
+  // §M3-HVR: Remove a previously-registered handler (used by the slow-consumer replay
+  // probe to detach its temporary sequence collector without tearing down the stream).
+  removeEventHandler?(handler: (event: SubscriptionEvent) => void): void
   pause(): void
   resume(): void
   close(): void

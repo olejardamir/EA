@@ -375,11 +375,21 @@ export function classifyResult(
       checks.push({ name: "inconclusive_override", passed: false, detail: "slow-client 2-second pacing model was not achieved within frozen ±20% tolerance" })
       return { verdict: "INCONCLUSIVE", checks }
     }
-    if (slowMetrics.replay_recovery_pct !== undefined) {
+    // §M3-HVR: replay_recovery_pct is TRUE Last-Event-ID replay coverage from
+    // the detach/reattach probe. null means retention could not be measured
+    // (no successful reattach or nothing was missed) — an explicit failed
+    // check, not a silent pass.
+    if (slowMetrics.replay_recovery_pct != null) {
       checks.push({
         name: "slow_replay_recovery",
         passed: slowMetrics.replay_recovery_pct >= 95,
         detail: `${slowMetrics.replay_recovery_pct.toFixed(1)}% >= 95%`,
+      })
+    } else {
+      checks.push({
+        name: "slow_replay_recovery",
+        passed: false,
+        detail: "Last-Event-ID replay coverage unmeasurable (no successful probe or nothing missed)",
       })
     }
     checks.push({

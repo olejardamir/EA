@@ -17,7 +17,7 @@ export interface TopologyPreflight {
   nginx_per_worker_connection_ceiling: number
   nginx_per_worker_fd_reserve: number
   nginx_per_worker_usable_sse_capacity: number
-  nginx_capacity_model: "theoretical_even_distribution"
+  nginx_capacity_model: "partitioned_even_distribution"
   nginx_worker_distribution_observed: false
   target_connections: number
   capacity_sufficient: boolean
@@ -178,10 +178,22 @@ export function runTopologyPreflight(
   const nonViewerFds = NON_VIEWER_FDS
   const requiredFds = targetConnections + nonViewerFds
 
-  // §3.4.D: Live 100k subscriber load is directed to nchan-primary only.
-  // nchan-2 is a replacement/recovery node, not a second capacity node.
-  // Capacity must be proven against the primary node receiving all subscriber connections.
-  const subscribersPerNode = targetConnections
+  // §v2.1.0/§M3-HVR repair #4: Partitioned fan-out topology. Every Nchan
+  // partition node runs its own nginx and serves an equal share of the global
+  // viewer population (generator shard i owns partition i). Capacity must be
+  // proven per node against that share — NOT against the global aggregate on
+  // one node, and NOT against a "shared nginx" model that no longer exists.
+  // Partition count resolution order: explicit param > NCHAN_PARTITION_COUNT >
+  // SHARD_TOTAL/SHARD_COUNT (shard i owns partition i) > single node.
+  const aggregateTarget = targetConnections * shardCount
+  const partitionNodes = (() => {
+    if (nchanNodes > 1) return nchanNodes
+    const envPartitions = parseInt(process.env.NCHAN_PARTITION_COUNT ?? "", 10)
+    if (Number.isFinite(envPartitions) && envPartitions > 0) return envPartitions
+    const shardTotal = parseInt(process.env.SHARD_TOTAL ?? process.env.SHARD_COUNT ?? "1", 10)
+    return Number.isFinite(shardTotal) && shardTotal > 0 ? shardTotal : 1
+  })()
+  const subscribersPerNode = Math.ceil(aggregateTarget / partitionNodes)
 
   // §3.3: CPU quota is per-container. Runner CPU quota validates generator validity;
   // Nchan CPU quota validates DUT capacity. Do not cross-compare.
@@ -195,7 +207,6 @@ export function runTopologyPreflight(
 
   const capacitySufficient = (() => {
     // §3.2: Aggregate target across all shards
-    const aggregateTarget = targetConnections * shardCount
     if (ephemeralCount === null) {
       warnings.push("Cannot parse /proc/sys/net/ipv4/ip_local_port_range — capacity cannot be verified")
       return false
@@ -208,21 +219,18 @@ export function runTopologyPreflight(
       warnings.push(`Source-port headroom invalid: available=${ephemeralCount ?? "unknown"}, required=${portHeadroom.source_port_required} (viewers=${targetConnections} + non-viewer=${NON_VIEWER_OUTBOUND_SOCKETS} + reconnect/TIME_WAIT=${portHeadroom.reconnect_time_wait_allowance} + safety=${SOURCE_PORT_SAFETY_MARGIN})`)
       return false
     }
-    if (nginxMaxSseCapacity < targetConnections) {
-      warnings.push(`Nginx max capacity ${nginxMaxSseCapacity} < per-shard target ${targetConnections}`)
-      return false
-    }
-    // §3.4.C: Nginx is shared across all shards — compare against aggregate target, not per-shard
-    if (nginxMaxSseCapacity < aggregateTarget) {
-      warnings.push(`Nginx usable capacity ${nginxMaxSseCapacity} < aggregate subscriber target ${aggregateTarget} (${shardCount} shards × ${targetConnections})`)
+    // §v2.1.0: Each partition's own nginx must carry its per-node share of the
+    // global viewer population.
+    if (nginxMaxSseCapacity < subscribersPerNode) {
+      warnings.push(`Per-partition nginx capacity ${nginxMaxSseCapacity} < per-node subscriber share ${subscribersPerNode} (aggregate ${aggregateTarget} across ${partitionNodes} partitions)`)
       return false
     }
     if (destTupleCapacity < aggregateTarget) {
       warnings.push(`Aggregate destination tuple capacity ${destTupleCapacity} (${sourceIps} shards × ephemeral=${ephemeralCount}) < aggregate target ${aggregateTarget} — structurally insufficient`)
       return false
     }
-    if (subscribersPerNode * nchanNodes < targetConnections) {
-      warnings.push(`Subscriber capacity ${subscribersPerNode} × ${nchanNodes} nodes < per-shard target ${targetConnections}`)
+    if (subscribersPerNode * partitionNodes < aggregateTarget) {
+      warnings.push(`Subscriber capacity ${subscribersPerNode}/node × ${partitionNodes} nodes < aggregate target ${aggregateTarget}`)
       return false
     }
     return true
@@ -254,7 +262,7 @@ export function runTopologyPreflight(
       : nginxWorkerConns,
     nginx_per_worker_fd_reserve: NGINX_PER_WORKER_FD_RESERVE,
     nginx_per_worker_usable_sse_capacity: perWorkerConfiguredCapacity,
-    nginx_capacity_model: "theoretical_even_distribution",
+    nginx_capacity_model: "partitioned_even_distribution",
     nginx_worker_distribution_observed: false,
     target_connections: targetConnections,
     capacity_sufficient: capacitySufficient,
@@ -262,14 +270,14 @@ export function runTopologyPreflight(
     non_viewer_fds: nonViewerFds,
     fd_headroom: fdHeadroom,
     subscribers_per_nchan_node: subscribersPerNode,
-    nchan_node_count: nchanNodes,
+    nchan_node_count: partitionNodes,
     cpu_quota: cpuQuota,
     cpu_count: cpuCount,
     recommended_shard_count: recommendedShardCount,
     shard_capacity_each: shardCapacityEach,
     topology_note: topologyNote,
     shard_count: shardCount,
-    aggregate_target_connections: targetConnections * shardCount,
+    aggregate_target_connections: aggregateTarget,
     aggregate_destination_tuple_capacity: destTupleCapacity,
     ...portHeadroom,
   }

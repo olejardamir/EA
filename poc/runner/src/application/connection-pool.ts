@@ -7,6 +7,7 @@ import { validateMatchEventPayload, type ValidMatchEvent } from "../domain/event
 
 // Non-qualifying development diagnostics (probe-only, never set in qualifying runs).
 const DUP_DEBUG = process.env.DUP_DEBUG === "1"
+const GAP_DEBUG = process.env.GAP_DEBUG === "1"
 
 export interface ConnectionEntry {
   id: number
@@ -14,6 +15,11 @@ export interface ConnectionEntry {
   subscription: Subscription
   tracker: SequenceTracker
   mode: "steady" | "reconnect"
+  // §M3-HVR: True when the slow-consumer gate holds parsed frames and releases
+  // them at application pace. Deferred release means publish_timestamp-based
+  // latency no longer measures transport latency for this entry, so fan-out
+  // latency recording is suppressed while set (sequence/live accounting stays).
+  deferredDelivery?: boolean
 }
 
 export interface ConnectionPoolConfig {
@@ -189,22 +195,31 @@ export class ConnectionPool {
     }
 
     // §T: Latency measurement from transmitted publish_timestamp
-    const publishTime = new Date(data.publish_timestamp).getTime()
-    const recvTime = this.clock.now()
-    const latency = recvTime - publishTime
-    if (latency < 0) {
-      this.metrics.incrementLatencyInvalid()
-    } else {
-      if (latency >= 30000) {
-        this.metrics.incrementLatencyOverflow()
+    // §M3-HVR: Skipped while deferredDelivery — the slow-consumer gate releases
+    // backlog at application pace, so recvTime - publishTime reflects deliberate
+    // client throttling, not transport latency. Recording it would poison the
+    // global fan-out histogram and the healthy-degradation comparison.
+    if (!entry.deferredDelivery) {
+      const publishTime = new Date(data.publish_timestamp).getTime()
+      const recvTime = this.clock.now()
+      const latency = recvTime - publishTime
+      if (latency < 0) {
+        this.metrics.incrementLatencyInvalid()
+      } else {
+        if (latency >= 30000) {
+          this.metrics.incrementLatencyOverflow()
+        }
+        this.metrics.recordFanOutLatency(latency)
       }
-      this.metrics.recordFanOutLatency(latency)
     }
 
     const classification = entry.tracker.classify(seq)
     switch (classification.kind) {
       case "GAP": {
         const gap = classification.received - classification.expected
+        if (GAP_DEBUG) {
+          console.log(`GAPDBG ${JSON.stringify({ t: this.clock.now(), conn: entry.id, match: entry.matchId, mode: entry.mode, expected: classification.expected, received: classification.received, gap })}`)
+        }
         if (entry.mode === "steady") {
           this.metrics.incrementMissingSequences(gap)
         } else {
@@ -399,6 +414,50 @@ export class ConnectionPool {
     this.metrics.setActiveConnections(this.connections.length)
     this.config.subUrl = newSubUrl
     return { attempted: token.saved.length, reestablished, failed }
+  }
+
+  // §M3-HVR: Slow-consumer replay probe — detach a single viewer with deliberate
+  // attribution and return its Last-Event-ID resume position. Scoped variant of
+  // beginPlannedFailover(): the client-side close suppresses terminal error
+  // events, so this disconnect can never be misattributed as server-initiated.
+  detachEntryForReplayProbe(entry: ConnectionEntry): string | null {
+    const lastEventId = entry.subscription.lastEventId
+    try {
+      entry.subscription.close()
+    } catch {}
+    const idx = this.connections.indexOf(entry)
+    if (idx >= 0) {
+      this.connections.splice(idx, 1)
+      const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+      this.subscribersByChannel.set(entry.matchId, Math.max(0, count - 1))
+      this.metrics.setActiveConnections(this.connections.length)
+      this.metrics.incrementDeliberateDisconnects()
+    }
+    return lastEventId
+  }
+
+  // §M3-HVR: Reattach a replay-probe viewer on its owner partition with its saved
+  // Last-Event-ID. Same wiring path as completePlannedFailover(): tracker preserved,
+  // reconnect mode during the replay window (replayed frames stay out of live
+  // accounting), pool counters updated. Caller promotes back to steady afterwards.
+  async reattachAfterReplayProbe(stream: EventStream, entry: ConnectionEntry, lastEventId: string | null): Promise<boolean> {
+    this.metrics.incrementConnectionsAttempted()
+    try {
+      const url = `${this.config.subUrl}/sub/${entry.matchId}`
+      const subscription = await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
+      entry.subscription = subscription
+      entry.mode = "reconnect"
+      this.wireEntry(entry)
+      this.connections.push(entry)
+      const count = this.subscribersByChannel.get(entry.matchId) ?? 0
+      this.subscribersByChannel.set(entry.matchId, count + 1)
+      this.metrics.incrementConnectionsEstablished()
+      this.metrics.setActiveConnections(this.connections.length)
+      return true
+    } catch {
+      this.metrics.incrementConnectionFailures()
+      return false
+    }
   }
 
   // §v2.1.0 — After the failover replay window has settled, promote failover entries back
