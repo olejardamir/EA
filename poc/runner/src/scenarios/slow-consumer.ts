@@ -70,11 +70,17 @@ export interface SlowConsumerMetrics {
   pacing_valid: boolean
   // §M3-HVR: True Last-Event-ID replay-probe evidence (repair #2) — distinct
   // from post-window catch-up drain, which is reported separately.
+  // §M3-RACE-2: selected vs reattached are reported separately; retention is
+  // proven only when every selected client reattached with a measurable range.
   replay_probe_clients: number
+  replay_probe_selected: number
+  replay_probe_reattached: number
   replay_probe_expected_missed: number
   replay_probe_replayed: number
   replay_probe_coverage_pct: number | null
   catchup_drained_count: number
+  // Gating metric: weakest per-client coverage across ALL selected probes;
+  // null when any client failed to reattach or had nothing measurable.
   replay_recovery_pct: number | null
 }
 
@@ -241,7 +247,7 @@ export class GatedThrottledSubscription implements Subscription {
   }
 
   private scheduleNextRelease(): void {
-    this.pumpTimer = setTimeout(() => {
+    const timer = setTimeout(() => {
       this.pumpTimer = null
       const next = this.queue.shift()
       if (!next) {
@@ -256,6 +262,11 @@ export class GatedThrottledSubscription implements Subscription {
       this.deliver(next)
       this.scheduleNextRelease()
     }, this.intervalMs)
+    // §M3-RACE-2 hygiene: the pump timer must never keep the process alive on
+    // its own — during the slow phase the runner always holds live sockets,
+    // and at teardown an orphaned 2s-interval timer would otherwise hang exit.
+    timer.unref?.()
+    this.pumpTimer = timer
   }
 }
 
@@ -465,14 +476,56 @@ export class SlowConsumerScenario implements Scenario {
     }
     this.pool.promoteEntriesToSteady()
 
-    const probeMeasured = probeRecords.filter(r => r.reattached)
-    const probeExpectedMissedTotal = probeMeasured.reduce((s, r) => s + r.expectedMissed, 0)
-    const probeReplayedTotal = probeMeasured.reduce((s, r) => s + r.replayed, 0)
-    const probeCoveragePct = probeMeasured.length > 0 && probeExpectedMissedTotal > 0
+    // §M3-RACE-2: Per-client replay correctness FIRST, then aggregate. The old
+    // arithmetic filtered to reattached clients only, so a failed reattach
+    // silently vanished from the denominator and one strong client could mask
+    // two failed ones. Retention is now proven only when EVERY selected probe:
+    //   1. reattached successfully (selected == reattached), AND
+    //   2. had a measurable missed range (expectedMissed > 0), AND
+    //   3. individually achieved >= threshold coverage of its own missed range.
+    const probeSelected = probeRecords.length
+    const probeReattached = probeRecords.filter(r => r.reattached).length
+    interface PerClientProbe {
+      index: number
+      reattached: boolean
+      measurable: boolean
+      expectedMissed: number
+      replayed: number
+      coveragePct: number | null
+      passed: boolean
+    }
+    const perClientProbes: PerClientProbe[] = probeRecords.map((r, index) => {
+      const measurable = r.reattached && r.expectedMissed > 0
+      const coveragePct = measurable ? Math.min(100, (r.replayed / r.expectedMissed) * 100) : null
+      return {
+        index,
+        reattached: r.reattached,
+        measurable,
+        expectedMissed: r.expectedMissed,
+        replayed: r.replayed,
+        coveragePct,
+        passed: coveragePct !== null && coveragePct >= REPLAY_COVERAGE_THRESHOLD_PCT,
+      }
+    })
+    // Arithmetic aggregate over ALL selected clients — failures keep their place
+    // in the denominator (reporting metric only; gating uses the weakest link).
+    const probeExpectedMissedTotal = probeRecords.reduce((s, r) => s + r.expectedMissed, 0)
+    const probeReplayedTotal = probeRecords.reduce((s, r) => s + r.replayed, 0)
+    const probeCoveragePct = probeExpectedMissedTotal > 0
       ? Math.min(100, (probeReplayedTotal / probeExpectedMissedTotal) * 100)
       : null
-    const probeRetentionProven = probeCoveragePct !== null && probeCoveragePct >= REPLAY_COVERAGE_THRESHOLD_PCT
-    ctx.log(`§M3-HVR replay probe: clients=${probeRecords.length} reattached=${probeMeasured.length} expected_missed=${probeExpectedMissedTotal} replayed=${probeReplayedTotal} coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"} retention_proven=${probeRetentionProven}`)
+    // Gating metric: weakest per-client link. null unless every selected client
+    // reattached with a measurable range — the classifier treats null as an
+    // explicit failure, so a partial probe can never pass by omission.
+    const allReattached = probeReattached === probeSelected
+    const allMeasurable = perClientProbes.every(p => p.measurable)
+    const minClientCoveragePct = allReattached && allMeasurable
+      ? Math.min(...perClientProbes.map(p => p.coveragePct!))
+      : null
+    const probeRetentionProven = probeSelected > 0
+      && allReattached && allMeasurable
+      && perClientProbes.every(p => p.passed)
+    ctx.log(`§M3-HVR replay probe: selected=${probeSelected} reattached=${probeReattached} expected_missed=${probeExpectedMissedTotal} replayed=${probeReplayedTotal} aggregate_coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"} min_client_coverage=${minClientCoveragePct !== null ? `${minClientCoveragePct.toFixed(1)}%` : "unmeasurable"} per_client=[${perClientProbes.map(p => `#${p.index}:${p.reattached ? (p.measurable ? `${p.coveragePct!.toFixed(1)}%` : "unmeasurable") : "reattach_failed"}`).join(",")}] retention_proven=${probeRetentionProven}`)
 
     // ────────────────────────────────────────────────────────────────────
     // §M3-HVR: Catch-up drain — release each remaining viewer's retained
@@ -671,20 +724,24 @@ export class SlowConsumerScenario implements Scenario {
       independent_offered_measurement: true,
       pacing_valid: pacingValid,
       // §M3-HVR: Probe + catch-up evidence
-      replay_probe_clients: probeRecords.length,
+      replay_probe_clients: probeSelected,
+      replay_probe_selected: probeSelected,
+      replay_probe_reattached: probeReattached,
       replay_probe_expected_missed: probeExpectedMissedTotal,
       replay_probe_replayed: probeReplayedTotal,
       replay_probe_coverage_pct: probeCoveragePct,
       catchup_drained_count: catchupDrained,
-      replay_recovery_pct: probeCoveragePct,
+      replay_recovery_pct: minClientCoveragePct,
     }
 
     const probeDetail = [
-      `probe_clients=${probeRecords.length}`,
-      `probe_reattached=${probeMeasured.length}`,
+      `probe_selected=${probeSelected}`,
+      `probe_reattached=${probeReattached}`,
       `probe_expected_missed=${probeExpectedMissedTotal}`,
       `probe_replayed=${probeReplayedTotal}`,
-      `probe_coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"}`,
+      `probe_aggregate_coverage=${probeCoveragePct !== null ? `${probeCoveragePct.toFixed(1)}%` : "unmeasurable"}`,
+      `probe_min_client_coverage=${minClientCoveragePct !== null ? `${minClientCoveragePct.toFixed(1)}%` : "unmeasurable"}`,
+      `per_client=[${perClientProbes.map(p => `#${p.index}:${p.reattached ? (p.measurable ? `${p.coveragePct!.toFixed(1)}%` : "unmeasurable") : "reattach_failed"}`).join(",")}]`,
       `catchup_drained=${catchupDrained}`,
     ].join(" ")
 

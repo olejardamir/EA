@@ -74,6 +74,15 @@ class SSESubscription implements Subscription {
   private _closed = false
   private _decoder = new TextDecoder("utf-8", { fatal: false })
   private _onParseError?: () => void
+  // §M3-RACE: Frames parsed between HTTP response start and the first
+  // application-handler registration. Nchan writes a Last-Event-ID replay burst
+  // immediately after connection establishment — often before ConnectionPool's
+  // wireEntry() has run — so dropping unhandled data silently discarded entire
+  // replay ranges. Buffered events are flushed exactly once, in arrival order,
+  // by the first onEvent() call. The window is bounded by construction (the
+  // pool registers its handler immediately after connect resolves); close()
+  // clears the buffer.
+  private _pendingEvents: SubscriptionEvent[] = []
 
   constructor(onParseError?: () => void) {
     this._onParseError = onParseError
@@ -91,6 +100,17 @@ class SSESubscription implements Subscription {
   // This allows the pool and ThrottledSubscription to both receive events.
   onEvent(handler: (event: SubscriptionEvent) => void): void {
     this._handlers.push(handler)
+    // §M3-RACE: First application handler attached — deliver everything that
+    // arrived before registration, exactly once, in order, before any newer
+    // live chunk. Swapping the array out first keeps a reentrant onEvent()
+    // from triggering a second flush.
+    if (this._handlers.length === 1 && this._pendingEvents.length > 0) {
+      const pending = this._pendingEvents
+      this._pendingEvents = []
+      for (const evt of pending) {
+        for (const h of [...this._handlers]) h(evt)
+      }
+    }
   }
 
   // §3.17: Return the last-registered handler (for backwards compatibility)
@@ -116,7 +136,20 @@ class SSESubscription implements Subscription {
     if (this._closed) return
     this._closed = true
     this._connected = false
+    this._pendingEvents = []
     this._res?.destroy()
+  }
+
+  // §M3-RACE: Shared dispatch path for parsed messages and terminal events.
+  // With no handler registered yet, events are buffered instead of dropped;
+  // sequence accounting and Last-Event-ID tracking stay unconditional.
+  private _dispatchOrBuffer(evt: SubscriptionEvent): void {
+    if (this._closed) return
+    if (this._handlers.length === 0) {
+      this._pendingEvents.push(evt)
+      return
+    }
+    for (const handler of [...this._handlers]) handler(evt)
   }
 
   attachResponse(res: http.IncomingMessage): void {
@@ -124,7 +157,7 @@ class SSESubscription implements Subscription {
     this._connected = true
 
     res.on("data", (chunk: Buffer) => {
-      if (this._closed || this._handlers.length === 0) return
+      if (this._closed) return
 
       try {
         // §AF: use TextDecoder with stream:true to handle multibyte chars
@@ -145,10 +178,9 @@ class SSESubscription implements Subscription {
           if (frame.id !== undefined && frame.id !== null) {
             this._lastEventId = frame.id
           }
-          // §3.17: Dispatch to all registered handlers
-          for (const handler of this._handlers) {
-            handler({ type: "message", event: frame })
-          }
+          // §3.17/§M3-RACE: Dispatch to all registered handlers, or buffer
+          // until the first one registers — never drop.
+          this._dispatchOrBuffer({ type: "message", event: frame })
         }
       } catch {
         // §BJ: Parse failure — invoke error callback
@@ -158,19 +190,17 @@ class SSESubscription implements Subscription {
 
     res.on("end", () => {
       this._connected = false
+      // §M3-RACE: Terminal attribution must survive the pre-registration window
+      // too — a stream that ends before wireEntry() still has to reach the pool.
       if (!this._closed) {
-        for (const handler of this._handlers) {
-          handler({ type: "error", error: new Error("stream ended") })
-        }
+        this._dispatchOrBuffer({ type: "error", error: new Error("stream ended") })
       }
     })
 
     res.on("error", (err) => {
       this._connected = false
       if (!this._closed) {
-        for (const handler of this._handlers) {
-          handler({ type: "error", error: err })
-        }
+        this._dispatchOrBuffer({ type: "error", error: err })
       }
     })
   }

@@ -15,6 +15,7 @@ const POC_V204 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_
 const POC_V205_REFERENCE = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_5.md")
 const POC_V206 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md")
 const POC_V210 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md")
+const POC_V211 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_1.md")
 const MILESTONES = path.join(REPO_ROOT, "internal_docs/LIVE_MATCH_CENTRE_ASSIGNMENT_MILESTONES (3).md")
 
 function read(p: string): string {
@@ -23,9 +24,21 @@ function read(p: string): string {
 
 describe("contract governance", () => {
   it("exactly one canonical active contract exists and predecessors are historical", () => {
-    const active = read(POC_V210)
+    // §M3-RACE-3: v2.1.1 is the canonical active contract. v2.1.0 is preserved
+    // BYTE-UNCHANGED as historical evidence (its self-declared freeze remains
+    // as a historical artifact); the canonical producer must point at v2.1.1
+    // and never back at the superseded predecessor.
+    const active = read(POC_V211)
     assert.match(active, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
-    assert.match(active, /Contract Version: v2\.1\.0/)
+    assert.match(active, /Contract Version: v2\.1\.1/)
+    assert.match(active, /Supersedes: v2\.1\.0/)
+    // Predecessor preserved historically: original version marker intact.
+    const pocV210 = read(POC_V210)
+    assert.match(pocV210, /Contract Version: v2\.1\.0/)
+    // The canonical producer points at exactly the active document.
+    const producer = read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts"))
+    assert.match(producer, /ACTIVE_CONTRACT_FILENAME = "EXPERIMENT_CONTRACT_v2_1_1\.md"/)
+    assert.doesNotMatch(producer, /EXPERIMENT_CONTRACT_v2_1_0\.md/)
     const pocV206 = read(POC_V206)
     assert.match(pocV206, /\[SUPERSEDED — HISTORICAL EVIDENCE ONLY\]/)
     assert.doesNotMatch(pocV206, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
@@ -112,7 +125,7 @@ describe("contract governance", () => {
       assert.match(source, /ACTIVE_CONTRACT_VERSION/, `${relative} must use the canonical producer`)
       assert.doesNotMatch(source, /contract_version:\s*["']v2\.0\./, `${relative} must not hard-code a version`)
     }
-    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.1\.0"/)
+    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.1\.1"/)
   })
 
   it("freezes the partitioned fan-out acceptance-recovery semantics in v2.1.0", () => {
@@ -133,6 +146,44 @@ describe("contract governance", () => {
     ]) assert.match(contract, rule)
     assert.match(contract, /Milestone 3 remains the governing milestone/)
     assert.match(contract, /m3-c89159e88822-q5/)
+  })
+
+  it("freezes the post-v2.1.0 correction semantics in v2.1.1", () => {
+    // §M3-RACE-3: v2.1.1 canonically incorporates every semantic correction
+    // that drifted after the v2.1.0 freeze. No assignment threshold may be
+    // weakened relative to the frozen v2.1.0 basis.
+    const contract = read(POC_V211)
+    for (const rule of [
+      // pre-handler SSE frame buffering
+      /pre-registration frame buffering is canonical/,
+      /delivered exactly once, in order, when that handler attaches/,
+      // true application-level pacing
+      /offered events measured independently of application reads/,
+      // true Last-Event-ID replay + all-selected-client validity
+      /selected probe clients == successfully reattached probe clients/,
+      /arithmetic over ALL selected probes/,
+      /weakest client's recovery percentage is the gating value/,
+      // partition-aware topology preflight
+      /capacity is proven PER PARTITION NODE/,
+      // partition-aware population/delivery accounting
+      /sum exactly to the\s+global population/,
+      // slow-client latency exclusion while intentionally deferred
+      /excluded from global fan-out latency/,
+      // catch-up drain != replay
+      /catchup_drained_count/,
+      /credited as Last-Event-ID/,
+    ]) assert.match(contract, rule)
+    // Assignment thresholds carried forward unweakened.
+    for (const rule of [
+      /fan_out_p95_ms\s+<= 500/,
+      /surge_fan_out_p95_ms\s+<= 500/,
+      /burst_fan_out_p95_ms\s+<= 1000/,
+      /late_join_p95_ms\s+<= 2000/,
+      /\+40,000 viewers within SURGE_SECONDS=120/,
+      /aligned peak >= 100,000/,
+      /seeds = 42, 43, 44/,
+      /GLOBAL_RUNS = 3/,
+    ]) assert.match(contract, rule)
   })
 
   it("freezes the post-q5 correction semantics and Terminal A decision inside poc", () => {

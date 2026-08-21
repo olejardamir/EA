@@ -74,7 +74,9 @@ export function printSummary(
     console.log(`  Median interval:   ${sc.slow_median_event_interval_ms.toFixed(0)}ms (target: 2000ms)`)
     if (sc.pacing_valid !== undefined) console.log(`  Pacing valid:      ${sc.pacing_valid}`)
     if (sc.replay_probe_clients !== undefined) {
-      console.log(`  Replay probe:      ${sc.replay_probe_replayed}/${sc.replay_probe_expected_missed} frames via ${sc.replay_probe_clients} client(s) — coverage ${sc.replay_probe_coverage_pct !== null && sc.replay_probe_coverage_pct !== undefined ? `${sc.replay_probe_coverage_pct.toFixed(1)}%` : "unmeasurable"}`)
+      const selected = sc.replay_probe_selected ?? sc.replay_probe_clients
+      const reattached = sc.replay_probe_reattached ?? selected
+      console.log(`  Replay probe:      ${sc.replay_probe_replayed}/${sc.replay_probe_expected_missed} frames, selected=${selected} reattached=${reattached} — aggregate ${sc.replay_probe_coverage_pct !== null && sc.replay_probe_coverage_pct !== undefined ? `${sc.replay_probe_coverage_pct.toFixed(1)}%` : "unmeasurable"}, weakest client ${sc.replay_recovery_pct !== null && sc.replay_recovery_pct !== undefined ? `${sc.replay_recovery_pct.toFixed(1)}%` : "unmeasurable"}`)
       console.log(`  Catch-up drain:    ${sc.catchup_drained_count ?? 0} frames (backlog handoff, not replay)`)
     }
     console.log(`  Backlog growth:    ${sc.slow_backlog_growth} events`)
@@ -345,6 +347,8 @@ export function emitMachineReadableResult(
         // the server, separated from post-window catch-up drain.
         pacing_valid: metrics.slow_consumer_metrics.pacing_valid,
         replay_probe_clients: metrics.slow_consumer_metrics.replay_probe_clients,
+        replay_probe_selected: metrics.slow_consumer_metrics.replay_probe_selected,
+        replay_probe_reattached: metrics.slow_consumer_metrics.replay_probe_reattached,
         replay_probe_expected_missed: metrics.slow_consumer_metrics.replay_probe_expected_missed,
         replay_probe_replayed: metrics.slow_consumer_metrics.replay_probe_replayed,
         replay_probe_coverage_pct: metrics.slow_consumer_metrics.replay_probe_coverage_pct,

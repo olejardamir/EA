@@ -292,6 +292,8 @@ export interface SlowConsumerMetrics {
   // §M3-HVR: null = retention could not be measured (probe failed or nothing missed)
   replay_recovery_pct?: number | null
   replay_probe_clients?: number
+  replay_probe_selected?: number
+  replay_probe_reattached?: number
   replay_probe_expected_missed?: number
   replay_probe_replayed?: number
   replay_probe_coverage_pct?: number | null

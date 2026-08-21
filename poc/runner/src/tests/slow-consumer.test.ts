@@ -317,6 +317,7 @@ describe("GatedThrottledSubscription (repair #1)", () => {
     inner.emit(messageEvt("m", 1))
     inner.emit({ type: "error", error: new Error("stream ended") } as SubscriptionEvent)
     assert.deepEqual(kinds, ["message", "error"], "error must bypass a non-empty queue")
+    gate.close()
   })
 
   it("lastEventId tracks the application-consumed position, not the wire position", () => {
@@ -328,6 +329,7 @@ describe("GatedThrottledSubscription (repair #1)", () => {
     inner.emit(messageEvt("m", 2, "wire-2"))
     assert.equal(gate.lastEventId, "wire-1", "reflects the last RELEASED frame only")
     assert.equal(gate.releasedCount, 1)
+    gate.close()
   })
 })
 
@@ -475,6 +477,61 @@ describe("SlowConsumerScenario", () => {
     assert.ok(m.catchup_drained_count >= 0)
     // The live frame beyond detach-head must NOT inflate replay coverage.
     assert.ok(m.replay_probe_expected_missed === m.replay_probe_replayed)
+  })
+
+  it("failed reattaches cannot vanish from the probe denominator (masking prevention)", async () => {
+    // §M3-RACE-2: three probes selected, only the last reattaches. The old
+    // arithmetic filtered to reattached clients, letting one success hide two
+    // failures. Now: selected(3) != reattached(1) → recovery explicitly null.
+    const { pool, stream } = makePool({ count: 4 })
+    await connectViewers(pool, stream, 4)
+    const ctx = mockCtx(pool.entries as ConnectionEntry[], 0.75, { "match-001": 10 })
+
+    const origConnect = (ctx.eventStream as any).connect.bind(ctx.eventStream)
+    let attempts = 0
+    ;(ctx.eventStream as any).connect = async (url: string, lastEventId?: string | null) => {
+      attempts++
+      if (attempts <= 2) throw new Error("connection refused")
+      return origConnect(url, lastEventId)
+    }
+
+    const scenario = new SlowConsumerScenario(pool)
+    await scenario.execute(ctx)
+
+    const m = scenario.slowMetrics!
+    assert.equal(m.replay_probe_selected, 3)
+    assert.equal(m.replay_probe_reattached, 1)
+    assert.equal(m.replay_recovery_pct, null, "partial probe must report unmeasurable, not a survivor's score")
+    assert.ok(scenario.slowMetrics!.replay_probe_expected_missed > 0)
+  })
+
+  it("a measurable but uncovered client fails retention even when it is the only probe", async () => {
+    // Reattach succeeds, missed range is measurable, but nothing is replayed —
+    // weakest-link coverage 0% must gate retention below the 95% threshold.
+    const { pool, stream } = makePool({ count: 4 })
+    await connectViewers(pool, stream, 4)
+    const ctx = mockCtx(pool.entries as ConnectionEntry[], 0.25, { "match-001": 10 })
+
+    const origConnect = (ctx.eventStream as any).connect.bind(ctx.eventStream)
+    ;(ctx.eventStream as any).connect = async (url: string, lastEventId?: string | null) => {
+      const sub = await origConnect(url, lastEventId)
+      // Only LIVE frames beyond detach-head — no history replay at all.
+      setTimeout(() => {
+        sub.emit(messageEvt("match-001", 11))
+        sub.emit(messageEvt("match-001", 12))
+      }, 1)
+      return sub
+    }
+
+    const scenario = new SlowConsumerScenario(pool)
+    await scenario.execute(ctx)
+
+    const m = scenario.slowMetrics!
+    assert.equal(m.replay_probe_selected, 1)
+    assert.equal(m.replay_probe_reattached, 1)
+    assert.equal(m.replay_probe_expected_missed, 10)
+    assert.equal(m.replay_probe_replayed, 0)
+    assert.equal(m.replay_recovery_pct, 0, "zero replay over a measurable range must gate at 0%")
   })
 
   it("reattach passes the saved Last-Event-ID to the transport and preserves the tracker", async () => {
