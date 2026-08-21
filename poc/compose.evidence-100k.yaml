@@ -95,6 +95,7 @@ services:
       EXPERIMENT_RUN_ID: "${EXPERIMENT_RUN_ID:?Use ./run-evidence-100k.sh}"
       GLOBAL_RESULT_PATH: "${GLOBAL_RESULT_PATH:-/evidence/global-result-0.json}"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      COORDINATOR_MAX_RUN_MS: "2100000"
     volumes:
       - global-evidence:/evidence
     healthcheck:
@@ -150,6 +151,9 @@ services:
       SHARD_ID: "0"
       SHARD_TOTAL: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      # §BS hang-safety ceiling for the coordinated 100k profile: generous, never
+      # fires in a valid run; prevents valid phase overruns from destroying evidence
+      RUNNER_MAX_RUN_MS: "1800000"
       NCHAN_CPU_MAX_QUOTA: "400000"
       NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
@@ -214,6 +218,7 @@ services:
       SHARD_ID: "1"
       SHARD_TOTAL: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      RUNNER_MAX_RUN_MS: "1800000"
       NCHAN_CPU_MAX_QUOTA: "400000"
       NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
@@ -278,6 +283,7 @@ services:
       SHARD_ID: "2"
       SHARD_TOTAL: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      RUNNER_MAX_RUN_MS: "1800000"
       NCHAN_CPU_MAX_QUOTA: "400000"
       NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"
@@ -342,6 +348,7 @@ services:
       SHARD_ID: "3"
       SHARD_TOTAL: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      RUNNER_MAX_RUN_MS: "1800000"
       NCHAN_CPU_MAX_QUOTA: "400000"
       NCHAN_CPU_MAX_PERIOD: "100000"
       REDIS_CPU_MAX_QUOTA: "200000"

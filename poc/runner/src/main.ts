@@ -174,8 +174,13 @@ async function main(): Promise<void> {
     log(`coordinator released ${phase}:${boundary} at ${receipt.released_at_ms} shards=${receipt.participating_shard_ids.join(",")}`)
   }
 
-  // §BS: Maximum run deadline to prevent indefinite hangs
-  const MAX_RUN_MS = 10 * 60 * 1000 // 10 minutes
+  // §BS: Maximum run deadline to prevent indefinite hangs.
+  // Default 600 s preserved for single-run/smoke profiles; the coordinated 100k
+  // profile overrides it via RUNNER_MAX_RUN_MS in compose.evidence-100k.yaml so
+  // valid phase overruns (surge barrier wait, late-join prefill) cannot destroy
+  // the measurement before the classifier produces a global verdict.
+  const parsedMaxRunMs = Number.parseInt(process.env.RUNNER_MAX_RUN_MS ?? "", 10)
+  const MAX_RUN_MS = Number.isFinite(parsedMaxRunMs) && parsedMaxRunMs > 0 ? parsedMaxRunMs : 10 * 60 * 1000
   const runTimer = setTimeout(() => {
     log(`§BS: Maximum run deadline (${MAX_RUN_MS / 1000}s) reached — forcing shutdown`)
     process.exit(2)
