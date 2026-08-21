@@ -4,6 +4,11 @@ export type SequenceClassification =
   | { kind: "GAP"; expected: number; received: number }
   | { kind: "OUT_OF_ORDER"; expected: number; received: number }
 
+// §M3-GEN: NEXT is the ~100% hot-path outcome; share one frozen instance
+// instead of allocating an object per frame. Frozen so any accidental
+// mutation throws rather than corrupting shared state.
+const NEXT: SequenceClassification = Object.freeze({ kind: "NEXT" })
+
 export interface SequenceTracker {
   readonly lastSeq: number
   readonly totalReceived: number
@@ -29,7 +34,7 @@ export function createSequenceTracker(initialSeq = 0): SequenceTracker {
 
       if (lastSeq === 0) {
         lastSeq = incomingSeq
-        return { kind: "NEXT" }
+        return NEXT
       }
 
       if (incomingSeq === lastSeq) {
@@ -48,7 +53,7 @@ export function createSequenceTracker(initialSeq = 0): SequenceTracker {
 
       // incomingSeq === lastSeq + 1
       lastSeq = incomingSeq
-      return { kind: "NEXT" }
+      return NEXT
     },
 
     reset(newSeq?: number): void {

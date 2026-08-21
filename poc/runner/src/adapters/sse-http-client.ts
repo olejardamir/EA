@@ -35,6 +35,34 @@ function processSSELineRange(buf: string, s: number, e: number, frame: ParsedFra
     if (buf.charCodeAt(i) === 58 /* ':' */) { colonIdx = i; break }
   }
 
+  if (colonIdx !== -1) {
+    // §M3-GEN: dispatch on the field name via char codes without allocating
+    // a substring per line ("data" dominates real traffic). Unknown fields
+    // fall through to the string path for exact parity.
+    const flen = colonIdx - s
+    if (flen === 4
+      && buf.charCodeAt(s) === 100 && buf.charCodeAt(s + 1) === 97
+      && buf.charCodeAt(s + 2) === 116 && buf.charCodeAt(s + 3) === 97) {
+      const vs = colonIdx + 2 <= e && buf.charCodeAt(colonIdx + 1) === 32 ? colonIdx + 2 : colonIdx + 1
+      frame.data.push(buf.slice(vs, e))
+      return
+    }
+    if (flen === 2 && buf.charCodeAt(s) === 105 && buf.charCodeAt(s + 1) === 100) {
+      const vs = colonIdx + 2 <= e && buf.charCodeAt(colonIdx + 1) === 32 ? colonIdx + 2 : colonIdx + 1
+      frame.id = buf.slice(vs, e)
+      return
+    }
+    if (flen === 5
+      && buf.charCodeAt(s) === 101 && buf.charCodeAt(s + 1) === 118
+      && buf.charCodeAt(s + 2) === 101 && buf.charCodeAt(s + 3) === 110
+      && buf.charCodeAt(s + 4) === 116) {
+      const vs = colonIdx + 2 <= e && buf.charCodeAt(colonIdx + 1) === 32 ? colonIdx + 2 : colonIdx + 1
+      frame.event = buf.slice(vs, e)
+      return
+    }
+    return // known-field mismatch impossible here; unknown fields ignored
+  }
+
   let field: string
   let valueStart: number
   if (colonIdx === -1) {

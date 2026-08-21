@@ -1,6 +1,12 @@
 import { EVENT_TYPES } from "./event.js"
+import { fastIsoTimestampMs } from "./fast-timestamp.js"
 
 const VALID_EVENT_TYPES = new Set(EVENT_TYPES.map((e) => e.type))
+
+// §M3-GEN: hot path (per received frame) returns this shared frozen object
+// instead of allocating a fresh result; error paths are cold and allocate.
+// Frozen so an accidental mutation throws instead of corrupting shared state.
+const VALID_OK: SchemaValidationResult = Object.freeze({ valid: true, error: null })
 
 export interface ValidMatchEvent {
   match_id: string
@@ -35,7 +41,7 @@ export function validateMatchEventPayload(raw: unknown): SchemaValidationResult 
     return { valid: false, error: `event_type "${String(obj.event_type)}" not in frozen schema` }
   }
 
-  if (typeof obj.publish_timestamp !== "string" || isNaN(new Date(obj.publish_timestamp).getTime())) {
+  if (typeof obj.publish_timestamp !== "string" || Number.isNaN(fastIsoTimestampMs(obj.publish_timestamp))) {
     return { valid: false, error: "publish_timestamp missing or unparseable" }
   }
 
@@ -57,5 +63,5 @@ export function validateMatchEventPayload(raw: unknown): SchemaValidationResult 
     return { valid: false, error: "clock missing or malformed" }
   }
 
-  return { valid: true, error: null }
+  return VALID_OK
 }

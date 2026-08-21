@@ -10,9 +10,17 @@ const PHASE_BUFFER_MAX = 10_000
 export class BoundedMetricsRecorder implements MetricsRecorder {
   private fanOutHistogram = new StreamingHistogram()
   private lateJoinHistogram = new StreamingHistogram()
+  // §M3-GEN: fixed-capacity rings replace push+slice(-10k) per sample —
+  // the old path copied a fresh 10k-element array on EVERY latency record
+  // once full (~62k copies/s at 25k viewers). Materialized to a plain
+  // number[] only at snapshot time; identical content and order.
   // Small FIFO buffer for the most recent samples (scenario phase-scoped queries)
-  private fanOutBuffer: number[] = []
-  private lateJoinBuffer: number[] = []
+  private fanOutRing = new Float64Array(PHASE_BUFFER_MAX)
+  private fanOutCount = 0
+  private fanOutHead = 0
+  private lateJoinRing = new Float64Array(PHASE_BUFFER_MAX)
+  private lateJoinCount = 0
+  private lateJoinHead = 0
   private latencySampleCount = 0
   private latencyInvalidCount = 0
   private latencyOverflowCount = 0
@@ -100,9 +108,11 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
   recordFanOutLatency(ms: number): void {
     this.latencySampleCount++
     this.fanOutHistogram.record(ms)
-    this.fanOutBuffer.push(ms)
-    if (this.fanOutBuffer.length > PHASE_BUFFER_MAX) {
-      this.fanOutBuffer = this.fanOutBuffer.slice(-PHASE_BUFFER_MAX)
+    if (this.fanOutCount < PHASE_BUFFER_MAX) {
+      this.fanOutRing[this.fanOutCount++] = ms
+    } else {
+      this.fanOutRing[this.fanOutHead] = ms
+      this.fanOutHead = this.fanOutHead + 1 === PHASE_BUFFER_MAX ? 0 : this.fanOutHead + 1
     }
     if (this.activePhaseName) {
       this.phaseFanOutHistograms.get(this.activePhaseName)?.record(ms)
@@ -111,13 +121,23 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
 
   recordLateJoinLatency(ms: number): void {
     this.lateJoinHistogram.record(ms)
-    this.lateJoinBuffer.push(ms)
-    if (this.lateJoinBuffer.length > PHASE_BUFFER_MAX) {
-      this.lateJoinBuffer = this.lateJoinBuffer.slice(-PHASE_BUFFER_MAX)
+    if (this.lateJoinCount < PHASE_BUFFER_MAX) {
+      this.lateJoinRing[this.lateJoinCount++] = ms
+    } else {
+      this.lateJoinRing[this.lateJoinHead] = ms
+      this.lateJoinHead = this.lateJoinHead + 1 === PHASE_BUFFER_MAX ? 0 : this.lateJoinHead + 1
     }
     if (this.activePhaseName) {
       this.phaseLateJoinHistograms.get(this.activePhaseName)?.record(ms)
     }
+  }
+
+  // §M3-GEN: materialize ring contents oldest→newest, matching the previous
+  // FIFO buffer semantics (last ≤ PHASE_BUFFER_MAX samples in arrival order).
+  private ringSamples(ring: Float64Array, count: number, head: number): number[] {
+    if (count < PHASE_BUFFER_MAX) return Array.from(ring.subarray(0, count))
+    if (head === 0) return Array.from(ring)
+    return [...Array.from(ring.subarray(head)), ...Array.from(ring.subarray(0, head))]
   }
 
   incrementLatencyInvalid(): void { this.latencyInvalidCount++ }
@@ -189,8 +209,8 @@ export class BoundedMetricsRecorder implements MetricsRecorder {
     return {
       // §6.32: Raw arrays are a bounded recent buffer for scenario phase-scoped queries.
       // Final percentiles must be computed from the streaming histograms, not these arrays.
-      fan_out_latencies_ms: [...this.fanOutBuffer],
-      late_join_latencies_ms: [...this.lateJoinBuffer],
+      fan_out_latencies_ms: this.ringSamples(this.fanOutRing, this.fanOutCount, this.fanOutHead),
+      late_join_latencies_ms: this.ringSamples(this.lateJoinRing, this.lateJoinCount, this.lateJoinHead),
       latency_sample_count: this.latencySampleCount,
       latency_invalid_count: this.latencyInvalidCount,
       latency_overflow_count: this.latencyOverflowCount,
