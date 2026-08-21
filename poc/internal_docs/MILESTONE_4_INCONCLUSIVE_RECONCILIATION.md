@@ -103,4 +103,4 @@ M4 chooses Terminal A. q5 did not validate the architecture and its machine verd
 
 The architecture must be reframed around explicit horizontal connection partitioning and capacity isolation—multiple independently bounded fan-out nodes/fleet shards with routing and failure-domain ownership—or a different fan-out technology. Any later test must target that revised assumption. It must not silently raise the current primary’s worker or memory limit and call the same design validated.
 
-Accordingly, no new qualifying 100,000-viewer M3 campaign is launched. The remaining work is the v2.0.6 M2 re-audit and reduced non-qualifying validation of corrected machinery. Those validations do not replace q5 and cannot produce an architecture ACCEPT.
+Accordingly, no new qualifying 100,000-viewer M3 campaign is launched. The v2.0.6 M2 re-audit and reduced non-qualifying validation of corrected machinery completed against executable source `b143e6679269b99cc04be20eee98c3ba96e8dd1b`; the exact record is in `MILESTONE_2_POST_Q5_REAUDIT.md`. Those validations do not replace q5 and cannot produce an architecture ACCEPT.

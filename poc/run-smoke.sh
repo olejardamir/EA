@@ -23,5 +23,7 @@ set +e
 "${compose[@]}" up "${build_mode[@]}" --abort-on-container-exit --exit-code-from runner
 smoke_status=$?
 set -e
-"${compose[@]}" down
+# Smoke evidence is non-qualifying scratch data. Remove its unique named volume
+# as well as containers/network so repeated validation does not leak Docker state.
+"${compose[@]}" down --volumes
 exit "$smoke_status"

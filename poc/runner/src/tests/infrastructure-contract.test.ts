@@ -67,6 +67,7 @@ describe("Milestone 2 infrastructure contract", () => {
     const launcher = read("run-smoke.sh")
     assert.match(launcher, /compose\.smoke-portable\.yaml/)
     assert.match(launcher, /--project-name/)
+    assert.match(launcher, /down --volumes/, "smoke scratch volumes must be removed")
     const compose = read("compose.smoke-portable.yaml")
     assert.match(compose, /GIT_COMMIT_SHA: "\$\{GIT_COMMIT_SHA:\?Use \.\/run-smoke\.sh\}"/)
     assert.match(compose, /redis-cgroup-evidence:\/redis-cgroup:ro/)

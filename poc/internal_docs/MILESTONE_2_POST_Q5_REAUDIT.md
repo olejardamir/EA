@@ -1,6 +1,8 @@
 # Milestone 2 Post-q5 Regression Re-audit — v2.0.6
 
-Audit date: 2026-08-20
+Audit opened: 2026-08-20
+
+Audit completed: 2026-08-21 (America/Toronto)
 
 Scope: every path changed after the immutable q5 INCONCLUSIVE campaign: runner/scenario/generator behavior, Nchan/Redis instrumentation, coordinator, campaign aggregator, launchers, Compose topology, resource evidence, metric schema, restart semantics, and source/freshness provenance.
 
@@ -8,7 +10,9 @@ Active contract: `poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md`
 
 M4 decision: Terminal A in `MILESTONE_4_INCONCLUSIVE_RECONCILIATION.md`; no new qualifying M3 run is required or authorized by this audit.
 
-Status: **VALIDATION IN PROGRESS**
+Validated corrected source: `b143e6679269b99cc04be20eee98c3ba96e8dd1b`
+
+Status: **PASS — NON-QUALIFYING CORRECTIVE RE-AUDIT COMPLETE**
 
 ## Correction traceability
 
@@ -46,27 +50,41 @@ Status: **VALIDATION IN PROGRESS**
 | launcher/coordinator clock | campaign/source/run/index/seed and timestamps on every scope | campaign policy | exact files, mtime/start, current IDs, no prior Compose resources |
 | detached worker | filesystem terminal record | human/automation handoff | exit-status file is written last as completion marker |
 
-## Required validation record
+## Validation record
 
-The completion gate requires:
+| Validation | Result |
+|---|---|
+| TypeScript | `npm run typecheck` passed with no errors. |
+| Full automated suite | 396/396 passed across 83 suites; 0 failed, cancelled, skipped or todo. |
+| Focused final-regression set | 90/90 passed for measurement output, aggregation and Milestone-2 gap closure. |
+| Changed-path/adversarial and reduced coordinated HTTP set | 65/65 passed across coordinator deadline/HTTP, global coordinator, campaign, restart roles/freshness, detached launcher, resources and infrastructure. The HTTP tests use the real coordinator server and delayed responses rather than a stubbed classification result. |
+| Static launch/config audit | Both portable-smoke and qualifying-evidence Compose files passed `docker compose config --quiet`; all four launch scripts passed `bash -n`; `git diff --check` passed. |
+| Fresh images | Current Nchan and runner images were built from corrected source `b143e6679269b99cc04be20eee98c3ba96e8dd1b`. BuildKit's default isolated network could not resolve Ubuntu mirrors in this host environment; the same pinned Dockerfiles built successfully with Docker's host build network. This changed build transport only, not runtime topology or experiment semantics. |
+| Portable non-qualifying smoke | `SMOKE_NO_BUILD=1 ./run-smoke.sh` then ran those fresh images and exited 0. It established exactly 100/100 connections, completed all phases and cleaned its unique Compose project. The profile correctly emitted `NOT_APPLICABLE`, `direct_accept_eligible=false`, and cannot stand in for a 100k result. |
+
+Final machine inspection from the fresh-image smoke:
 
 ```text
-typecheck
-full automated test suite
-focused adversarial tests for every changed path
-reduced coordinated HTTP integration
-portable non-qualifying Docker smoke
-machine inspection of Redis bytes, burst population, late-join population,
-generator capacity CPU/event-loop, clock reachability and direct eligibility=false
+contract/source                 v2.0.6 / b143e6679269b99cc04be20eee98c3ba96e8dd1b
+Redis memory_used_bytes         3,185,440 (numeric)
+burst distribution              2,777 samples, p95 8 ms, overflow 0
+late-join distribution          exactly 1 owner sample, p95 13 ms, overflow 0
+generator CPU                   raw 113.895%; 14.236875% of assigned 8-core capacity
+generator event-loop/backlog    p99 11.747327 ms / peak 1
+generator throttle/OOM          0 / 0
+Nchan CPU/capacity              raw 6.4648%; normalized 1.6162%; throttle/OOM 0 / 0
+clock                           PASS; runner+nchan-1 same-host kernel clock
+direct architecture eligibility false
+classification                 NOT_APPLICABLE
 ```
 
-Results are intentionally populated only after commands finish; no anticipated PASS is recorded.
+The portable single-node profile intentionally has no `nchan-2`; its machine output therefore records `nchan2_reachable=false` while the evidence Compose/static contract proves all four coordinated shards use the explicit Nchan-2 publisher health port `18080`. The smoke's reconnect and slow-consumer scenario observations are retained but do not become qualifying ACCEPT/REJECT evidence under the smoke gate.
 
 ## Completion gate
 
 ```text
-false PASS:                       pending validation
+false PASS:                       0
 unmapped changed requirement:     0
 qualifying M3 rerun:               NO — M4 Terminal A
-M2 post-q5 re-audit:               IN PROGRESS
+M2 post-q5 re-audit:               PASS
 ```
