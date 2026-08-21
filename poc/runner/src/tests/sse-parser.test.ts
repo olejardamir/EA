@@ -108,4 +108,102 @@ describe("SSE Parser", () => {
     assert.equal(frames.length, 1)
     assert.equal(frames[0].data, "")
   })
+
+  // §M3-GEN: manual-scan parser must preserve exact split-based semantics.
+  describe("manual-scan semantic parity", () => {
+    it("strips a lone trailing \\r from an unterminated remainder", () => {
+      const frame = freshFrame()
+      const { frames, remainder } = parseSSEChunk("id: 1\ndata: hel\r", frame)
+      assert.equal(frames.length, 0)
+      assert.equal(remainder, "data: hel")
+      assert.equal(frame.id, "1")
+      // Continuation parses identically to never having seen the split \r.
+      const { frames: f2 } = parseSSEChunk(remainder + "lo\n\n", frame)
+      assert.equal(f2.length, 1)
+      assert.equal(f2[0].data, "hello")
+    })
+
+    it("lone CR does not terminate a line; exactly one terminal \\r strips per segment", () => {
+      const frame = freshFrame()
+      const { frames, remainder } = parseSSEChunk("id: 1\rdata: x\r\r", frame)
+      // No \n anywhere: the whole buffer is one incomplete segment; only its
+      // final \r is stripped from the buffered remainder.
+      assert.equal(frames.length, 0)
+      assert.equal(remainder, "id: 1\rdata: x\r")
+      const { frames: f2 } = parseSSEChunk(remainder + "\n\n", frame)
+      assert.equal(f2.length, 0)
+      // The embedded \r survives inside the parsed id value, matching old
+      // behavior; no data lines exist so nothing flushes.
+      assert.equal(frame.id, "1\rdata: x")
+    })
+
+    it("double \\r before \\n strips only one", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("data: v\r\r\n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].data, "v\r")
+    })
+
+    it("flushes on the implicit final empty segment after a trailing newline", () => {
+      const frame = freshFrame()
+      const { frames, remainder } = parseSSEChunk("id: 7\ndata: v\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].id, "7")
+      assert.equal(remainder, "")
+    })
+
+    it("bare field line without colon contributes an empty value", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("id\ndata\n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].id, "")
+      assert.equal(frames[0].data, "")
+    })
+
+    it("no-colon line with trailing whitespace trims the field name", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("data   \n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].data, "")
+    })
+
+    it("skips exactly one optional space after the colon", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("data:  two-spaces\n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].data, " two-spaces")
+    })
+
+    it("field name with internal space does not match a known field", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("data :x\n\ndata:y\n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].data, "y")
+    })
+
+    it("unknown fields are ignored entirely", () => {
+      const frame = freshFrame()
+      const { frames } = parseSSEChunk("retry: 100\nnoise: zzz\ndata: q\n\n", frame)
+      assert.equal(frames.length, 1)
+      assert.equal(frames[0].data, "q")
+    })
+
+    it("comment-only chunk leaves no residue or frame state", () => {
+      const frame = freshFrame()
+      const { frames, remainder } = parseSSEChunk(": ping\n: pong\n", frame)
+      assert.equal(frames.length, 0)
+      assert.equal(remainder, "")
+    })
+
+    it("CRLF split across chunk boundary still strips the CR", () => {
+      const frame = freshFrame()
+      const r1 = parseSSEChunk("id: 3\ndata: abc\r", frame)
+      assert.equal(r1.remainder, "data: abc")
+      const r2 = parseSSEChunk(r1.remainder + "\nevent: e\n\n", frame)
+      assert.equal(r2.frames.length, 1)
+      assert.equal(r2.frames[0].id, "3")
+      assert.equal(r2.frames[0].event, "e")
+      assert.equal(r2.frames[0].data, "abc")
+    })
+  })
 })

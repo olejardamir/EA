@@ -9,6 +9,41 @@ import { validateMatchEventPayload, type ValidMatchEvent } from "../domain/event
 const DUP_DEBUG = process.env.DUP_DEBUG === "1"
 const GAP_DEBUG = process.env.GAP_DEBUG === "1"
 
+// §M3-GEN: publish_timestamp arrives as fixed-width ISO-8601 UTC
+// ("YYYY-MM-DDTHH:mm:ss.mmmZ", 24 chars). new Date(...).getTime() per frame
+// dominated the receive hot path (~62k frames/s/shard at 25k viewers).
+// Memoize Date.parse of the second-resolution prefix — it changes once per
+// second, so cache hit rate is ~99.998% per shard — and append millis
+// arithmetically. Any non-canonical shape falls back to the original parse,
+// preserving NaN semantics exactly.
+let _isoPrefixCacheKey = ""
+let _isoPrefixCacheMs = 0
+
+function fastIsoTimestampMs(ts: string): number {
+  if (
+    ts.length === 24
+    && ts.charCodeAt(23) === 90 /* 'Z' */
+    && ts.charCodeAt(19) === 46 /* '.' */
+    && ts.charCodeAt(20) >= 48 && ts.charCodeAt(20) <= 57
+    && ts.charCodeAt(21) >= 48 && ts.charCodeAt(21) <= 57
+    && ts.charCodeAt(22) >= 48 && ts.charCodeAt(22) <= 57
+  ) {
+    const prefix = ts.slice(0, 19)
+    let base = _isoPrefixCacheMs
+    if (prefix !== _isoPrefixCacheKey) {
+      base = Date.parse(prefix + "Z")
+      if (!Number.isFinite(base)) return Number.NaN
+      _isoPrefixCacheKey = prefix
+      _isoPrefixCacheMs = base
+    }
+    return base
+      + (ts.charCodeAt(20) - 48) * 100
+      + (ts.charCodeAt(21) - 48) * 10
+      + (ts.charCodeAt(22) - 48)
+  }
+  return new Date(ts).getTime()
+}
+
 export interface ConnectionEntry {
   id: number
   matchId: string
@@ -155,7 +190,7 @@ export class ConnectionPool {
       const lobby = raw as Record<string, unknown>
       const validLobby = Array.isArray(lobby.matches)
         && typeof lobby.timestamp === "string"
-        && Number.isFinite(new Date(lobby.timestamp).getTime())
+        && Number.isFinite(fastIsoTimestampMs(lobby.timestamp))
       if (!validLobby) {
         this.metrics.incrementSchemaValidationErrors()
         return
@@ -200,7 +235,7 @@ export class ConnectionPool {
     // client throttling, not transport latency. Recording it would poison the
     // global fan-out histogram and the healthy-degradation comparison.
     if (!entry.deferredDelivery) {
-      const publishTime = new Date(data.publish_timestamp).getTime()
+      const publishTime = fastIsoTimestampMs(data.publish_timestamp)
       // §v2.1.1 drift item 12: prefer the wire-arrival stamp captured at the
       // socket-data callback entry; fall back to clock.now() for synthetic
       // events without one.

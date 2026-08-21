@@ -7,60 +7,83 @@ interface ParsedFrame {
   data: string[]
 }
 
-export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSEEvent[]; remainder: string; error: boolean } {
-  const frames: SSEEvent[] = []
-  const lines = buffer.split("\n")
-
-  let remainder = ""
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].replace(/\r$/, "")
-
-    if (i === lines.length - 1 && !buffer.endsWith("\n")) {
-      remainder = line
-      continue
+// §M3-GEN: Manual scan replaces per-chunk split("\n") + per-line regex.
+// Semantics preserved exactly: one trailing \r stripped per complete line,
+// partial trailing line buffered as remainder WITH its trailing \r stripped
+// (matches the previous split-based behavior), empty line flushes a frame
+// only when data lines exist, ":" comments skipped, first colon splits
+// field/value, exactly one optional space after the colon is skipped,
+// no-colon lines are trimEnd()'d with an empty value, unknown fields ignored.
+function processSSELineRange(buf: string, s: number, e: number, frame: ParsedFrame, frames: SSEEvent[]): void {
+  if (s === e) {
+    if (frame.data.length > 0) {
+      frames.push({
+        id: frame.id ?? null,
+        event: frame.event ?? "message",
+        data: frame.data.join("\n"),
+      })
+      frame.id = undefined
+      frame.event = undefined
+      frame.data = []
     }
+    return
+  }
+  if (buf.charCodeAt(s) === 58 /* ':': comment line */) return
 
-    if (line === "") {
-      if (frame.data.length > 0) {
-        frames.push({
-          id: frame.id ?? null,
-          event: frame.event ?? "message",
-          data: frame.data.join("\n"),
-        })
-        frame.id = undefined
-        frame.event = undefined
-        frame.data = []
-      }
-      continue
-    }
-
-    if (line.startsWith(":")) continue
-
-    const colonIdx = line.indexOf(":")
-    let field: string
-    let value: string
-
-    if (colonIdx === -1) {
-      field = line.trimEnd()
-      value = ""
-    } else {
-      field = line.substring(0, colonIdx)
-      value = line[colonIdx + 1] === " " ? line.substring(colonIdx + 2) : line.substring(colonIdx + 1)
-    }
-
-    switch (field) {
-      case "id":
-        frame.id = value
-        break
-      case "event":
-        frame.event = value
-        break
-      case "data":
-        frame.data.push(value)
-        break
-    }
+  let colonIdx = -1
+  for (let i = s + 1; i < e; i++) {
+    if (buf.charCodeAt(i) === 58 /* ':' */) { colonIdx = i; break }
   }
 
+  let field: string
+  let valueStart: number
+  if (colonIdx === -1) {
+    field = buf.slice(s, e).trimEnd()
+    valueStart = e
+  } else {
+    field = buf.slice(s, colonIdx)
+    valueStart = colonIdx + 1
+    if (valueStart < e && buf.charCodeAt(valueStart) === 32 /* ' ' */) valueStart++
+  }
+
+  switch (field) {
+    case "id":
+      frame.id = buf.slice(valueStart, e)
+      break
+    case "event":
+      frame.event = buf.slice(valueStart, e)
+      break
+    case "data":
+      frame.data.push(buf.slice(valueStart, e))
+      break
+  }
+}
+
+export function parseSSEChunk(buffer: string, frame: ParsedFrame): { frames: SSEEvent[]; remainder: string; error: boolean } {
+  const frames: SSEEvent[] = []
+  const len = buffer.length
+  let pos = 0
+
+  while (pos < len) {
+    const nl = buffer.indexOf("\n", pos)
+    if (nl === -1) break
+    let end = nl
+    if (end > pos && buffer.charCodeAt(end - 1) === 13 /* '\r' */) end--
+    processSSELineRange(buffer, pos, end, frame, frames)
+    pos = nl + 1
+  }
+  // A trailing terminator implies one final empty split segment, which the
+  // previous implementation still ran through the empty-line flush check.
+  if (len > 0 && buffer.charCodeAt(len - 1) === 10 /* '\n' */) {
+    processSSELineRange(buffer, len, len, frame, frames)
+  }
+
+  let remainder = ""
+  if (pos < len) {
+    let rEnd = len
+    if (buffer.charCodeAt(rEnd - 1) === 13 /* '\r' */) rEnd--
+    remainder = rEnd > pos ? buffer.slice(pos, rEnd) : ""
+  }
   return { frames, remainder, error: false }
 }
 
@@ -143,13 +166,22 @@ class SSESubscription implements Subscription {
   // §M3-RACE: Shared dispatch path for parsed messages and terminal events.
   // With no handler registered yet, events are buffered instead of dropped;
   // sequence accounting and Last-Event-ID tracking stay unconditional.
+  // §M3-GEN: single-handler fast path avoids the per-frame spread copy
+  // (~62k allocations/s per shard at 25k viewers); multi-handler dispatch
+  // keeps the snapshot iteration so handlers added/removed DURING a dispatch
+  // observe the same stable-iteration semantics as before.
   private _dispatchOrBuffer(evt: SubscriptionEvent): void {
     if (this._closed) return
-    if (this._handlers.length === 0) {
+    const handlers = this._handlers
+    if (handlers.length === 0) {
       this._pendingEvents.push(evt)
       return
     }
-    for (const handler of [...this._handlers]) handler(evt)
+    if (handlers.length === 1) {
+      handlers[0](evt)
+      return
+    }
+    for (const handler of [...handlers]) handler(evt)
   }
 
   attachResponse(res: http.IncomingMessage): void {
