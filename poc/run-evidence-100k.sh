@@ -2,8 +2,18 @@
 set -euo pipefail
 
 POC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPOSITORY_DIR="$(git -C "$POC_DIR" rev-parse --show-toplevel)"
-SOURCE_COMMIT="$(git -C "$REPOSITORY_DIR" rev-parse HEAD)"
+# Provenance: prefer the live checkout HEAD; fall back to the packaged
+# poc/SOURCE_COMMIT file (written by the packaging step from the frozen HEAD)
+# so the one-command reviewer path works from a ZIP-like copy with no .git.
+# Both paths must yield a valid 40-hex commit SHA; "unknown" is never emitted.
+SOURCE_COMMIT="$(git -C "$POC_DIR" rev-parse HEAD 2>/dev/null || true)"
+if ! [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] && [[ -f "$POC_DIR/SOURCE_COMMIT" ]]; then
+  SOURCE_COMMIT="$(tr -d '[:space:]' < "$POC_DIR/SOURCE_COMMIT")"
+fi
+if ! [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Cannot determine a valid checkout commit SHA (no git checkout and no valid poc/SOURCE_COMMIT)" >&2
+  exit 2
+fi
 GLOBAL_RUNS="${GLOBAL_RUNS:-3}"
 BASE_GLOBAL_SEED="${BASE_GLOBAL_SEED:-42}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-ea-evidence-100k}"

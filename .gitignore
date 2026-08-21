@@ -5,3 +5,4 @@ coverage/
 benchmark-results/
 .DS_Store
 *.tsbuildinfo
+poc/SOURCE_COMMIT
