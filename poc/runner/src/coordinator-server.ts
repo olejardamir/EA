@@ -63,15 +63,32 @@ let finalizing = false
 function persistGlobalResult(): void {
   if (finalizing) return
   finalizing = true
-  const result = coordinator.buildGlobalResult()
-  fs.mkdirSync(path.dirname(resultPath), { recursive: true })
-  const temporary = `${resultPath}.tmp`
-  fs.writeFileSync(temporary, `${JSON.stringify(result, null, 2)}\n`, "utf8")
-  fs.renameSync(temporary, resultPath)
-  // Exactly one global machine-readable result is emitted by the coordinator.
-  process.stdout.write(`${JSON.stringify(result)}\n`)
-  const exitCode = result.verdict === "ACCEPT" ? 0 : 1
-  setImmediate(() => server.close(() => process.exit(exitCode)))
+  try {
+    const result = coordinator.buildGlobalResult()
+    fs.mkdirSync(path.dirname(resultPath), { recursive: true })
+    const temporary = `${resultPath}.tmp`
+    fs.writeFileSync(temporary, `${JSON.stringify(result, null, 2)}\n`, "utf8")
+    fs.renameSync(temporary, resultPath)
+    // Exactly one global machine-readable result is emitted by the coordinator.
+    // fd 1 write is synchronous: process.exit below must never truncate the
+    // single machine-readable artifact (observed lost-JSON exit in the field).
+    fs.writeSync(1, `${JSON.stringify(result)}\n`)
+    if (result.verdict !== "ACCEPT") {
+      const reasons = result.validity?.reasons?.length
+        ? result.validity.reasons
+        : ["no explicit reasons recorded"]
+      for (const reason of reasons) {
+        fs.writeSync(2, `[coordinator] ${result.verdict}: ${reason}\n`)
+      }
+    }
+    const exitCode = result.verdict === "ACCEPT" ? 0 : 1
+    setImmediate(() => server.close(() => process.exit(exitCode)))
+  } catch (error) {
+    // buildGlobalResult or persistence failure must be visible on stderr and
+    // must still terminate the probe deterministically (never hang compose).
+    fs.writeSync(2, `[coordinator] persistGlobalResult failed: ${error instanceof Error ? error.stack : String(error)}\n`)
+    setImmediate(() => server.close(() => process.exit(1)))
+  }
 }
 
 const server = http.createServer(async (req, res) => {
