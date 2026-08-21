@@ -1,0 +1,7 @@
+Pre-launch proof that q5 storage is new:
+volumes matching q5: 0
+containers matching q5: 0
+networks matching q5: 0
+(all counts must be 0)
+pinned subnet 172.28.0.0/16 now free:
+  no network holds 172.28.0.0/16

@@ -1,0 +1,20 @@
+Process exit status — m3-c89159e88822-q5 (plan §12.1)
+
+The launcher ran fully detached via setsid (q1 lesson) and its exact numeric exit
+code was therefore not captured into a shell variable by any observer process.
+
+What is recorded instead, per plan §30 ("shell exit status alone is not the verdict"):
+
+1. The launcher's final act is `exit "$campaign_status"` where campaign_status is the
+   `aggregate:global-campaign` exit code. The aggregation DID run to completion:
+   campaign-result.json exists in the evidence volume, was emitted in full on stdout
+   (console line 7677, 13,458,577 bytes, parses as valid JSON), and its verdict is
+   INCONCLUSIVE.
+2. Per §12.1 semantics: exit 0 => ACCEPT; non-zero => REJECT / INCONCLUSIVE / harness
+   failure. The machine verdict INCONCLUSIVE implies a non-zero launcher exit.
+3. The authoritative campaign classification is the machine verdict in
+   campaign-result.json (INCONCLUSIVE), not the shell status.
+
+Conclusion: process exit status = non-zero (derived, consistent with machine verdict
+INCONCLUSIVE); exact integer not captured; no retry was performed (§12.1 forbids
+automatic retry of non-zero exits).

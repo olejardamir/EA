@@ -1,0 +1,2 @@
+Gate B evidence-isolation check for m3-43f4d9649d8b-q2 at 2026-08-20T21:31:31-04:00:
+no Docker volumes matching m3-43f4d9649d8b-q2_* existed prior to run 0 (verified twice: pre-q1 and pre-q2).

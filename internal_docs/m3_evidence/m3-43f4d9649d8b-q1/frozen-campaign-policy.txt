@@ -1,0 +1,7 @@
+Frozen before run 0 (plan §10 / Gate E):
+GLOBAL_RUNS=3
+BASE_GLOBAL_SEED=42
+  -> run 0 seed 42, run 1 seed 43, run 2 seed 44
+COMPOSE_PROJECT_NAME=m3-43f4d9649d8b-q1  (fresh unique identity, volumes proven new)
+No other result-affecting overrides. No ad-hoc compose scaling flags.
+No post-result extension of runs. Machine aggregator owns the verdict.

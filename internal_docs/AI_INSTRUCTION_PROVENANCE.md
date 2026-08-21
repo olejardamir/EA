@@ -21,6 +21,19 @@ purpose:          AI instruction artifact directing Milestone 3 execution (run t
                   the plan itself.
 ```
 
+## Preserved instruction artifact — Parallel M3 safe work
+
+```text
+artifact path:    internal_docs/PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md
+SHA-256:          c6d14806fc394852035c3f95929fb6db79c804073ef6e66faa3554808da7aee1
+first-use commit: (recorded at parallel work start, before any parallel tasks executed)
+purpose:          AI instruction artifact directing parallel work while M3 runs —
+                  covers M4 reconciliation framework, M5 evidence/cost model,
+                  M6 proposal draft, M7 README draft, M8 audits, M9 cleanup inventory,
+                  M10 submission manifest, and final audit passes. This exact copy was
+                  used to direct AI-assisted parallel execution.
+```
+
 ## Rules
 
 - The preserved copy at `internal_docs/MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md` must never be modified.
@@ -28,4 +41,6 @@ purpose:          AI instruction artifact directing Milestone 3 execution (run t
 - The final packaging milestone may include this exact artifact as required by the assignment.
 - Do not reconstruct this artifact from memory; use only the preserved copy.
 - The same rules apply to `internal_docs/MILESTONE_3_ASSIGNMENT_SYNCED_EXECUTION_PLAN_v2_FINAL.md`:
+  the preserved copy is immutable; its SHA-256 above is its canonical identifier.
+- The same rules apply to `internal_docs/PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md`:
   the preserved copy is immutable; its SHA-256 above is its canonical identifier.

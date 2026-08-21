@@ -1,0 +1,11 @@
+Frozen before run 0 (plan §10 / Gate E):
+GLOBAL_RUNS=3
+BASE_GLOBAL_SEED=42
+  -> run 0 seed 42, run 1 seed 43, run 2 seed 44
+COMPOSE_PROJECT_NAME=m3-c89159e88822-q5  (fresh unique identity, storage proven new)
+No other result-affecting overrides. No ad-hoc compose scaling flags.
+No post-result extension of runs. Machine aggregator owns the verdict.
+Prior attempts: q1 tool-timeout SIGINT (§29), q2 harness deadline defect fixed in c89159e88822 (§28),
+q3 host reboot mid-run-0 (§29), q4 pre-measurement launch failure: stale reboot-leftover network held pinned subnet 172.28.0.0/16; stale artifacts removed, frozen compose untouched.
+Source SHA frozen for whole campaign:
+c89159e8882206de9fffa2b170a38d76854288ce

@@ -1,0 +1,41 @@
+# M3 Gate D — host environment (recorded 2026-08-20T21:26:57-04:00)
+
+## Identity
+frozen_source_commit: c89159e8882206de9fffa2b170a38d76854288ce
+contract_version: v2.0.5
+campaign_id: m3-c89159e88822-q3
+
+## Host OS / kernel
+Linux glompy 6.17.0-124040-tuxedo #40~24.04.1tux1 SMP PREEMPT_DYNAMIC Wed Jul  8 14:37:13 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+PRETTY_NAME="TUXEDO OS"
+
+## Host CPU
+CPU(s):                                  12
+Model name:                              Intel(R) Core(TM) i7-8750H CPU @ 2.20GHz
+CPU max MHz:                             4100.0000
+12
+
+## Host RAM
+               total        used        free      shared  buff/cache   available
+Mem:            46Gi        21Gi       1.3Gi       729Mi        25Gi        25Gi
+Swap:           11Gi       4.0Ki        11Gi
+
+## Container runtime
+Docker version 29.7.2, build a7dcaa6
+Docker Compose version v5.5.0
+
+## Ephemeral port range
+32768	60999
+
+## Host FD limits (shell)
+1048576
+
+## Background load at record time
+ 21:26:57 up 1 day, 12:25,  1 user,  load average: 5.66, 4.81, 3.74
+
+## Nominal configured topology caps (container limits, NOT physical minimums)
+nchan primary: 4 CPU / 8 GiB; nchan replacement: 4 CPU / 4 GiB; redis: 2 CPU / 2 GiB;
+4 runner shards x (8 CPU / 8 GiB); plus coordinator service (uncapped container).
+Sum of caps: 42 CPU quota, 46 GiB memory. Host actually provides 12 CPUs / 46 GiB total.
+Per plan §9: caps are limits, not reservations; if the host cannot drive the frozen
+workload validly, the campaign must classify INCONCLUSIVE rather than scale down.

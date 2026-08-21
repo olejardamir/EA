@@ -1,0 +1,4 @@
+Pre-launch proof that q4 storage is new:
+0
+0
+(both counts must be 0)

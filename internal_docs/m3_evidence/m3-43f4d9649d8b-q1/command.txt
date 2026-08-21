@@ -1,0 +1,1 @@
+cd poc && GLOBAL_RUNS=3 BASE_GLOBAL_SEED=42 COMPOSE_PROJECT_NAME=m3-43f4d9649d8b-q1 ./run-evidence-100k.sh

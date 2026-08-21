@@ -1,0 +1,169 @@
+{
+  "contract_version": "v2.0.5",
+  "aggregate_scope": "simultaneous_global_run",
+  "scope": "global",
+  "experiment_run_id": "c89159e88822-global-0-1787278961",
+  "run_index": 0,
+  "seed": 42,
+  "participating_shard_ids": [],
+  "shard_count": 4,
+  "global_target": 100000,
+  "publisher_owner_shard_id": 0,
+  "source_commit": "c89159e8882206de9fffa2b170a38d76854288ce",
+  "phase_timings": {
+    "preflight": {
+      "start_ms": 1787278979045,
+      "end_ms": 1787278979142,
+      "duration_ms": 97
+    },
+    "warmup": {
+      "start_ms": 1787278979149,
+      "end_ms": 1787279014216,
+      "duration_ms": 35067
+    },
+    "steady": {
+      "start_ms": 1787279014233,
+      "end_ms": 1787279134463,
+      "duration_ms": 120230
+    },
+    "surge": {
+      "start_ms": 1787279134635,
+      "end_ms": 1787279324994,
+      "duration_ms": 190359
+    },
+    "target-barrier": {
+      "start_ms": 1787279326684,
+      "end_ms": 1787279332818,
+      "duration_ms": 6134
+    },
+    "stabilization": {
+      "start_ms": 1787279334071,
+      "end_ms": 1787279344693,
+      "duration_ms": 10622
+    },
+    "late-join": {
+      "start_ms": 1787279354049,
+      "end_ms": 1787279468221,
+      "duration_ms": 114172
+    },
+    "burst": {
+      "start_ms": 1787279475726,
+      "end_ms": 1787279524488,
+      "duration_ms": 48762
+    },
+    "post-burst": {
+      "start_ms": 1787279529598,
+      "end_ms": 1787279549390,
+      "duration_ms": 19792
+    }
+  },
+  "active_population": {
+    "sample_bucket_ms": 1000,
+    "complete_aligned_bucket_count": 0,
+    "global_active_peak": 0,
+    "buckets": [],
+    "scenarios": {}
+  },
+  "workload_rates": {
+    "events_published": 0,
+    "phase_rates": []
+  },
+  "histograms": {
+    "fan_out": {
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0,
+      "max_ms": 0,
+      "count": 0,
+      "overflow_count": 0,
+      "distribution": {
+        "max_ms": 30000,
+        "total_count": 0,
+        "overflow_count": 0,
+        "buckets": []
+      }
+    },
+    "late_join": {
+      "p50_ms": 0,
+      "p95_ms": 0,
+      "p99_ms": 0,
+      "max_ms": 0,
+      "count": 0,
+      "overflow_count": 0,
+      "distribution": {
+        "max_ms": 30000,
+        "total_count": 0,
+        "overflow_count": 0,
+        "buckets": []
+      }
+    }
+  },
+  "correctness_counters": {},
+  "per_shard_generator_validity": [],
+  "resources": {
+    "nchan": {},
+    "redis": {}
+  },
+  "scenario_results": [
+    {
+      "name": "late-join",
+      "passed": false,
+      "participant_shard_ids": [],
+      "active_population": null,
+      "details": []
+    },
+    {
+      "name": "burst",
+      "passed": false,
+      "participant_shard_ids": [],
+      "active_population": null,
+      "details": []
+    },
+    {
+      "name": "reconnect",
+      "passed": false,
+      "participant_shard_ids": [],
+      "active_population": null,
+      "details": []
+    },
+    {
+      "name": "slow-consumer",
+      "passed": false,
+      "participant_shard_ids": [],
+      "active_population": null,
+      "details": []
+    },
+    {
+      "name": "restart-replacement",
+      "passed": false,
+      "participant_shard_ids": [],
+      "active_population": null,
+      "details": []
+    }
+  ],
+  "shard_results": [],
+  "validity": {
+    "valid": false,
+    "reasons": [
+      "global abort: shard 0: fetch failed",
+      "collected shard results 0/4",
+      "incomplete barrier reconnect:end",
+      "incomplete barrier slow-consumer:start",
+      "incomplete barrier slow-consumer:end",
+      "incomplete barrier restart-replacement:start",
+      "incomplete barrier restart-replacement:end",
+      "incomplete barrier final-metrics:start",
+      "incomplete barrier final-metrics:end",
+      "authoritative publisher produced no accepted workload",
+      "no complete aligned concurrency buckets",
+      "global fan-out histogram is empty",
+      "late-join has no complete aligned active-population evidence",
+      "burst has no complete aligned active-population evidence",
+      "reconnect has no complete aligned active-population evidence",
+      "slow-consumer has no complete aligned active-population evidence",
+      "restart-replacement has no complete aligned active-population evidence"
+    ]
+  },
+  "verdict": "INCONCLUSIVE",
+  "global_direct_accept_eligible": false
+}
