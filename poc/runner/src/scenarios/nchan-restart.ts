@@ -41,6 +41,13 @@ export interface RestartRangeEvaluationInput {
  * Evaluate only membership in the independently frozen canonical interval.
  * Out-of-range frames can never increase received_required_count or repair a
  * missing canonical sequence. Both restart paths use this same predicate.
+ *
+ * §M3-PACE-2: frames ABOVE the range are live continuation on a live channel —
+ * the shared publisher keeps publishing while the probe reads. They are never
+ * credited as replay (diagnostic counters only); loss is caught by
+ * missing_required, duplicates and ordering, so their presence alone cannot
+ * fail an otherwise exact replay. Frames BELOW the range remain a defect:
+ * stale replay under the consumed position is never acceptable.
  */
 export function evaluateRestartRequiredRange(input: RestartRangeEvaluationInput): RestartPathResult {
   const expectedCount = input.expectedLastSeq - input.expectedFirstSeq + 1
@@ -98,7 +105,6 @@ export function evaluateRestartRequiredRange(input: RestartRangeEvaluationInput)
       && requiredDuplicates === 0
       && requiredOutOfOrder === 0
       && outOfRangeBefore === 0
-      && outOfRangeAfter === 0
       && !missingPrefix,
   }
 }
@@ -218,7 +224,10 @@ export class NchanRestartScenario implements Scenario {
           const seq = JSON.parse(evt.event.data).canonical_seq
           if (typeof seq === "number" && seq > expectedLastSeq) {
             // Ordered delivery guarantees required sequences arrive before any
-            // beyond-range frame; reaching one before completion means loss.
+            // beyond-range frame; reaching one before the set is complete means
+            // the missing required sequences were lost. Bounded-wait trigger:
+            // evaluation below reports them via missing_required. If the set
+            // IS already complete, this is ordinary live continuation.
             finish()
           }
         } catch {}

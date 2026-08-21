@@ -70,6 +70,24 @@ v2.1.0 declared itself FROZEN, but the implementation subsequently changed in wa
                                      replay coverage. Replay coverage comes only
                                      from the dedicated probe clients' missed
                                      ranges.
+9. slow-cohort busy-match           the frozen 2 s application read pace is
+   selection                        physically achievable only on channels
+                                     whose offer rate sustains 0.5 events/s.
+                                     Under the seeded weight distribution the
+                                     coldest matches fall below that floor, so
+                                     slow-cohort membership prefers the busiest
+                                     matches deterministically from frozen
+                                     MATCH_WEIGHTS (tier 1: weight >= 1.5,
+                                     deterministic fallback tiers; no RNG).
+                                     Partition distribution is untouched.
+10. restart-range live tail         frames ABOVE a frozen restart range are
+                                     live continuation on a live channel; they
+                                     are never credited as replay (diagnostic
+                                     out_of_range_after counters only) and can
+                                     never fail an otherwise exact replay. Loss
+                                     inside the range is caught by missing_
+                                     required/duplicates/ordering. Frames BELOW
+                                     the consumed position remain a defect.
 ```
 
 ## Frozen topology
@@ -223,7 +241,7 @@ bystanders          record non-participation with no fabricated path objects
 
 History persists in the shared Redis store across the restart; the replacement (spare) serves live delivery and replay immediately; unaffected partitions continue uninterrupted; the restarted node rejoins empty and viewers intentionally remain on the spare for the remainder of the run. Structured evidence is bound to campaign/run/index/shard identity; stale or copied evidence is fatal. Scenario active minimum >= 70% of global target for this phase only (planned drain dip).
 
-Slow clients: validation semantics as corrected above — offered events measured independently of application reads; pacing from the rewritten release pump; replay retention gated per client (weakest link); Nchan memory boundedness must be numeric. While a slow client is intentionally deferred by the application gate, its queueing delay is excluded from global fan-out latency (it is pacing evidence, not delivery latency); post-window catch-up drain is reported separately and never credited as replay.
+Slow clients: validation semantics as corrected above — offered events measured independently of application reads; pacing from the rewritten release pump; replay retention gated per client (weakest link); Nchan memory boundedness must be numeric. While a slow client is intentionally deferred by the application gate, its queueing delay is excluded from global fan-out latency (it is pacing evidence, not delivery latency); post-window catch-up drain is reported separately and never credited as replay. The cohort sits on busy matches (correction 9) so the frozen pace is physically achievable; cohort membership is deterministic per shard.
 
 SSE transport: pre-registration frame buffering is canonical. Any event parsed before the first application handler registers is delivered exactly once, in order, when that handler attaches. Dropped silent replay windows are a defect class this contract closes.
 

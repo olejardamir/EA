@@ -6,11 +6,13 @@ import type { MetricsSnapshot } from "../ports/metrics.js"
 import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import type { Clock } from "../ports/clock.js"
 import { ConnectionPool, type ConnectionEntry } from "../application/connection-pool.js"
+import { MATCH_IDS as MATCH_IDS_ALL } from "../domain/event.js"
 import {
   SlowConsumerScenario,
   GatedThrottledSubscription,
   independentOfferedCount,
   pacingWithinTolerance,
+  selectSlowCohort,
   SLOW_EVENT_INTERVAL_MS,
 } from "../scenarios/slow-consumer.js"
 
@@ -330,6 +332,59 @@ describe("GatedThrottledSubscription (repair #1)", () => {
     assert.equal(gate.lastEventId, "wire-1", "reflects the last RELEASED frame only")
     assert.equal(gate.releasedCount, 1)
     gate.close()
+  })
+})
+
+// §M3-PACE: slow-cohort selection — the frozen 2 s read pace is only
+// physically achievable on channels whose offer rate sustains 0.5 events/s.
+describe("selectSlowCohort (busy-match preference)", () => {
+  function fakeEntry(id: number, matchId: string): ConnectionEntry {
+    return {
+      id,
+      matchId,
+      subscription: new MockSubscription(),
+      tracker: { recordReceived: () => {}, expectedNext: () => 1 } as unknown as ConnectionEntry["tracker"],
+      mode: "steady",
+    }
+  }
+
+  it("prefers weight >= 1.5 matches before any colder match", () => {
+    // One entry per match, weights [2.0,1.5,1.5,1.0,1.0,0.8,0.7,0.5]:
+    // tier-1 matches are match-001/002/003.
+    const entries = MATCH_IDS_ALL.map((m, i) => fakeEntry(i, m))
+    const cohort = selectSlowCohort(entries, 3)
+    assert.deepEqual(cohort.map((e) => e.matchId), ["match-001", "match-002", "match-003"])
+  })
+
+  it("skips cold matches even when they appear first in pool order", () => {
+    const entries = [fakeEntry(0, "match-008"), fakeEntry(1, "match-007"), fakeEntry(2, "match-001")]
+    const cohort = selectSlowCohort(entries, 1)
+    assert.equal(cohort.length, 1)
+    assert.equal(cohort[0].matchId, "match-001")
+  })
+
+  it("falls back to lower tiers when hot matches cannot fill the cohort", () => {
+    const entries = [fakeEntry(0, "match-001"), fakeEntry(1, "match-006"), fakeEntry(2, "match-008")]
+    const cohort = selectSlowCohort(entries, 3)
+    assert.equal(cohort.length, 3)
+    assert.equal(cohort[0].matchId, "match-001")
+    assert.equal(cohort[1].matchId, "match-006")
+    assert.equal(cohort[2].matchId, "match-008")
+  })
+
+  it("returns exactly count entries and preserves deterministic order", () => {
+    const entries: ConnectionEntry[] = []
+    for (let i = 0; i < 40; i++) entries.push(fakeEntry(i, MATCH_IDS_ALL[i % 8]))
+    const a = selectSlowCohort(entries, 5)
+    const b = selectSlowCohort(entries, 5)
+    assert.equal(a.length, 5)
+    assert.deepEqual(a.map((e) => e.id), b.map((e) => e.id))
+  })
+
+  it("degenerate pools still yield the exact cohort size", () => {
+    const entries = [fakeEntry(0, "match-008"), fakeEntry(1, "match-008")]
+    const cohort = selectSlowCohort(entries, 2)
+    assert.equal(cohort.length, 2)
   })
 })
 

@@ -420,8 +420,24 @@ describe("evaluateRestartRequiredRange (pure predicate)", () => {
     assert.equal(r.received_required_count, 3)
   })
 
-  it("frames above the range are rejected, never counted", () => {
+  it("live frames above the range are diagnostics, never credited and never a failure (§M3-PACE-2)", () => {
+    // The shared publisher keeps publishing while the probe reads; a frame
+    // beyond the frozen head arriving after complete replay is ordinary live
+    // continuation. It must not be credited as replay — and must not fail an
+    // otherwise exact replay.
     const r = evaluateRestartRequiredRange({ ...base, expectedFirstSeq: 4, expectedLastSeq: 6, receivedSequences: [4, 5, 6, 99] })
+    assert.equal(r.out_of_range_after_count, 1)
+    assert.equal(r.received_required_count, 3)
+    assert.equal(r.received_last_seq, 99)
+    assert.equal(r.passed, true)
+  })
+
+  it("a beyond-range frame cannot mask loss inside the range", () => {
+    // Bounded-wait trigger fires on the first above-range frame; the missing
+    // required sequence still fails the path.
+    const r = evaluateRestartRequiredRange({ ...base, expectedFirstSeq: 4, expectedLastSeq: 6, receivedSequences: [4, 5, 99] })
+    assert.equal(r.missing_required, 1)
+    assert.deepEqual(r.missing_required_sequences, [6])
     assert.equal(r.out_of_range_after_count, 1)
     assert.equal(r.passed, false)
   })

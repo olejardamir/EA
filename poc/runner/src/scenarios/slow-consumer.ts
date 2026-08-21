@@ -2,6 +2,7 @@ import type { Scenario, ScenarioContext } from "./scenario.js"
 import type { ConnectionEntry, ConnectionPool } from "../application/connection-pool.js"
 import type { Subscription, SubscriptionEvent } from "../ports/event-stream.js"
 import { StreamingHistogram } from "../adapters/streaming-histogram.js"
+import { MATCH_IDS, MATCH_WEIGHTS } from "../domain/event.js"
 
 // §4.7: Frozen slow-consumer parameters
 const BACKPRESSURE_DURATION_MS = 15000
@@ -278,6 +279,52 @@ export function pacingWithinTolerance(medians: number[], intendedClients: number
   return medians.length === intendedClients && medians.every((median) => median >= PACING_MIN_MS && median <= PACING_MAX_MS)
 }
 
+// §M3-PACE: minimum frozen match weight for slow-cohort membership. A client
+// can hold one application read per SLOW_EVENT_INTERVAL_MS only while its
+// channel OFFERS at least 1/intervalMs events. Under the seeded weight
+// distribution the cold matches fall below that floor (match-008: 0.5/9 of
+// ~8.8 match events/s ≈ 0.49/s < 0.5/s; match-007 starves ~26 % of cycles),
+// so starved cycles deliver on arrival and inflate medians to 2400–2900 ms —
+// physically unreachable pacing, not a gate defect. Cohort membership
+// therefore prefers the busiest matches, deterministically from the frozen
+// MATCH_WEIGHTS (no RNG): tier 1 = weight >= 1.5 (offer rate >= ~1.47/s,
+// starved-cycle probability <= ~5 %), falling back to lower tiers only if a
+// shard pool cannot fill the cohort otherwise. Partition distribution is
+// untouched — selection happens inside each shard's existing pool.
+const SLOW_COHORT_MIN_WEIGHT = 1.5
+
+function matchWeight(matchId: string): number {
+  const idx = MATCH_IDS.indexOf(matchId)
+  return idx >= 0 ? MATCH_WEIGHTS[idx] : 0
+}
+
+export function selectSlowCohort(entries: ConnectionEntry[], count: number): ConnectionEntry[] {
+  if (count >= entries.length) return [...entries]
+  const taken = new Set<ConnectionEntry>()
+  const selected: ConnectionEntry[] = []
+  const tiers = [SLOW_COHORT_MIN_WEIGHT, 1.0, 0]
+  for (const tier of tiers) {
+    for (const entry of entries) {
+      if (selected.length >= count) break
+      if (taken.has(entry)) continue
+      if (matchWeight(entry.matchId) >= tier) {
+        taken.add(entry)
+        selected.push(entry)
+      }
+    }
+    if (selected.length >= count) break
+  }
+  // Guarantee the exact cohort size even on degenerate pools.
+  for (const entry of entries) {
+    if (selected.length >= count) break
+    if (!taken.has(entry)) {
+      taken.add(entry)
+      selected.push(entry)
+    }
+  }
+  return selected
+}
+
 // §M3-HVR: Extract canonical_seq from a match frame payload (production schema),
 // falling back to the lightweight `seq` used by unit-test fixtures. Returns null
 // when neither field carries a usable number.
@@ -321,8 +368,11 @@ export class SlowConsumerScenario implements Scenario {
 
     const slowFraction = ctx.config.slowConsumerFraction
     const slowCount = Math.max(1, Math.floor(all.length * slowFraction))
-    const slowConnections = all.slice(0, slowCount)
-    const healthyConnections = all.slice(slowCount)
+    // §M3-PACE: deterministic busy-match preference — the frozen 2 s read pace
+    // is only physically achievable on channels whose offer rate sustains it.
+    const slowConnections = selectSlowCohort(all, slowCount)
+    const slowSet = new Set(slowConnections)
+    const healthyConnections = all.filter((conn) => !slowSet.has(conn))
 
     ctx.log(`Designating ${slowCount}/${all.length} connections as slow (${slowFraction * 100}%)`)
 
