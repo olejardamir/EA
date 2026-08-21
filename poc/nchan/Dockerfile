@@ -68,6 +68,10 @@ COPY --from=builder /etc/nginx/ /etc/nginx/
 COPY --from=nodejs /usr/local/bin/node /usr/local/bin/node
 
 COPY nchan.conf /etc/nginx/nginx.conf
+# §M3-R: partition nodes select their config via NGINX_CONF; p0's compose env
+# points at /etc/nginx/nchan.conf, so the canonical config ships under that
+# name as well (identical content, explicit per-node file set).
+COPY nchan.conf /etc/nginx/nchan.conf
 COPY nchan-2.conf /etc/nginx/nchan-2.conf
 COPY nchan-3.conf /etc/nginx/nchan-3.conf
 COPY nchan-4.conf /etc/nginx/nchan-4.conf

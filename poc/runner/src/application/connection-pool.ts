@@ -5,6 +5,9 @@ import type { Clock } from "../ports/clock.js"
 import { createSequenceTracker, type SequenceTracker } from "../domain/sequence-validator.js"
 import { validateMatchEventPayload, type ValidMatchEvent } from "../domain/event-validator.js"
 
+// Non-qualifying development diagnostics (probe-only, never set in qualifying runs).
+const DUP_DEBUG = process.env.DUP_DEBUG === "1"
+
 export interface ConnectionEntry {
   id: number
   matchId: string
@@ -210,6 +213,9 @@ export class ConnectionPool {
         break
       }
       case "DUPLICATE":
+        if (DUP_DEBUG) {
+          console.log(`DUPDBG ${JSON.stringify({ t: this.clock.now(), conn: entry.id, match: entry.matchId, seq })}`)
+        }
         if (entry.mode === "steady") this.metrics.incrementDuplicates()
         else this.metrics.incrementReconnectDuplicates()
         break

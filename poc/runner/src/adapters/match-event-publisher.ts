@@ -6,6 +6,9 @@ import {
 } from "../domain/event.js"
 import { createInitialMatchStates, advanceMatchState, type MatchState } from "../domain/match-state.js"
 
+// Non-qualifying development diagnostics (probe-only, never set in qualifying runs).
+const PUB_DEBUG = process.env.PUB_DEBUG === "1"
+
 export interface MatchEventPublisherConfig {
   publisher: EventPublisher
   headTracker: MatchHeadTracker
@@ -188,6 +191,9 @@ export class MatchEventPublisher {
           this._eventsPublished++
           this._totalPublished++
           this._matchPublished++
+          if (PUB_DEBUG) {
+            console.log(`PUBDBG ${JSON.stringify({ t: acceptMs, match: matchId, seq: candidate.seq, ev: eventType })}`)
+          }
           const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
           this._eventsPublishedByMatch.set(matchId, prev + 1)
           const expected = this.config.getSubscriberCount?.(matchId) ?? 0

@@ -93,4 +93,30 @@ describe("Milestone 2 infrastructure contract", () => {
     assert.match(entrypoint, /\/sys\/fs\/cgroup\/cpuset\.cpus\.effective/)
     assert.match(read("compose.evidence-100k.yaml"), /redis-cgroup-evidence:\/redis-cgroup:ro/)
   })
+
+  it("ships every compose-referenced NGINX_CONF inside the nchan image", () => {
+    // Regression: p0's compose env pointed at /etc/nginx/nchan.conf while the
+    // image only installed that content as nginx.conf — the partition node
+    // crash-looped before serving a single connection. Every NGINX_CONF path
+    // referenced by any compose file must be COPYed by the Dockerfile.
+    const dockerfile = read("nchan/Dockerfile")
+    const composeFiles = ["compose.evidence-100k.yaml", "compose.evidence.yaml", "compose.smoke-portable.yaml"]
+    const referenced = new Set<string>()
+    for (const file of composeFiles) {
+      if (!fs.existsSync(path.join(poc, file))) continue
+      const source = read(file)
+      for (const match of source.matchAll(/NGINX_CONF:\s*"([^"]+)"/g)) {
+        referenced.add(match[1])
+      }
+    }
+    assert.ok(referenced.size > 0, "expected at least one NGINX_CONF reference")
+    for (const target of referenced) {
+      const copied = [...dockerfile.matchAll(/^COPY\s+(\S+)\s+(\S+)$/gm)]
+        .some(([, , dest]) => dest === target)
+      assert.ok(
+        copied,
+        `${target} is referenced by a compose file but never installed by nchan/Dockerfile`,
+      )
+    }
+  })
 })

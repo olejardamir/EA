@@ -74,7 +74,6 @@ class ThrottledSubscription implements Subscription {
   private inner: Subscription
   private eventsReceived = 0
   private paused = false
-  private poolHandler: ((event: SubscriptionEvent) => void) | null
   private downstreamHandler: ((event: SubscriptionEvent) => void) | null = null
   private resumeTimers: ReturnType<typeof setTimeout>[] = []
   private _offeredCount = 0
@@ -82,10 +81,13 @@ class ThrottledSubscription implements Subscription {
   // §3.6: Timestamps (ms since page load) of events arriving at this subscription
   private _eventTimestampsMs: number[] = []
 
-  constructor(inner: Subscription, poolHandler: (event: SubscriptionEvent) => void) {
+  constructor(inner: Subscription) {
     this.inner = inner
-    this.poolHandler = poolHandler
-    // §3.17: Chain BOTH the pool handler and throttling logic.
+    // §M3-R dup fix: onEvent ADDS a handler (sse-http-client §3.17) and the
+    // pool handler stays registered on the inner subscription, so it keeps
+    // firing exactly once on its own. Re-forwarding events to the captured
+    // pool handler from this wrapper double-counted every frame as a wire
+    // duplicate from the moment throttling was installed.
     this.inner.onEvent((evt) => {
       if (evt.type === "message") {
         this._offeredCount++
@@ -104,8 +106,7 @@ class ThrottledSubscription implements Subscription {
           this.resumeTimers.push(timer)
         }
       }
-      // Forward to pool handler (for metrics/tracking) AND downstream handler
-      this.poolHandler?.(evt)
+      // Forward to downstream handler only (pool handler is dispatched by inner)
       this.downstreamHandler?.(evt)
     })
   }
@@ -177,12 +178,16 @@ export class SlowConsumerScenario implements Scenario {
 
     // Dedicated immediately-before-slow healthy baseline. This listener is
     // installed now and excludes every earlier phase by construction.
+    // §M3-R dup fix: onEvent ADDS a handler and the pool handler remains
+    // registered on the subscription, so this wrapper must ONLY record the
+    // latency histogram. Re-invoking the captured handler dispatched every
+    // frame twice into the pool's sequence tracker, counting each event as a
+    // duplicate for the rest of the run.
     const healthyBeforeHist = new StreamingHistogram()
     const healthyDuringHist = new StreamingHistogram()
     let collectHealthyBaseline = true
     let collectHealthyDuring = false
     for (const conn of healthyConnections) {
-      const originalHandler = conn.subscription.getEventHandler()
       conn.subscription.onEvent((evt) => {
         if (evt.type === "message") {
           try {
@@ -195,7 +200,6 @@ export class SlowConsumerScenario implements Scenario {
             }
           } catch {}
         }
-        originalHandler?.(evt)
       })
     }
     await ctx.sleep(HEALTHY_BASELINE_MS)
@@ -209,9 +213,7 @@ export class SlowConsumerScenario implements Scenario {
     // §4.7: Wrap slow connections with throttled read (1 event per 2s)
     const throttledWrappers: ThrottledSubscription[] = []
     for (const conn of slowConnections) {
-      // §3.17: Capture the pool's handler via the Subscription interface — no unsafe type erasure.
-      const poolHandler = conn.subscription.getEventHandler() ?? (() => {})
-      const throttled = new ThrottledSubscription(conn.subscription, poolHandler)
+      const throttled = new ThrottledSubscription(conn.subscription)
       conn.subscription = throttled
       throttledWrappers.push(throttled)
     }

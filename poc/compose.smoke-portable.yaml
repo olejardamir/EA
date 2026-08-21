@@ -36,6 +36,10 @@ services:
     image: poc-nchan:latest
     build:
       context: ./nchan
+      # Build-time package downloads use the host network stack; some hosts
+      # (e.g. VPN-only DNS) block resolver traffic from bridge build networks.
+      # Runtime networking below remains bridge/portable.
+      network: host
     # §6.16: Override default nchan.conf with portable config that uses
     # Docker service name "redis" for cross-container connectivity.
     environment:
@@ -69,6 +73,7 @@ services:
     image: poc-runner:latest
     build:
       context: ./runner
+      network: host
       args:
         GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
     volumes:

@@ -1,0 +1,58 @@
+# Non-qualifying development probe overrides for the partitioned 100k topology
+# (contract v2.1.0 §Qualification discipline). This file NEVER participates in
+# a qualifying campaign: qualifying runs use ./run-evidence-100k.sh alone.
+#
+# Usage (10k example):
+#   PROBE_TARGET=2500 PROBE_GLOBAL_TARGET=10000 \
+#   GIT_COMMIT_SHA=$(git rev-parse HEAD) CAMPAIGN_ID=probe-10k-$(date +%s) \
+#   EXPERIMENT_RUN_ID=probe-10k-run0 \
+#   docker compose -f compose.evidence-100k.yaml -f compose.probe.yaml \
+#     up --build --force-recreate --abort-on-container-exit --exit-code-from coordinator
+services:
+  coordinator:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+
+  runner-shard-0:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      DUP_DEBUG: "${DUP_DEBUG:-0}"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"
+
+  runner-shard-1:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      DUP_DEBUG: "${DUP_DEBUG:-0}"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"
+
+  runner-shard-2:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      DUP_DEBUG: "${DUP_DEBUG:-0}"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"
+
+  runner-shard-3:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      DUP_DEBUG: "${DUP_DEBUG:-0}"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"

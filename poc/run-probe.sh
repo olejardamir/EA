@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Non-qualifying development probe launcher for the partitioned topology.
+# Runs ONE coordinated global run at the requested scale with shortened
+# phase durations. Never used for qualifying evidence (contract v2.1.0).
+#
+# Usage: ./run-probe.sh <viewers>   e.g. ./run-probe.sh 10000
+set -euo pipefail
+
+POC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VIEWERS="${1:?usage: ./run-probe.sh <viewers>}"
+case "$VIEWERS" in
+  ''|*[!0-9]*) echo "viewers must be an integer" >&2; exit 2 ;;
+esac
+(( VIEWERS >= 4000 && VIEWERS <= 100000 )) || { echo "probe scale must be 4000..100000" >&2; exit 2; }
+(( VIEWERS % 4 == 0 )) || { echo "viewers must divide evenly across 4 shards" >&2; exit 2; }
+
+SOURCE_COMMIT="$(git -C "$POC_DIR" rev-parse HEAD)"
+PROBE_TARGET=$(( VIEWERS / 4 ))
+STAMP="$(date +%Y%m%dT%H%M%S)"
+PROJECT="ea-probe-${VIEWERS}-${STAMP,,}"
+
+echo "[probe] viewers=${VIEWERS} per-shard=${PROBE_TARGET} project=${PROJECT}"
+set +e
+GIT_COMMIT_SHA="$SOURCE_COMMIT" \
+COMPOSE_PROJECT_NAME="$PROJECT" \
+CAMPAIGN_ID="$PROJECT" \
+EXPERIMENT_RUN_ID="${PROJECT}-run0" \
+GLOBAL_RUN_INDEX=0 \
+GLOBAL_SEED=42 \
+PROBE_TARGET="$PROBE_TARGET" \
+PROBE_GLOBAL_TARGET="$VIEWERS" \
+docker compose --project-name "$PROJECT" --project-directory "$POC_DIR" \
+  -f "$POC_DIR/compose.evidence-100k.yaml" -f "$POC_DIR/compose.probe.yaml" \
+  up --build --force-recreate --abort-on-container-exit --exit-code-from coordinator
+status=$?
+set -e
+# Robust scratch cleanup: compose down first, then force-sweep any labeled
+# leftovers so a crashed phase can never leak networks/volumes that would
+# collide with later probes (subnet pool exhaustion).
+docker compose --project-name "$PROJECT" --project-directory "$POC_DIR" \
+  -f "$POC_DIR/compose.evidence-100k.yaml" -f "$POC_DIR/compose.probe.yaml" \
+  down --volumes --remove-orphans >/dev/null 2>&1 || true
+docker rm -f $(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT") 2>/dev/null || true
+docker network prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null 2>&1 || true
+docker volume prune -f --filter "label=com.docker.compose.project=$PROJECT" >/dev/null 2>&1 || true
+echo "[probe] exit=$status"
+exit "$status"

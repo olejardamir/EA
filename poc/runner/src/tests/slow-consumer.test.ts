@@ -7,33 +7,34 @@ import type { MatchEventPublisher } from "../adapters/match-event-publisher.js"
 import { SlowConsumerScenario, independentOfferedCount, pacingWithinTolerance } from "../scenarios/slow-consumer.js"
 
 function makeEntry(id: number) {
-  // §4.7: Mock subscription that simulates event delivery — calls handler with events
-  let handler: ((event: SubscriptionEvent) => void) | null = null
+  // §4.7: Mock subscription that simulates event delivery — calls handler with events.
+  // §M3-R dup regression: mirrors sse-http-client §3.17 production semantics —
+  // onEvent ADDS to a handler list and every frame is dispatched to ALL of them.
+  // (A replace-style mock hid the double-dispatch defect that mass-counted
+  // duplicates from the moment the slow phase wrapped connections.)
+  const handlers: Array<(event: SubscriptionEvent) => void> = []
   let eventTimer: ReturnType<typeof setTimeout> | null = null
   let seq = 0
+  const emit = () => {
+    if (seq >= 10 || handlers.length === 0) return
+    seq++
+    const evt = { type: "message" as const, event: { id: `evt-${id}-${seq}`, event: "message", data: JSON.stringify({ seq, ts: Date.now() }) } }
+    for (const h of [...handlers]) h(evt)
+    eventTimer = setTimeout(emit, 10)
+  }
   const mockSub: any = {
     connected: true,
     lastEventId: `evt-${id}`,
     onEvent(h: (event: SubscriptionEvent) => void) {
-      handler = h
-      // §3.17: getEventHandler() exposes the handler — no _lastHandler needed
-      // Simulate event delivery: emit 10 events at 10ms intervals
-      let count = 0
-      const emit = () => {
-        if (count >= 10 || !handler) return
-        seq++
-        handler({ type: "message" as const, event: { id: `evt-${id}-${seq}`, event: "message", data: JSON.stringify({ seq, ts: Date.now() }) } })
-        count++
-        eventTimer = setTimeout(emit, 10)
-      }
-      emit()
+      handlers.push(h)
+      if (handlers.length === 1) emit()
     },
     pause() { /* pretend to pause */ },
     resume() {},
-    getEventHandler() { return handler },
+    getEventHandler() { return handlers.length > 0 ? handlers[handlers.length - 1] : null },
     close() {
       if (eventTimer) clearTimeout(eventTimer)
-      handler = null
+      handlers.length = 0
     },
   }
   return {
@@ -186,5 +187,53 @@ describe("SlowConsumerScenario", () => {
     // §3.6: Zero degradation is healthy, but no backpressure evidence → passed=false
     assert.ok(!result.passed)
     assert.ok(result.detail.includes("degradation=0.0%"))
+  })
+
+  it("wrapping cohorts must not double-dispatch frames into the pool handler (dup regression)", async () => {
+    // §M3-R regression for the 10k-probe duplicate storm: the slow phase used to
+    // chain wrappers that re-invoked the captured pool handler while that same
+    // handler stayed registered on the subscription (sse-http-client dispatches
+    // to ALL handlers). Every frame then reached the sequence tracker twice and
+    // was counted as a wire duplicate from slow-phase start until run end.
+    const entries = Array.from({ length: 20 }, (_, i) => makeEntry(i))
+    let poolDispatches = 0
+    let framesEmitted = 0
+    // Register the production-style pool handler BEFORE the scenario wraps anything,
+    // mirroring connection-pool.ts registration order.
+    for (const e of entries) {
+      e.subscription.onEvent((evt: SubscriptionEvent) => {
+        if (evt.type === "message") {
+          poolDispatches++
+          e.tracker.classify()
+        }
+      })
+    }
+    const ctx = mockCtx(entries, 0.2)
+    const scenario = new SlowConsumerScenario({ entries } as any)
+    await scenario.execute(ctx)
+    // Drain pending mock emissions (10 events per entry at 10ms intervals).
+    await new Promise((r) => setTimeout(r, 150))
+    framesEmitted = 10 * entries.length
+    assert.equal(poolDispatches, framesEmitted, "each frame must reach the pool handler exactly once")
+    const m = scenario.slowMetrics!
+    assert.equal(m.slow_clients + m.healthy_clients, entries.length)
+  })
+
+  it("throttled wrapper forwards downstream without re-invoking inner-registered handlers", async () => {
+    // Direct unit check of ThrottledSubscription forwarding semantics through the
+    // public scenario surface: after execute, a second onEvent on an already-wrapped
+    // connection must not multiply pool dispatches either.
+    const entries = Array.from({ length: 4 }, (_, i) => makeEntry(i))
+    let poolDispatches = 0
+    for (const e of entries) {
+      e.subscription.onEvent((evt: SubscriptionEvent) => {
+        if (evt.type === "message") poolDispatches++
+      })
+    }
+    const ctx = mockCtx(entries, 0.5)
+    const scenario = new SlowConsumerScenario({ entries } as any)
+    await scenario.execute(ctx)
+    await new Promise((r) => setTimeout(r, 150))
+    assert.equal(poolDispatches, 10 * entries.length)
   })
 })
