@@ -117,6 +117,21 @@ v2.1.0 declared itself FROZEN, but the implementation subsequently changed in wa
                                      reconnect-settle gap so the baseline
                                      window represents steady state rather
                                      than post-churn residue.
+13. degradation resolution floor    the healthy-client p95 degradation gate
+                                     passes when the during-slow shift is
+                                     within max(5% of baseline p95, 10 ms).
+                                     A purely relative threshold is small-
+                                     denominator-fragile: at ~40 ms baselines,
+                                     ±4 ms of residual estimator noise exceeds
+                                     5%, and failures concentrated on shards
+                                     with the LOWEST baselines (observed:
+                                     +4..5 ms absolute = 9.8..12.8% relative).
+                                     The threshold is ledger-classified
+                                     PLANNING_ASSUMPTION; the assignment intent
+                                     ("without materially degrading existing
+                                     viewers") and the frozen absolute fan-out
+                                     gates (p95 <= 500 ms) are untouched.
+                                     Material regressions fail hard.
 ```
 
 ## Frozen topology

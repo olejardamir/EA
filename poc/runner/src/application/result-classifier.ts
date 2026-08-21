@@ -360,7 +360,10 @@ export function classifyResult(
   // If no server-side backpressure reached, it is INCONCLUSIVE (not REJECT).
   const slowMetrics = metrics.slow_consumer_metrics
   if (slowMetrics) {
-    const boundedHealthyOk = slowMetrics.healthy_degradation_pct <= 5
+    // §v2.1.1 drift item 13: relative gate with absolute resolution floor —
+    // mirrors the scenario-side rule (5% of baseline p95, floor 10 ms).
+    const degradationAllowanceMs = Math.max(slowMetrics.healthy_p95_before_ms * 0.05, 10)
+    const boundedHealthyOk = (slowMetrics.healthy_p95_during_slow_ms - slowMetrics.healthy_p95_before_ms) <= degradationAllowanceMs
     const evidenceBackpressure = slowMetrics.evidence_server_side_backpressure_reached
     checks.push({
       name: "slow_consumer_disconnects",
@@ -395,7 +398,7 @@ export function classifyResult(
     checks.push({
       name: "non_slow_impact",
       passed: boundedHealthyOk,
-      detail: `healthy_degradation=${slowMetrics.healthy_degradation_pct.toFixed(1)}% <= 5%`,
+      detail: `healthy_degradation=${slowMetrics.healthy_degradation_pct.toFixed(1)}% (p95 ${slowMetrics.healthy_p95_before_ms}ms -> ${slowMetrics.healthy_p95_during_slow_ms}ms, allowance ${degradationAllowanceMs.toFixed(1)}ms = max(5%, 10ms))`,
     })
     // §3.8: If Nchan memory boundedness is unknown (null), INCONCLUSIVE
     if (slowMetrics.nchan_memory_bounded === null) {

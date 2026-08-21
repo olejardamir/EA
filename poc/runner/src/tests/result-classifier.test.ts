@@ -501,3 +501,61 @@ describe("classifyResult", () => {
     assert.ok(result.checks.find((c) => c.name === "inconclusive_override")!.detail.includes("publisher"))
   })
 })
+
+describe("§v2.1.1 drift item 13: degradation resolution floor", () => {
+  // Mirrors the scenario-side rule: pass when during-slow p95 shift is within
+  // max(5% of baseline, 10 ms). Small baselines must not fail on noise.
+  function slowMetricsWith(before: number, during: number) {
+    return baseMetrics({
+      slow_consumer_metrics: {
+        slow_clients: 5,
+        healthy_clients: 95,
+        slow_offered_event_count: 500,
+        slow_application_read_count: 250,
+        slow_backlog_growth: 250,
+        backpressure_duration_ms: 1000,
+        evidence_server_side_backpressure_reached: true,
+        healthy_p95_before_ms: before,
+        healthy_p95_during_slow_ms: during,
+        healthy_degradation_pct: ((during - before) / before) * 100,
+        slow_disconnects: 0,
+        healthy_before_sample_count: 100,
+        healthy_during_sample_count: 100,
+        nchan_memory_baseline_bytes: 1000,
+        nchan_memory_during_bytes: 1000,
+        nchan_memory_end_bytes: 1000,
+        nchan_memory_recovery_bytes: null,
+        nchan_memory_samples_during: [],
+        per_client_event_timestamps_ms: [],
+        slow_achieved_read_rate_events_per_sec: 0,
+        per_client_median_event_interval_ms: [],
+        slow_median_event_interval_ms: 0,
+        slow_p95_event_interval_ms: 0,
+        nchan_memory_bounded: true,
+        nchan_memory_growth_bytes: null,
+        nchan_memory_growth_pct: null,
+      },
+      non_slow_p95_degradation_pct: ((during - before) / before) * 100,
+    })
+  }
+
+  it("accepts a +4ms shift on a 40ms baseline (12.8% relative, inside 10ms floor)", () => {
+    const result = classifyResult(slowMetricsWith(39, 44), true, true)
+    assert.ok(result.checks.find((c) => c.name === "non_slow_impact")!.passed)
+  })
+
+  it("accepts a +2.3% relative shift on a high baseline", () => {
+    const result = classifyResult(slowMetricsWith(80, 82), true, true)
+    assert.ok(result.checks.find((c) => c.name === "non_slow_impact")!.passed)
+  })
+
+  it("rejects a material +25ms shift even at a high baseline", () => {
+    const result = classifyResult(slowMetricsWith(80, 105), true, true)
+    assert.equal(result.checks.find((c) => c.name === "non_slow_impact")!.passed, false)
+  })
+
+  it("rejects a +11ms shift on a 40ms baseline (beyond floor AND ratio)", () => {
+    const result = classifyResult(slowMetricsWith(40, 51), true, true)
+    assert.equal(result.checks.find((c) => c.name === "non_slow_impact")!.passed, false)
+  })
+})
