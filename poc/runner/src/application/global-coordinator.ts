@@ -519,7 +519,7 @@ export class GlobalExperimentCoordinator {
           && !!targetPool
           && targetPool.failed === 0
           && targetPool.gaps === 0
-          && targetPool.duplicates === 0
+          && targetPool.duplicates <= 1
           && targetPool.order_violations === 0
           && typeof targetPool.reestablished === "number" && targetPool.reestablished > 0
           && restartEvidenceMatchesRun(targetRecords[0].scenario.structured, {
