@@ -1318,8 +1318,25 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 		r.waitActive(baselineActive, 45*time.Second)
 		return scenario
 	}
+	// The control call returns immediately (the node restarts asynchronously);
+	// the measured restart window is the time until the restarted node serves
+	// again. Releasing the drained pool before the node is back would split
+	// failover traffic between a dying and a live node.
+	healthDeadline := time.Now().Add(45 * time.Second)
+	for {
+		if healthErr := dut.HealthCheck(context.Background(), r.cfg.pubURL); healthErr == nil {
+			break
+		}
+		if time.Now().After(healthDeadline) {
+			scenario.Detail = "restarted partition never became healthy within 45s"
+			r.pool.ReleaseDrain()
+			r.waitActive(baselineActive, 45*time.Second)
+			return scenario
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	restartMs := time.Since(restartStart).Milliseconds()
-	r.logf("failover: restart control call returned in %dms", restartMs)
+	r.logf("failover: partition healthy again after %dms", restartMs)
 	r.markRestartWindow(restartMs)
 
 	r.pool.SetSpare(r.cfg.spareSubURL)

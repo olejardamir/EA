@@ -149,6 +149,15 @@ export class MatchEventPublisher {
 
         const random = this.config.random
 
+        // §3.1.G: prefill (spare-probe frozen ranges) holds this match's busy
+        // lock for its whole publication; the chain must yield until release,
+        // otherwise concurrent same-match publishes corrupt canonical order.
+        if (this._matchBusy.get(matchId)) {
+          const timer = setTimeout(scheduleMatchEvents, BUSY_RETRY_MS)
+          this.timers.push(timer)
+          return
+        }
+
         const state = this.matchStates[matchIdx]
         const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight), random)
         const eventType = EVENT_TYPES[eventTypeIdx].type
