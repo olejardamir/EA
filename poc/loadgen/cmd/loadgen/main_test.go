@@ -76,6 +76,8 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 	}
 	seedTiming(r)
 	seedResources(r)
+	exp := p.DeepExpected()
+	r.deepAgree = &deepAgreementSnapshot{expected: exp, agreed: exp}
 	return r, p
 }
 
@@ -1926,5 +1928,90 @@ func TestR13WireOmitsNullStageFields(t *testing.T) {
 	}
 	if !hasPublisherReason(res, "missing mandatory numeric fields") || res.Verdict == coordinator.VerdictAccept {
 		t.Fatalf("incomplete stage must invalidate: %+v", res.Validity.Reasons)
+	}
+}
+
+// ── R14 explicit deep-cohort denominator/head agreement ──────────────────────
+
+// A deep client that never established/validated/matched is surfaced as an
+// explicit unmatched REJECT, never silently dropped.
+func TestDeepUnmatchedRejects(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.deepAgree.unmatched = 1
+	r.deepAgree.agreed--
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT for unmatched deep client", res.Verdict)
+	}
+	if got := res.CorrectnessCounters["deep_unmatched"]; got != 1 {
+		t.Fatalf("deep_unmatched counter = %v, want 1", got)
+	}
+}
+
+// Head disagreement is a REJECT-level violation with the explicit account.
+func TestDeepDisagreementRejects(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.deepAgree.disagreed = 2
+	r.deepAgree.agreed -= 2
+	res := assembleOwner(r)
+	stages := res.Resources.Generator["resource_stages"].(map[string]any)
+	notes, _ := stages["reject_reasons"].([]string)
+	found := false
+	for _, note := range notes {
+		if strings.Contains(note, "deep head agreement") && strings.Contains(note, "2 disagreements") {
+			found = true
+		}
+	}
+	if !found || res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, notes %+v", res.Verdict, notes)
+	}
+}
+
+// An account that does not close (categories do not sum to expected) is
+// invalidating evidence.
+func TestDeepAccountingNotClosingInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.deepAgree.agreed-- // agreed+disagreed+unmatched now < expected
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "deep-cohort accounting does not close") {
+		t.Fatalf("non-closing account reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("non-closing deep accounting must not ACCEPT")
+	}
+}
+
+// Missing head-agreement evidence entirely is mandatory-missing.
+func TestDeepAgreementMissingInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.deepAgree = nil
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "deep-cohort denominator/head agreement never recorded") {
+		t.Fatalf("missing-agreement reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("missing deep agreement must not ACCEPT")
+	}
+}
+
+// The full explicit account rides the wire.
+func TestDeepAgreementOnWire(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	res := assembleOwner(r)
+	da, ok := res.Resources.Generator["deep_agreement"].(map[string]any)
+	if !ok {
+		t.Fatal("deep_agreement evidence missing from the wire")
+	}
+	for _, field := range []string{"expected", "agreed", "disagreed", "unmatched"} {
+		if _, ok := da[field]; !ok {
+			t.Fatalf("deep_agreement missing %s", field)
+		}
 	}
 }

@@ -179,6 +179,12 @@ type counterSnapshot struct {
 	schema, agreement               int64
 }
 
+// deepAgreementSnapshot is the explicit R14 head-agreement account: every
+// expected deep client lands in exactly one of agreed/disagreed/unmatched.
+type deepAgreementSnapshot struct {
+	expected, agreed, disagreed, unmatched int64
+}
+
 func takeSnapshot(p *pool.Pool) counterSnapshot {
 	return counterSnapshot{
 		missing:    p.Counters.MissingSequences.Load(),
@@ -226,6 +232,9 @@ type shardRun struct {
 	// every shard: the target carries its drill window, bystanders their own
 	// phase window). nil = window never measured → validity failure.
 	restartDelta *counterSnapshot
+	// R14: explicit deep-cohort denominator/head-agreement accounting. nil =
+	// never recorded → validity failure.
+	deepAgree *deepAgreementSnapshot
 	// R04/R05: machine-proof surge measurement and the true surge-window
 	// correctness snapshot. nil = surge never measured → validity failure.
 	surgeStats *surgeRunStats
@@ -761,6 +770,12 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if err := r.refreshHeads(ctx); err == nil {
 		headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched =
 			r.pool.DeepHeadAgreement(*r.headCache.Load())
+		r.deepAgree = &deepAgreementSnapshot{
+			expected:  r.pool.DeepExpected(),
+			agreed:    headAgreement.agreed,
+			disagreed: headAgreement.disagreed,
+			unmatched: headAgreement.unmatched,
+		}
 		r.logf("deep head agreement agreed=%d disagreed=%d unmatched=%d",
 			headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched)
 	} else {
@@ -1874,6 +1889,7 @@ var gatedCorrectnessCounters = []string{
 	"missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
 	"json_parse_errors", "invalid_timestamp_count", "canonical_payload_state_violations",
 	"schema_validation_errors", "lobby_malformed",
+	"deep_unmatched",
 }
 
 // assembleResult builds the wire-conformant ShardExperimentResult. Every
@@ -1998,6 +2014,12 @@ func (r *shardRun) assembleResult(
 		"canonical_payload_state_violations":      float64(r.pool.Counters.CanonicalStateViolations.Load()),
 		"agreement_violations":                    float64(r.pool.Counters.AgreementViolations.Load()),
 		"state_agreement_violations":              float64(agreement.disagreed),
+		"deep_unmatched":                          func() float64 {
+			if r.deepAgree != nil {
+				return float64(r.deepAgree.unmatched)
+			}
+			return 0
+		}(),
 		"transport_id_present":                    float64(r.pool.Counters.TransportIDPresent.Load()),
 		"missing_transport_id":                    float64(r.pool.Counters.MissingTransportID.Load()),
 		"missing_canonical_seq":                   float64(r.pool.Counters.MissingCanonicalSeq.Load()),
@@ -2051,6 +2073,26 @@ func (r *shardRun) assembleResult(
 	// evidence failures (e.g. unmeasured restart window) reach the wire.
 	r.applyPublisherGates()
 	r.applyResourceGates()
+	// R14: the deep-cohort denominator/head agreement must be explicit and
+	// must close — every expected deep client in exactly one category, none
+	// silently dropped.
+	if r.deepAgree == nil {
+		r.reasonf("deep-cohort denominator/head agreement never recorded")
+	} else {
+		da := r.deepAgree
+		if da.agreed+da.disagreed+da.unmatched != da.expected {
+			r.reasonf("deep-cohort accounting does not close: agreed %d + disagreed %d + unmatched %d != expected %d",
+				da.agreed, da.disagreed, da.unmatched, da.expected)
+		}
+		if da.agreed != da.expected || da.disagreed != 0 {
+			r.resourceReject = true
+			r.rejectf("deep head agreement %d/%d with %d disagreements", da.agreed, da.expected, da.disagreed)
+		}
+		res.Resources.Generator["deep_agreement"] = map[string]any{
+			"expected": da.expected, "agreed": da.agreed,
+			"disagreed": da.disagreed, "unmatched": da.unmatched,
+		}
+	}
 	res.Resources.Generator["publisher"] = r.publisherEvidence()
 	res.Resources.Generator["resource_stages"] = r.resourceEvidence()
 	r.valid.TimingValid = r.computeTimingValidity()

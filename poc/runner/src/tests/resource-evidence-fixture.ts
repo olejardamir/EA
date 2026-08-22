@@ -36,3 +36,27 @@ export function validRedisEvidence(): Record<string, number | null> {
     connected_clients: 8,
   }
 }
+
+// R14: explicit deep-cohort head-agreement account (256 per shard).
+export function validDeepAgreement(): Record<string, unknown> {
+  return { expected: 256, agreed: 256, disagreed: 0, unmatched: 0 }
+}
+
+// R15: every mandatory terminal-gated correctness field present at zero.
+export function validCorrectnessCounters(): Record<string, number> {
+  const keys = [
+    "missing_sequences", "duplicates", "out_of_order",
+    "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
+    "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count",
+    "state_violations", "canonical_payload_state_violations", "lobby_malformed",
+    "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations",
+    "reconnect_missing_raw_id",
+    "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
+    "restart_failover_connection_failures", "restart_failover_unexpected_disconnects",
+    "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects",
+    "connection_failures", "unexpected_disconnects",
+    "agreement_violations", "state_agreement_violations",
+    "deep_unmatched",
+  ]
+  return Object.fromEntries(keys.map((key) => [key, 0]))
+}

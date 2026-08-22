@@ -5,7 +5,7 @@ import type { GlobalExperimentResult, ShardExperimentResult } from "../applicati
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
-import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence, validDeepAgreement, validCorrectnessCounters } from "./resource-evidence-fixture.js"
 import {
   bystanderRestartStructuredEvidence,
   validOwnerRestartStructuredEvidence,
@@ -50,9 +50,9 @@ function campaignShard(index: number, shardId: number): ShardExperimentResult {
       late_join: { max_ms: 30_000, total_count: 64, overflow_count: 0, buckets: [[20, 64]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[30, 1]] },
     },
-    correctness_counters: {},
+    correctness_counters: validCorrectnessCounters(),
     workload: { events_published: owner ? 100 : 0, phase_rates: [] },
-    resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000 }, redis: validRedisEvidence() },
+    resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages(), deep_agreement: validDeepAgreement() }, nchan: { memory_peak_run_bytes: 1000 }, redis: validRedisEvidence() },
     scenarios: [{
       name: "restart-replacement",
       participated: owner || shardId === 3,
@@ -94,7 +94,7 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
       late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 256, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 256, overflow_count: 0, buckets: [[20, 256]] } },
       burst: { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[30, 4]] } },
     },
-    correctness_counters: { missing_sequences: 0 },
+    correctness_counters: validCorrectnessCounters(),
     per_shard_generator_validity: [],
     resources: {
       nchan_partitions: [0, 1, 2, 3].map((shard_id) => ({ shard_id, partition_id: shard_id, evidence: { memory_peak_run_bytes: 1000 } as Record<string, number | null> })),

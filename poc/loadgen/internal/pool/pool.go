@@ -669,6 +669,13 @@ func (p *Pool) DeepHeadAgreement(heads map[string]CanonicalHead) (agreed, disagr
 	return agreed, disagreed, unmatched
 }
 
+// DeepExpected returns the configured deep-cohort denominator for this pool:
+// the exact number of clients every head-agreement account must classify into
+// exactly one of agreed/disagreed/unmatched.
+func (p *Pool) DeepExpected() int64 {
+	return int64(len(p.deepIdx))
+}
+
 func resetContinuity(st *ClientState) {
 	st.SawFrame = false
 	st.LastSeq = 0

@@ -22,7 +22,7 @@ import {
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
-import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence, validDeepAgreement, validCorrectnessCounters } from "./resource-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -106,25 +106,13 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       burst: histogram([15]),
       surge_fan_out: histogram([12, 18]),
     },
-    correctness_counters: {
-      missing_sequences: 0,
-      duplicates: 0,
-      out_of_order: 0,
-      reconnect_gaps: 0,
-      reconnect_duplicates: 0,
-      reconnect_order_violations: 0,
-      restart_failover_gaps: 0,
-      restart_failover_duplicates: 0,
-      restart_failover_order_violations: 0,
-      restart_failover_connection_failures: 0,
-      restart_failover_unexpected_disconnects: 0,
-    },
+    correctness_counters: validCorrectnessCounters(),
     workload: {
       events_published: owner ? 100 : 0,
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages(), deep_agreement: validDeepAgreement() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: validRedisEvidence(),
     },
@@ -514,7 +502,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     await completeBarriers(coordinator)
     coordinator.submitResult(shardResult(0))
     coordinator.submitResult(shardResult(1, {
-      correctness_counters: { missing_sequences: 0, duplicates: 3, out_of_order: 0, reconnect_gaps: 0, reconnect_duplicates: 0, reconnect_order_violations: 0, restart_failover_gaps: 0, restart_failover_duplicates: 0, restart_failover_order_violations: 0, restart_failover_connection_failures: 0, restart_failover_unexpected_disconnects: 0 },
+      correctness_counters: { ...validCorrectnessCounters(), duplicates: 3 },
     }))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "REJECT")
@@ -973,5 +961,122 @@ describe("R12 resource-stage cross-check", () => {
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "INCONCLUSIVE")
     assert.ok(result.validity.reasons.some((reason) => reason.includes("Redis connected_clients missing or non-numeric")))
+  })
+})
+
+// R14: the deep-cohort denominator/head agreement must be explicit — 256
+// expected per shard, closing exactly, zero disagreements and unmatched.
+describe("R14 deep-cohort denominator/head-agreement cross-check", () => {
+  function deepCase(name: string, mutate: (target: ShardExperimentResult) => void, expectedVerdict: "INCONCLUSIVE" | "REJECT", expectedReason: string): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const target = shardResult(1)
+      mutate(target)
+      coordinator.submitResult(shardResult(0))
+      coordinator.submitResult(target)
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, expectedVerdict, `reasons: ${JSON.stringify(result.validity.reasons)}`)
+      assert.ok(
+        result.validity.reasons.some((reason) => reason.includes(expectedReason)) ||
+        JSON.stringify(result).includes(expectedReason),
+        `expected "${expectedReason}" in output`,
+      )
+    })
+  }
+
+  deepCase(
+    "rejects a shard without structured deep-agreement evidence",
+    (target) => { delete (target.resources.generator as Record<string, unknown>).deep_agreement },
+    "INCONCLUSIVE",
+    "missing structured deep-cohort head-agreement evidence",
+  )
+  deepCase(
+    "rejects a deep-cohort denominator below the frozen 256",
+    (target) => {
+      ;((target.resources.generator as Record<string, unknown>)["deep_agreement"] as Record<string, unknown>)["expected"] = 255
+    },
+    "INCONCLUSIVE",
+    "deep cohort expected 255 != frozen 256",
+  )
+  deepCase(
+    "rejects a deep account whose categories do not close",
+    (target) => {
+      ;((target.resources.generator as Record<string, unknown>)["deep_agreement"] as Record<string, unknown>)["agreed"] = 250
+    },
+    "INCONCLUSIVE",
+    "does not close",
+  )
+
+  it("rejects an explicit unmatched deep client via the terminal counter", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const target = shardResult(1)
+    target.correctness_counters = { ...target.correctness_counters, deep_unmatched: 1 }
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(target)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "REJECT")
+    assert.ok(JSON.stringify(result).includes("deep_unmatched=1"))
+  })
+
+  it("accepts a healthy run with a full 256/256 closed deep account", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(shardResult(1))
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "ACCEPT")
+  })
+})
+
+// R15: mandatory correctness fields must be present and numeric before any
+// zero comparison — missing/null/nonnumeric is INCONCLUSIVE, never `?? 0`.
+describe("R15 mandatory correctness field presence", () => {
+  it("invalidates when a mandatory counter is absent from a shard", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const bad = shardResult(1)
+    delete (bad.correctness_counters as Record<string, unknown>)["invalid_timestamp_count"]
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(bad)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("mandatory correctness field invalid_timestamp_count missing or non-numeric")))
+  })
+
+  it("invalidates on NaN instead of coercing to zero", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const bad = shardResult(1)
+    bad.correctness_counters = { ...bad.correctness_counters, state_violations: Number.NaN }
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(bad)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("state_violations missing or non-numeric")))
+  })
+
+  it("invalidates on Infinity instead of gating it as large", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const bad = shardResult(1)
+    bad.correctness_counters = { ...bad.correctness_counters, reconnect_gaps: Number.POSITIVE_INFINITY }
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(bad)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "INCONCLUSIVE")
+  })
+
+  it("still REJECTS a finite nonzero mandatory counter after presence passes", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const bad = shardResult(1)
+    bad.correctness_counters = { ...bad.correctness_counters, schema_validation_errors: 4 }
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(bad)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "REJECT")
+    assert.ok(JSON.stringify(result).includes("schema_validation_errors=4"))
   })
 })

@@ -509,8 +509,34 @@ export class GlobalExperimentCoordinator {
         correctnessCounters[name] = (correctnessCounters[name] ?? 0) + value
       }
     }
-    for (const name of ["missing_sequences", "duplicates", "out_of_order", "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors", "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count", "state_violations", "canonical_payload_state_violations", "lobby_malformed", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations", "restart_failover_connection_failures", "restart_failover_unexpected_disconnects", "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects"]) {
-      if ((correctnessCounters[name] ?? 0) > 0) rejectReasons.push(`${name}=${correctnessCounters[name]}`)
+    // R15: exact mandatory correctness-field list. Presence is checked first
+    // (missing/null/nonnumeric/NaN/Infinity -> INCONCLUSIVE, never `?? 0`);
+    // only then is the zero comparison applied.
+    const MANDATORY_CORRECTNESS_FIELDS = [
+      "missing_sequences", "duplicates", "out_of_order",
+      "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
+      "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count",
+      "state_violations", "canonical_payload_state_violations", "lobby_malformed",
+      "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations",
+      "reconnect_missing_raw_id",
+      "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
+      "restart_failover_connection_failures", "restart_failover_unexpected_disconnects",
+      "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects",
+      "connection_failures", "unexpected_disconnects",
+      "agreement_violations", "state_agreement_violations",
+      "deep_unmatched",
+    ] as const
+    for (const result of shardResults) {
+      for (const name of MANDATORY_CORRECTNESS_FIELDS) {
+        const value = result.correctness_counters[name]
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          validityReasons.push(`shard ${result.shard_id} mandatory correctness field ${name} missing or non-numeric`)
+        }
+      }
+    }
+    for (const name of MANDATORY_CORRECTNESS_FIELDS) {
+      const total = correctnessCounters[name]
+      if (typeof total === "number" && Number.isFinite(total) && total > 0) rejectReasons.push(`${name}=${total}`)
     }
 
     // R03 cross-check: the measured restart window deltas in each shard's
@@ -749,6 +775,51 @@ export class GlobalExperimentCoordinator {
           validityReasons.push(`shard ${result.shard_id} Redis ${field} missing or non-numeric`)
         }
       }
+    }
+
+    // R14: the deep-cohort denominator/head agreement must be explicit on
+    // every shard — 256 expected deep clients each landing in exactly one of
+    // agreed/disagreed/unmatched, and globally 256 per shard (1024 at four
+    // shards) with zero disagreements and zero unmatched clients.
+    const DEEP_PER_SHARD = 256
+    let globalDeepExpected = 0
+    let globalDeepAgreed = 0
+    let globalDeepDisagreed = 0
+    let globalDeepUnmatched = 0
+    for (const result of shardResults) {
+      const da = (result.resources.generator as Record<string, unknown>)["deep_agreement"]
+      if (!da || typeof da !== "object") {
+        validityReasons.push(`shard ${result.shard_id} missing structured deep-cohort head-agreement evidence`)
+        continue
+      }
+      const d = da as Record<string, unknown>
+      const fields = ["expected", "agreed", "disagreed", "unmatched"]
+      if (fields.some((field) => typeof d[field] !== "number" || !Number.isFinite(d[field] as number))) {
+        validityReasons.push(`shard ${result.shard_id} deep-cohort agreement fields missing or non-numeric`)
+        continue
+      }
+      const expected = d["expected"] as number
+      const agreed = d["agreed"] as number
+      const disagreed = d["disagreed"] as number
+      const unmatched = d["unmatched"] as number
+      if (expected !== DEEP_PER_SHARD) {
+        validityReasons.push(`shard ${result.shard_id} deep cohort expected ${expected} != frozen ${DEEP_PER_SHARD}`)
+        continue
+      }
+      if (agreed + disagreed + unmatched !== expected) {
+        validityReasons.push(`shard ${result.shard_id} deep-cohort accounting does not close: ${agreed}+${disagreed}+${unmatched} != ${expected}`)
+        continue
+      }
+      globalDeepExpected += expected
+      globalDeepAgreed += agreed
+      globalDeepDisagreed += disagreed
+      globalDeepUnmatched += unmatched
+    }
+    if (shardResults.length === this.shardCount && this.registrations.size === this.shardCount &&
+      globalDeepExpected !== DEEP_PER_SHARD * this.shardCount) {
+      validityReasons.push(`global deep-cohort denominator ${globalDeepExpected} != ${DEEP_PER_SHARD * this.shardCount}`)
+    } else if (globalDeepExpected > 0 && (globalDeepAgreed !== globalDeepExpected || globalDeepDisagreed !== 0 || globalDeepUnmatched !== 0)) {
+      rejectReasons.push(`global deep head agreement ${globalDeepAgreed}/${globalDeepExpected} disagreed=${globalDeepDisagreed} unmatched=${globalDeepUnmatched}`)
     }
 
     // R04: machine-proven surge population/deadline gates. Every shard must

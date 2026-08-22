@@ -15,7 +15,7 @@ import {
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
-import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence, validDeepAgreement, validCorrectnessCounters } from "./resource-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 const SHARDS = 2
@@ -150,25 +150,13 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
       surge_fan_out: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[12, 1], [18, 1]] },
     },
-    correctness_counters: {
-      missing_sequences: 0,
-      duplicates: 0,
-      out_of_order: 0,
-      reconnect_gaps: 0,
-      reconnect_duplicates: 0,
-      reconnect_order_violations: 0,
-      restart_failover_gaps: 0,
-      restart_failover_duplicates: 0,
-      restart_failover_order_violations: 0,
-      restart_failover_connection_failures: 0,
-      restart_failover_unexpected_disconnects: 0,
-    },
+    correctness_counters: validCorrectnessCounters(),
     workload: {
       events_published: owner ? 40 : 0,
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages(), deep_agreement: validDeepAgreement() },
       nchan: { memory_peak_run_bytes: 1234, oom_kill_events: 0 },
       redis: validRedisEvidence(),
     },
