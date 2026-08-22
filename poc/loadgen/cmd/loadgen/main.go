@@ -1146,6 +1146,10 @@ func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioE
 	// Owner/bystander partitions measure their own restart-phase correctness
 	// window: any gap/duplicate/order violation observed while the target
 	// shard fails over is real evidence and must reach the top-level counters.
+	// The wall-clock duration of this window is mandatory measured timing
+	// evidence on EVERY shard (R10): the failover window is exactly what each
+	// non-target partition observes between entering and leaving the drill.
+	windowStart := time.Now()
 	before := takeSnapshot(r.pool)
 	var scenario coordinator.ScenarioEvidence
 	if r.cfg.publisherOwner {
@@ -1160,6 +1164,7 @@ func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioE
 		}
 	}
 	delta := takeSnapshot(r.pool).sub(before)
+	r.markRestartWindow(time.Since(windowStart).Milliseconds())
 	r.restartDelta = &delta
 	if scenario.Structured == nil {
 		scenario.Structured = map[string]any{}
@@ -1247,6 +1252,16 @@ func (r *shardRun) runSpareProbe(ctx context.Context) coordinator.ScenarioEviden
 // resume → settle → prove the spare's post-restart history for match_001
 // exact. Pool continuity deltas across the window are the assignment's
 // restart_failover_* metrics; any real failure blocks the drill.
+// markRestartWindow records the measured restart window as mandatory timing
+// evidence. Every shard measures it: the restart target times the literal
+// node restart; owner/bystander shards time their observed failover window.
+func (r *shardRun) markRestartWindow(windowMs int64) {
+	r.timingMu.Lock()
+	r.restartWindowMs = windowMs
+	r.restartMeasured = true
+	r.timingMu.Unlock()
+}
+
 func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvidence {
 	structured := r.restartIdentity()
 	structured["paths"] = map[string]any{}
@@ -1282,9 +1297,7 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 	}
 	restartMs := time.Since(restartStart).Milliseconds()
 	r.timingMu.Lock()
-	r.restartWindowMs = restartMs
-	r.restartMeasured = true
-	r.timingMu.Unlock()
+	r.markRestartWindow(restartMs)
 
 	r.pool.SetSpare(r.cfg.spareSubURL)
 	r.pool.ReleaseDrain()

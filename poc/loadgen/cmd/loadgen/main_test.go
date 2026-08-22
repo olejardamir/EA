@@ -2015,3 +2015,37 @@ func TestDeepAgreementOnWire(t *testing.T) {
 		}
 	}
 }
+
+// §27 ladder regression (R10 follow-up): EVERY shard must carry a measured
+// restart window. The markRestartWindow helper is the single choke point used
+// by both the failover drill (restart target) and the owner/bystander
+// observed-window path; marking a positive window must clear the timing gate
+// on any shard role, and a non-positive window stays invalid.
+func TestMarkRestartWindowMeasuredOnEveryShardRole(t *testing.T) {
+	for _, shardID := range []int{0, 1, 2, 3} {
+		r, p := testShardRun(testConfig(shardID))
+		defer p.Stop()
+		r.timingMu.Lock()
+		r.restartMeasured = false
+		r.timingMu.Unlock()
+
+		r.markRestartWindow(42)
+		if !r.restartMeasured {
+			t.Fatalf("shard %d: window not marked as measured", shardID)
+		}
+		res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+			map[string]*deep.PathResult{},
+			struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+		if hasTimingReason(res, "restart window was never measured") {
+			t.Fatalf("shard %d: measured window still flagged unmeasured: %+v", shardID, res.Validity.Reasons)
+		}
+
+		r.markRestartWindow(0)
+		res = r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+			map[string]*deep.PathResult{},
+			struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+		if !hasTimingReason(res, "not a positive measurement") {
+			t.Fatalf("shard %d: zero window accepted as valid timing: %+v", shardID, res.Validity.Reasons)
+		}
+	}
+}
