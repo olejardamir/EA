@@ -1057,7 +1057,7 @@ func (r *shardRun) assembleResult(
 	burst := r.pool.BurstHistogram()
 	surge := r.pool.SurgeHistogram()
 	merged := hist.New(hist.DefaultMaxMs)
-	for _, s := range []hist.Serialized{goal, other, burst} {
+	for _, s := range []hist.Serialized{goal, other} {
 		_ = merged.Merge(&s)
 	}
 	res.Histograms.FanOut = wire(merged.Serialize())

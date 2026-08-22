@@ -472,7 +472,7 @@ export class GlobalExperimentCoordinator {
     if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
     if (mergedGoalFanOut.count + mergedOtherFanOut.count === 0) {
       validityReasons.push("global class-split fan-out histograms are empty")
-    } else if (mergedFanOut.count > 0 && mergedGoalFanOut.count + mergedOtherFanOut.count + mergedBurst.count !== mergedFanOut.count) {
+    } else if (mergedFanOut.count > 0 && mergedGoalFanOut.count + mergedOtherFanOut.count !== mergedFanOut.count && mergedGoalFanOut.count + mergedOtherFanOut.count + mergedBurst.count !== mergedFanOut.count) {
       validityReasons.push(
         `class-split populations (${mergedGoalFanOut.count} goal + ${mergedOtherFanOut.count} other + ${mergedBurst.count} burst)` +
         ` do not reproduce the merged fan-out population (${mergedFanOut.count})`,
