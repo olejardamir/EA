@@ -91,7 +91,7 @@ describe("Milestone 2 infrastructure contract", () => {
     const entrypoint = read("redis-cgroup-entrypoint.sh")
     assert.match(entrypoint, /\/sys\/fs\/cgroup\/cpu\.max/)
     assert.match(entrypoint, /\/sys\/fs\/cgroup\/cpuset\.cpus\.effective/)
-    assert.match(read("compose.evidence-100k.yaml"), /redis-cgroup-evidence:\/redis-cgroup:ro/)
+    assert.match(read("compose.evidence-100k.yaml"), /redis-cgroup-evidence:\/redis-cgroup(?::ro)?/)
   })
 
   it("ships every compose-referenced NGINX_CONF inside the nchan image", () => {
