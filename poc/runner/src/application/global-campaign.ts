@@ -186,6 +186,10 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
   if (new Set(seeds).size !== runs.length || seeds.some((seed, index) => seed !== seeds[0] + index)) {
     reasons.push("seeds must be unique and contiguous from the frozen base")
   }
+  // R07: the qualifying campaign always starts at the frozen base seed 42.
+  if (seeds.length > 0 && seeds[0] !== 42) {
+    reasons.push(`campaign base seed ${seeds[0]} != frozen qualifying base seed 42`)
+  }
   if (policy.base_seed !== undefined && seeds.some((seed, index) => seed !== policy.base_seed! + index)) {
     reasons.push("seeds do not match frozen base-seed policy")
   }
@@ -204,8 +208,12 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
   const otherFanOut = mergeHistograms(runs.map((run) => run.histograms?.other_fan_out?.distribution ?? EMPTY_DISTRIBUTION))
   const lateJoin = mergeHistograms(runs.map((run) => run.histograms?.late_join?.distribution ?? EMPTY_DISTRIBUTION))
   const burst = mergeHistograms(runs.map((run) => run.histograms?.burst?.distribution ?? EMPTY_DISTRIBUTION))
-  if (lateJoin.count < runs.length * (runs[0]?.shard_count ?? 1)) {
-    reasons.push(`campaign late-join cohort ${lateJoin.count} < required ${runs.length * (runs[0]?.shard_count ?? 1)}`)
+  // R08: the campaign independently requires the EXACT late-join cardinality
+  // (runs × shards × 64 = 768 for the frozen 3×4 topology). A weak >= check
+  // would accept over-sampled or partial evidence; 767 and 769 are both invalid.
+  const requiredCampaignLateJoin = runs.length * (runs[0]?.shard_count ?? 1) * 64
+  if (lateJoin.count !== requiredCampaignLateJoin) {
+    reasons.push(`campaign late-join cohort ${lateJoin.count} != exact ${requiredCampaignLateJoin}`)
   }
   const correctnessCounters: Record<string, number> = {}
   for (const run of runs) {

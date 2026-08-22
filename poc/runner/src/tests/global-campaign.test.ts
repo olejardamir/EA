@@ -198,6 +198,53 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     assert.equal(result.verdict, "ACCEPT")
   })
 
+  // R07: the qualifying campaign is frozen to base seed 42 (runs 42,43,44).
+  it("rejects a campaign that does not start at frozen base seed 42", () => {
+    const shifted = [0, 1, 2].map((index) => globalRun(index, { seed: 7 + index }))
+    const result = aggregateGlobalCampaign(shifted)
+    assert.equal(result.validity.valid, false)
+    assert.match(result.validity.reasons.join(" "), /base seed 7 != frozen qualifying base seed 42/)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+  })
+
+  // R08: the campaign late-join cardinality must be EXACTLY runs × shards × 64
+  // (= 768 for the frozen 3×4 topology); a weak >= check would accept both.
+  // The delta is applied to one run's distribution so the merged campaign
+  // cohort lands exactly on the probed cardinality.
+  function withCampaignLateJoin(count: number) {
+    const delta = count - 768
+    return [0, 1, 2].map((index) => {
+      const run = globalRun(index)
+      const runCount = index === 2 ? 256 + delta : 256
+      run.histograms.late_join = {
+        p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20,
+        count: runCount,
+        overflow_count: 0,
+        distribution: { max_ms: 30_000, total_count: runCount, overflow_count: 0, buckets: [[20, runCount]] },
+      }
+      return run
+    })
+  }
+
+  it("accepts the exact campaign late-join cardinality of 768", () => {
+    const result = aggregateGlobalCampaign(withCampaignLateJoin(768))
+    assert.equal(result.histograms.late_join.count, 768)
+    assert.ok(!result.validity.reasons.some((reason) => reason.includes("late-join cohort")))
+    assert.equal(result.verdict, "ACCEPT")
+  })
+
+  it("rejects a campaign late-join cardinality of 767", () => {
+    const result = aggregateGlobalCampaign(withCampaignLateJoin(767))
+    assert.match(result.validity.reasons.join(" "), /campaign late-join cohort 767 != exact 768/)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+  })
+
+  it("rejects a campaign late-join cardinality of 769", () => {
+    const result = aggregateGlobalCampaign(withCampaignLateJoin(769))
+    assert.match(result.validity.reasons.join(" "), /campaign late-join cohort 769 != exact 768/)
+    assert.equal(result.verdict, "INCONCLUSIVE")
+  })
+
   it("rejects below-consumed-position substitution in owner restart evidence", () => {
     // §v2.1.1 §10: live tail ABOVE the frozen range is diagnostic-only, but
     // frames BELOW the consumed position remain a fatal replay defect.

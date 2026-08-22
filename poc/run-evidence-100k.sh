@@ -32,6 +32,9 @@ export CAMPAIGN_ID CAMPAIGN_STARTED_AT_MS
   exit 2
 }
 [[ "$BASE_GLOBAL_SEED" =~ ^[0-9]+$ ]] || { echo "BASE_GLOBAL_SEED must be an integer" >&2; exit 2; }
+# R07: qualifying mode is frozen to base seed 42 (runs 42,43,44). Development
+# probes with other seeds must use the non-qualifying probe path.
+[[ "$BASE_GLOBAL_SEED" == "42" ]] || { echo "BASE_GLOBAL_SEED must be the frozen qualifying base seed 42" >&2; exit 2; }
 [[ "$CAMPAIGN_ID" == "$COMPOSE_PROJECT_NAME" ]] || { echo "CAMPAIGN_ID must equal COMPOSE_PROJECT_NAME" >&2; exit 2; }
 [[ "$COMPOSE_PROJECT_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]+$ ]] || { echo "Invalid COMPOSE_PROJECT_NAME" >&2; exit 2; }
 

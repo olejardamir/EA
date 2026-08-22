@@ -5,8 +5,8 @@ import type { GlobalExperimentResult } from "./application/global-coordinator.js
 
 const directory = process.env.GLOBAL_EVIDENCE_DIR ?? "/evidence"
 const runCount = Number.parseInt(process.env.GLOBAL_RUNS ?? "3", 10)
-if (!Number.isInteger(runCount) || runCount < 3 || runCount > 8) {
-  throw new Error("GLOBAL_RUNS must be in the frozen 3..8 range")
+if (!Number.isInteger(runCount) || runCount !== 3) {
+  throw new Error("GLOBAL_RUNS must be the frozen qualifying value 3")
 }
 const campaignId = process.env.CAMPAIGN_ID
 const sourceCommit = process.env.GIT_COMMIT_SHA
@@ -15,6 +15,7 @@ const campaignStartedAtMs = Number.parseInt(process.env.CAMPAIGN_STARTED_AT_MS ?
 if (!campaignId?.trim()) throw new Error("CAMPAIGN_ID is required for campaign aggregation")
 if (!sourceCommit || !/^[0-9a-f]{40}$/i.test(sourceCommit)) throw new Error("GIT_COMMIT_SHA must be a full SHA")
 if (!Number.isInteger(baseSeed)) throw new Error("BASE_GLOBAL_SEED must be an integer")
+if (baseSeed !== 42) throw new Error("BASE_GLOBAL_SEED must be the frozen qualifying base seed 42 (runs 42,43,44)")
 if (!Number.isInteger(campaignStartedAtMs) || campaignStartedAtMs <= 0) throw new Error("CAMPAIGN_STARTED_AT_MS must be a positive integer")
 
 const outputPath = path.join(directory, "campaign-result.json")
