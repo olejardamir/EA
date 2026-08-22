@@ -1,5 +1,5 @@
 # Non-qualifying development probe overrides for the partitioned 100k topology
-# (contract v2.1.0 §Qualification discipline). This file NEVER participates in
+# (contract v2.2.0 §Qualification discipline). This file NEVER participates in
 # a qualifying campaign: qualifying runs use ./run-evidence-100k.sh alone.
 #
 # Usage (10k example):
@@ -8,12 +8,15 @@
 #   EXPERIMENT_RUN_ID=probe-10k-run0 \
 #   docker compose -f compose.evidence-100k.yaml -f compose.probe.yaml \
 #     up --build --force-recreate --abort-on-container-exit --exit-code-from coordinator
+#
+# Supports both the legacy TS runner shards (pre-v2.2.0) and the current
+# Go loadgen shards (v2.2.0 qualifying path).
 services:
   coordinator:
     environment:
       GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
 
-  runner-shard-0:
+  loadgen-shard-0:
     environment:
       GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
       TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
@@ -21,10 +24,9 @@ services:
       MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
       BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
       SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
-      DUP_DEBUG: "${DUP_DEBUG:-0}"
-      PUB_DEBUG: "${PUB_DEBUG:-0}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
 
-  runner-shard-1:
+  loadgen-shard-1:
     environment:
       GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
       TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
@@ -32,10 +34,9 @@ services:
       MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
       BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
       SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
-      DUP_DEBUG: "${DUP_DEBUG:-0}"
-      PUB_DEBUG: "${PUB_DEBUG:-0}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
 
-  runner-shard-2:
+  loadgen-shard-2:
     environment:
       GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
       TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
@@ -43,10 +44,9 @@ services:
       MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
       BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
       SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
-      DUP_DEBUG: "${DUP_DEBUG:-0}"
-      PUB_DEBUG: "${PUB_DEBUG:-0}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
 
-  runner-shard-3:
+  loadgen-shard-3:
     environment:
       GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
       TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
@@ -54,5 +54,4 @@ services:
       MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
       BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
       SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
-      DUP_DEBUG: "${DUP_DEBUG:-0}"
-      PUB_DEBUG: "${PUB_DEBUG:-0}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
