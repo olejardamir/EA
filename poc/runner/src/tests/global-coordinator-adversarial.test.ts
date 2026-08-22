@@ -22,6 +22,7 @@ import {
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -123,9 +124,9 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
-      redis: owner ? { memory_used_bytes: 500 } : {},
+      redis: validRedisEvidence(),
     },
     scenarios: [
       validSurgeScenarioEvidence({ shard_id: shardId, shard_count: 2 }),
@@ -874,5 +875,103 @@ describe("R11 publisher health and event-rate cross-check", () => {
     const result = coordinator.buildGlobalResult()
     assert.notEqual(result.verdict, "ACCEPT")
     assert.equal(result.global_direct_accept_eligible, false)
+  })
+})
+
+// R12: DUT resource evidence must span the workload — seven mandated stages
+// with numeric mandatory fields on every shard, mandatory spare coverage on
+// the restart target, and REJECT-level violations for OOM/memory ceilings.
+describe("R12 resource-stage cross-check", () => {
+  function resourceCase(name: string, mutate: (result: ShardExperimentResult) => void, expectedVerdict: "INCONCLUSIVE" | "REJECT", expectedReason: string): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const target = shardResult(1) // shardCount-1 = restart target
+      mutate(target)
+      coordinator.submitResult(shardResult(0))
+      coordinator.submitResult(target)
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, expectedVerdict, `reasons: ${JSON.stringify(result.validity.reasons)} + ${JSON.stringify((result as unknown as { _reject?: string[] })._reject ?? result.validity.reasons)}`)
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(
+        result.validity.reasons.some((reason) => reason.includes(expectedReason)) ||
+        JSON.stringify(result).includes(expectedReason),
+        `expected "${expectedReason}" in validity output`,
+      )
+    })
+  }
+
+  resourceCase(
+    "rejects a shard with no structured resource-stage evidence",
+    (target) => { delete (target.resources.generator as Record<string, unknown>).resource_stages },
+    "INCONCLUSIVE",
+    "missing structured resource-stage evidence",
+  )
+  resourceCase(
+    "rejects a resource stage that was never captured",
+    (target) => {
+      const root = (target.resources.generator as Record<string, unknown>).resource_stages as Record<string, unknown>
+      delete ((root["partition_stages"] as Record<string, unknown>)["post_surge"])
+    },
+    "INCONCLUSIVE",
+    "resource stage post_surge never captured",
+  )
+  resourceCase(
+    "rejects a non-numeric mandatory resource field (no zero coercion)",
+    (target) => {
+      const root = (target.resources.generator as Record<string, unknown>).resource_stages as Record<string, unknown>
+      ;(((root["partition_stages"] as Record<string, unknown>)["final"]) as Record<string, unknown>)["cpu_throttled_usec"] = null as unknown as number
+    },
+    "INCONCLUSIVE",
+    "field cpu_throttled_usec missing or non-numeric",
+  )
+  resourceCase(
+    "rejects a memory peak at the frozen ceiling",
+    (target) => {
+      const root = (target.resources.generator as Record<string, unknown>).resource_stages as Record<string, unknown>
+      ;(((root["partition_stages"] as Record<string, unknown>)["post_steady"]) as Record<string, unknown>)["memory_peak_bytes"] = 5_637_144_576
+    },
+    "REJECT",
+    "memory peak 5637144576 >= limit 5637144576",
+  )
+  resourceCase(
+    "rejects an OOM-kill delta across the run",
+    (target) => {
+      const root = (target.resources.generator as Record<string, unknown>).resource_stages as Record<string, unknown>
+      ;(((root["partition_stages"] as Record<string, unknown>)["final"]) as Record<string, unknown>)["oom_kill_events"] = 2
+    },
+    "REJECT",
+    "OOM-kill delta 2 > 0 across the run",
+  )
+  resourceCase(
+    "rejects missing spare resource evidence on the restart target",
+    (target) => {
+      const root = (target.resources.generator as Record<string, unknown>).resource_stages as Record<string, unknown>
+      delete root["spare_stages"]
+    },
+    "INCONCLUSIVE",
+    "spare resource evidence missing",
+  )
+
+  it("accepts a healthy run with complete resource and Redis evidence", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(shardResult(1))
+    const result = coordinator.buildGlobalResult()
+    assert.ok(!result.validity.reasons.some((reason) => reason.includes("resource") || reason.includes("Redis")), `no resource/Redis reasons expected, got: ${JSON.stringify(result.validity.reasons)}`)
+    assert.equal(result.verdict, "ACCEPT")
+  })
+
+  it("invalidates a shard whose Redis evidence lost a required field", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const bad = shardResult(1)
+    delete (bad.resources.redis as Record<string, unknown>).connected_clients
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(bad)
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("Redis connected_clients missing or non-numeric")))
   })
 })

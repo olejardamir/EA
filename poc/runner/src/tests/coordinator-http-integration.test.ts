@@ -15,6 +15,7 @@ import {
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 const SHARDS = 2
@@ -167,9 +168,9 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() },
       nchan: { memory_peak_run_bytes: 1234, oom_kill_events: 0 },
-      redis: owner ? { memory_used_bytes: 500 } : {},
+      redis: validRedisEvidence(),
     },
     scenarios: [
       validSurgeScenarioEvidence({ shard_id: shardId, shard_count: SHARDS, global_target: GLOBAL_TARGET }),

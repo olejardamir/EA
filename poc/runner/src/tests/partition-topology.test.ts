@@ -19,6 +19,7 @@ import {
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
 
 // §v2.1.0 partition-topology tests: connection ownership, event routing,
 // aggregation, history sampling, failure/replacement roles, and per-partition
@@ -136,9 +137,9 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
-      redis: owner ? { memory_used_bytes: 500 } : {},
+      redis: validRedisEvidence(),
       ...(target ? { spare: { memory_peak_run_bytes: 800, oom_kill_events: 0 } } : {}),
     },
     scenarios: [
@@ -238,7 +239,7 @@ describe("partition topology (§v2.1.0)", () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
     coordinator.submitResult(shardResult(0))
-    coordinator.submitResult(shardResult(1, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() }, nchan: { memory_peak_run_bytes: 1000 }, redis: {} } }))
+    coordinator.submitResult(shardResult(1, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000 }, redis: validRedisEvidence() } }))
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "INCONCLUSIVE")
@@ -248,9 +249,9 @@ describe("partition topology (§v2.1.0)", () => {
   it("takes spare-node evidence only from the restart-target shard", async () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: { memory_used_bytes: 500 }, spare: { oom_kill_events: 0 } } }))
+    coordinator.submitResult(shardResult(0, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: validRedisEvidence(), spare: { oom_kill_events: 0 } } }))
     coordinator.submitResult(shardResult(1))
-    coordinator.submitResult(shardResult(2, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: {} } }))
+    coordinator.submitResult(shardResult(2, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: validRedisEvidence() } }))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.resources.nchan_spare, null)
   })
@@ -258,7 +259,7 @@ describe("partition topology (§v2.1.0)", () => {
   it("invalidates when shared Redis memory bytes are missing from the owner", async () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: {} } }))
+    coordinator.submitResult(shardResult(0, { resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 }, redis: (({ memory_used_bytes: _dropped, ...rest }) => rest)(validRedisEvidence()) } }))
     coordinator.submitResult(shardResult(1))
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()

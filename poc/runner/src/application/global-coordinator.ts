@@ -668,6 +668,89 @@ export class GlobalExperimentCoordinator {
       }
     }
 
+    // R12 cross-check: DUT resource evidence must span the workload. Every
+    // shard carries the seven mandated stage snapshots with numeric mandatory
+    // fields; the restart target additionally proves the spare across failover.
+    // Missing evidence is INCONCLUSIVE; hard violations (OOM-kill delta,
+    // memory ceiling) are REJECT-level with a valid generator.
+    const RESOURCE_STAGES = [
+      "baseline", "post_steady", "post_surge", "post_burst",
+      "post_reconnect", "post_restart", "final",
+    ] as const
+    const RESOURCE_FIELDS = [
+      "memory_current_bytes", "memory_peak_bytes", "cpu_usage_usec",
+      "cpu_throttled_count", "cpu_throttled_usec", "memory_oom_events",
+      "oom_kill_events",
+    ] as const
+    for (const result of shardResults) {
+      const stagesRoot = (result.resources.generator as Record<string, unknown>)["resource_stages"]
+      if (!stagesRoot || typeof stagesRoot !== "object") {
+        validityReasons.push(`shard ${result.shard_id} missing structured resource-stage evidence`)
+        continue
+      }
+      const partitionStages = (stagesRoot as Record<string, unknown>)["partition_stages"]
+      if (!partitionStages || typeof partitionStages !== "object") {
+        validityReasons.push(`shard ${result.shard_id} resource evidence has no partition stages`)
+        continue
+      }
+      const stages = partitionStages as Record<string, unknown>
+      let baselineOomKill: number | null = null
+      let finalOomKill: number | null = null
+      for (const stage of RESOURCE_STAGES) {
+        const snap = stages[stage]
+        if (!snap || typeof snap !== "object") {
+          validityReasons.push(`shard ${result.shard_id} resource stage ${stage} never captured`)
+          continue
+        }
+        const s = snap as Record<string, unknown>
+        for (const field of RESOURCE_FIELDS) {
+          if (typeof s[field] !== "number" || !Number.isFinite(s[field] as number)) {
+            validityReasons.push(`shard ${result.shard_id} resource stage ${stage} field ${field} missing or non-numeric`)
+          }
+        }
+        if (typeof s.memory_peak_bytes === "number" && s.memory_peak_bytes >= 5_637_144_576) {
+          rejectReasons.push(`shard ${result.shard_id} memory peak ${s.memory_peak_bytes} >= limit 5637144576 at stage ${stage}`)
+        }
+        if (stage === "baseline" && typeof s.oom_kill_events === "number") baselineOomKill = s.oom_kill_events
+        if (stage === "final" && typeof s.oom_kill_events === "number") finalOomKill = s.oom_kill_events
+      }
+      if (baselineOomKill !== null && finalOomKill !== null && finalOomKill - baselineOomKill > 0) {
+        rejectReasons.push(`shard ${result.shard_id} OOM-kill delta ${finalOomKill - baselineOomKill} > 0 across the run`)
+      }
+      // Spare evidence is mandatory across failover on the restart target.
+      if (result.shard_id === this.restartTargetShard) {
+        const spareStagesRaw = (stagesRoot as Record<string, unknown>)["spare_stages"]
+        if (!spareStagesRaw || typeof spareStagesRaw !== "object") {
+          validityReasons.push(`restart target-shard ${result.shard_id} spare resource evidence missing`)
+        } else {
+          const spareStages = spareStagesRaw as Record<string, unknown>
+          for (const stage of ["post_restart", "final"]) {
+            const snap = spareStages[stage]
+            if (!snap || typeof snap !== "object") {
+              validityReasons.push(`spare resource evidence incomplete at stage ${stage}`)
+              continue
+            }
+            const s = snap as Record<string, unknown>
+            for (const field of RESOURCE_FIELDS) {
+              if (typeof s[field] !== "number" || !Number.isFinite(s[field] as number)) {
+                validityReasons.push(`spare resource stage ${stage} field ${field} missing or non-numeric`)
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // R12: required Redis fields must be present and numeric on every shard.
+    for (const result of shardResults) {
+      for (const field of ["memory_used_bytes", "memory_peak_bytes", "connected_clients"]) {
+        const value = result.resources.redis[field]
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          validityReasons.push(`shard ${result.shard_id} Redis ${field} missing or non-numeric`)
+        }
+      }
+    }
+
     // R04: machine-proven surge population/deadline gates. Every shard must
     // carry structured surge evidence; the global sums must hit the exact
     // assignment numbers (start population, +40k attempted AND established,

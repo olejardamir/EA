@@ -5,6 +5,7 @@ import type { GlobalExperimentResult, ShardExperimentResult } from "../applicati
 import { ACTIVE_CONTRACT_VERSION } from "../domain/active-contract.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
 import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
+import { validResourceStages, validRedisEvidence } from "./resource-evidence-fixture.js"
 import {
   bystanderRestartStructuredEvidence,
   validOwnerRestartStructuredEvidence,
@@ -51,7 +52,7 @@ function campaignShard(index: number, shardId: number): ShardExperimentResult {
     },
     correctness_counters: {},
     workload: { events_published: owner ? 100 : 0, phase_rates: [] },
-    resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() }, nchan: { memory_peak_run_bytes: 1000 }, redis: owner ? { memory_used_bytes: 500 } : {} },
+    resources: { generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence(), resource_stages: validResourceStages() }, nchan: { memory_peak_run_bytes: 1000 }, redis: validRedisEvidence() },
     scenarios: [{
       name: "restart-replacement",
       participated: owner || shardId === 3,

@@ -53,6 +53,11 @@ type Preflight struct {
 	NginxWorkerFdSoft *int64 `json:"nginx_worker_fd_soft,omitempty"`
 	NginxWorkerFdHard *int64 `json:"nginx_worker_fd_hard,omitempty"`
 	CpuQuota          *int64 `json:"cpu_quota,omitempty"`
+	// R12: worker-liveness and connection-exhaustion evidence.
+	NginxMasterPid         *int64  `json:"nginx_master_pid"`
+	NginxWorkerPids        []int64 `json:"nginx_worker_pids"`
+	WorkerConnectionsTotal *int64  `json:"worker_connections_total"`
+	NginxActive            *int64  `json:"nginx_active"`
 }
 
 func PreflightPartition(ctx context.Context, controlURL string, target int) (*Preflight, error) {

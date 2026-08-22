@@ -234,13 +234,28 @@ type shardRun struct {
 	// R09: generator's own runtime health measurement for this run.
 	genMon     *dut.GeneratorMonitor
 	genRuntime *dut.GeneratorRuntimeEvidence
-
 	// R11: per-boundary publisher evidence snapshots (owner shard only) so
 	// publisher health and accepted publication rates drive the verdict from
 	// measured counters instead of `events_published > 0`.
-	runCtx    context.Context
+	runCtx     context.Context
 	pubPhaseMu sync.Mutex
-	pubPhase  map[string]*publisher.Evidence
+	pubPhase   map[string]*publisher.Evidence
+
+	// R12: phase-spanning DUT resource snapshots — own partition cgroup
+	// metrics + nginx worker topology at every mandated stage, plus the
+	// spare partition across failover (restart-target shard).
+	resMu         sync.Mutex
+	resSnapshots  map[string]*dut.ControlMetrics
+	prefSnapshots map[string]*dut.Preflight
+	spareResSnaps map[string]*dut.ControlMetrics
+
+	// R12: REJECT-level resource violations (OOM kill, memory limit, worker
+	// death, connection exhaustion) with a valid generator. Recorded apart
+	// from validity reasons so a hard DUT violation is REJECT — not masked to
+	// INCONCLUSIVE by its own note.
+	resourceReject bool
+	rejectNotes    []string
+
 
 	// R10: local wall-clock record of every coordinated phase boundary,
 	// consumed to compute TimingValid from evidence instead of a constant.
@@ -432,7 +447,73 @@ func (r *shardRun) barrier(phase, boundary string) bool {
 			r.logf("publisher snapshot %s:%s failed: %v", phase, boundary, err)
 		}
 	}
+	// R12: phase-spanning DUT resource snapshots (own partition + spare).
+	if r.runCtx != nil {
+		if stage := resourceStage(phase, boundary); stage != "" {
+			r.captureResourceSnapshots(stage)
+		}
+	}
 	return true
+}
+
+// resourceStage maps a coordinated boundary to its mandated R12 resource-
+// evidence stage; empty means the boundary carries no resource snapshot.
+func resourceStage(phase, boundary string) string {
+	switch phase + ":" + boundary {
+	case "preflight:end":
+		return "baseline"
+	case "steady:end":
+		return "post_steady"
+	case "surge:end":
+		return "post_surge"
+	case "burst:end":
+		return "post_burst"
+	case "reconnect:end":
+		return "post_reconnect"
+	case "restart-replacement:end":
+		return "post_restart"
+	case "final-metrics:start":
+		return "final"
+	}
+	return ""
+}
+
+// captureResourceSnapshots fetches this partition's cgroup metrics and nginx
+// worker topology for a mandated stage, plus the spare partition's cgroup
+// metrics when a spare control endpoint is configured.
+func (r *shardRun) captureResourceSnapshots(stage string) {
+	if m, err := dut.GetControlMetrics(r.runCtx, r.cfg.controlURL); err == nil {
+		r.resMu.Lock()
+		if r.resSnapshots == nil {
+			r.resSnapshots = map[string]*dut.ControlMetrics{}
+		}
+		r.resSnapshots[stage] = m
+		r.resMu.Unlock()
+	} else {
+		r.logf("resource snapshot %s (partition) failed: %v", stage, err)
+	}
+	if pf, err := dut.PreflightPartition(r.runCtx, r.cfg.controlURL, max(r.cfg.localTarget, 1)); err == nil {
+		r.resMu.Lock()
+		if r.prefSnapshots == nil {
+			r.prefSnapshots = map[string]*dut.Preflight{}
+		}
+		r.prefSnapshots[stage] = pf
+		r.resMu.Unlock()
+	} else {
+		r.logf("resource snapshot %s (worker topology) failed: %v", stage, err)
+	}
+	if r.cfg.spareControl != "" {
+		if m, err := dut.GetControlMetrics(r.runCtx, r.cfg.spareControl); err == nil {
+			r.resMu.Lock()
+			if r.spareResSnaps == nil {
+				r.spareResSnaps = map[string]*dut.ControlMetrics{}
+			}
+			r.spareResSnaps[stage] = m
+			r.resMu.Unlock()
+		} else {
+			r.logf("resource snapshot %s (spare) failed: %v", stage, err)
+		}
+	}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) bool {
@@ -1534,6 +1615,198 @@ func (r *shardRun) publisherEvidence() map[string]any {
 	return out
 }
 
+// R12 frozen DUT resource limits.
+const (
+	dutMemoryPeakLimitBytes = 5_637_144_576
+)
+
+// resourceStages lists the mandated phase-spanning measurement points in
+// canonical order; every stage must carry complete numeric evidence.
+var resourceStages = []string{
+	"baseline", "post_steady", "post_surge", "post_burst",
+	"post_reconnect", "post_restart", "final",
+}
+
+// rejectf records a REJECT-level resource violation without tainting the
+// INCONCLUSIVE validity-reason channel.
+func (r *shardRun) rejectf(format string, args ...any) {
+	r.resourceReject = true
+	r.rejectNotes = append(r.rejectNotes, fmt.Sprintf(format, args...))
+}
+
+func (r *shardRun) resSnapshot(stage string) (*dut.ControlMetrics, bool) {
+	r.resMu.Lock()
+	defer r.resMu.Unlock()
+	m, ok := r.resSnapshots[stage]
+	return m, ok
+}
+
+func (r *shardRun) prefSnapshot(stage string) (*dut.Preflight, bool) {
+	r.resMu.Lock()
+	defer r.resMu.Unlock()
+	pf, ok := r.prefSnapshots[stage]
+	return pf, ok
+}
+
+// controlMetricsComplete reports whether every mandatory R12 field is present
+// and numeric on a snapshot. Missing evidence is never coerced to zero.
+func controlMetricsComplete(m *dut.ControlMetrics) bool {
+	return m != nil &&
+		m.MemoryCurrentBytes != nil && m.MemoryPeakBytes != nil &&
+		m.CpuUsageUsec != nil && m.CpuThrottledCount != nil && m.CpuThrottledUsec != nil &&
+		m.MemoryOomEvents != nil && m.MemoryOomKillEvents != nil
+}
+
+// workerPidsEqual compares two nginx worker PID sets exactly.
+func workerPidsEqual(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// applyResourceGates applies the frozen R12 rules to the phase-spanning
+// resource evidence: every mandated stage present and numeric, memory peak
+// under the frozen ceiling, zero OOM-kill/throttle deltas across the run,
+// no unplanned nginx worker death, and no worker_connections exhaustion.
+// Missing/malformed evidence is INCONCLUSIVE; hard violations with a valid
+// generator are REJECT-level.
+func (r *shardRun) applyResourceGates() {
+	var baseline, final *dut.ControlMetrics
+	for _, stage := range resourceStages {
+		snap, ok := r.resSnapshot(stage)
+		if !ok || snap == nil {
+			r.reasonf("resource stage %s never captured", stage)
+			continue
+		}
+		if !controlMetricsComplete(snap) {
+			r.reasonf("resource stage %s missing mandatory numeric fields", stage)
+			continue
+		}
+		switch stage {
+		case "baseline":
+			baseline = snap
+		case "final":
+			final = snap
+		}
+		if *snap.MemoryPeakBytes >= dutMemoryPeakLimitBytes {
+			r.resourceReject = true
+			r.rejectf("partition memory peak %d >= limit %d at stage %s",
+				*snap.MemoryPeakBytes, dutMemoryPeakLimitBytes, stage)
+		}
+	}
+	if baseline != nil && final != nil {
+		if *final.MemoryOomKillEvents-*baseline.MemoryOomKillEvents > 0 {
+			r.resourceReject = true
+			r.rejectf("OOM-kill delta %d > 0 across the run", *final.MemoryOomKillEvents-*baseline.MemoryOomKillEvents)
+		}
+		if *final.CpuThrottledCount-*baseline.CpuThrottledCount > 0 {
+			r.resourceReject = true
+			r.rejectf("cpu throttle delta %d > 0 across the run", *final.CpuThrottledCount-*baseline.CpuThrottledCount)
+		}
+	}
+	// Worker-liveness: outside the drill window the worker set must be
+	// identical at every stage; the restart target's set must change only at
+	// its own planned restart and stay stable afterwards.
+	baselinePref, hasBaseline := r.prefSnapshot("baseline")
+	finalPref, hasFinal := r.prefSnapshot("final")
+	if hasBaseline && hasFinal && baselinePref != nil && finalPref != nil {
+		stable := true
+		if r.cfg.shardID == r.cfg.restartTarget {
+			drillPref, hasDrill := r.prefSnapshot("post_restart")
+			if !hasDrill || drillPref == nil || len(drillPref.NginxWorkerPids) == 0 {
+				r.reasonf("worker topology missing at the post-restart stage")
+				stable = false
+			} else if !workerPidsEqual(finalPref.NginxWorkerPids, drillPref.NginxWorkerPids) {
+				r.resourceReject = true
+				r.rejectf("nginx workers changed after the planned restart (unplanned worker death)")
+				stable = false
+			} else if workerPidsEqual(baselinePref.NginxWorkerPids, drillPref.NginxWorkerPids) {
+				r.reasonf("restart drill did not replace any nginx worker")
+				stable = false
+			}
+		} else {
+			for _, stage := range resourceStages {
+				pf, ok := r.prefSnapshot(stage)
+				if !ok || pf == nil {
+					continue // missing snapshot already reported above
+				}
+				if !workerPidsEqual(pf.NginxWorkerPids, baselinePref.NginxWorkerPids) {
+					r.resourceReject = true
+					r.rejectf("nginx worker death detected at stage %s (no restart planned)", stage)
+					stable = false
+					break
+				}
+			}
+		}
+		if stable && len(finalPref.NginxWorkerPids) == 0 {
+			r.resourceReject = true
+			r.rejectf("no live nginx workers at the final stage")
+		}
+		if stable && finalPref.WorkerConnectionsTotal != nil && finalPref.NginxActive != nil &&
+			*finalPref.WorkerConnectionsTotal > 0 && *finalPref.NginxActive >= *finalPref.WorkerConnectionsTotal {
+			r.resourceReject = true
+			r.rejectf("worker_connections exhausted: active %d >= capacity %d",
+				*finalPref.NginxActive, *finalPref.WorkerConnectionsTotal)
+		}
+	}
+	// Spare evidence is mandatory across failover for the restart target.
+	if r.cfg.shardID == r.cfg.restartTarget {
+		if r.cfg.spareControl == "" {
+			r.reasonf("spare control endpoint not configured; spare evidence impossible")
+		} else {
+			for _, stage := range []string{"post_restart", "final"} {
+				r.resMu.Lock()
+				snap := r.spareResSnaps[stage]
+				r.resMu.Unlock()
+				if !controlMetricsComplete(snap) {
+					r.reasonf("spare resource evidence incomplete at stage %s", stage)
+				}
+			}
+		}
+	}
+}
+
+// resourceEvidence renders the phase-spanning snapshots and worker topology
+// for the wire so every R12 gate is auditable against raw measurements.
+func (r *shardRun) resourceEvidence() map[string]any {
+	out := map[string]any{}
+	r.resMu.Lock()
+	defer r.resMu.Unlock()
+	stages := map[string]any{}
+	for stage, m := range r.resSnapshots {
+		stages[stage] = controlMetricsMap(m)
+	}
+	out["partition_stages"] = stages
+	spareStages := map[string]any{}
+	for stage, m := range r.spareResSnaps {
+		spareStages[stage] = controlMetricsMap(m)
+	}
+	out["spare_stages"] = spareStages
+	workers := map[string]any{}
+	for stage, pf := range r.prefSnapshots {
+		entry := map[string]any{"worker_pids": pf.NginxWorkerPids}
+		if pf.NginxMasterPid != nil {
+			entry["master_pid"] = *pf.NginxMasterPid
+		}
+		if pf.WorkerConnectionsTotal != nil {
+			entry["worker_connections_total"] = *pf.WorkerConnectionsTotal
+		}
+		if pf.NginxActive != nil {
+			entry["nginx_active"] = *pf.NginxActive
+		}
+		workers[stage] = entry
+	}
+	out["worker_topology"] = workers
+	out["reject_reasons"] = r.rejectNotes
+	return out
+}
+
 // applyGeneratorGates applies the frozen R09 generator validity rules: the
 // generator container's own CPU/throttle/OOM/scheduler-lag health must be
 // proven, or the run's evidence cannot be trusted (INCONCLUSIVE).
@@ -1559,6 +1832,9 @@ func (r *shardRun) classifyShard(scenarios []coordinator.ScenarioEvidence, count
 	if !v.GeneratorValid || !v.SourcePortHeadroomValid || !v.NginxWorkerCapacityValid ||
 		!v.EnvironmentValid || !v.TimingValid || len(v.Reasons) > 0 {
 		return coordinator.VerdictInconclusive
+	}
+	if r.resourceReject {
+		return coordinator.VerdictReject
 	}
 	for _, name := range gatedCorrectnessCounters {
 		if counters[name] > 0 {
@@ -1766,7 +2042,9 @@ func (r *shardRun) assembleResult(
 	// validity snapshot taken after every reason is recorded so late
 	// evidence failures (e.g. unmeasured restart window) reach the wire.
 	r.applyPublisherGates()
+	r.applyResourceGates()
 	res.Resources.Generator["publisher"] = r.publisherEvidence()
+	res.Resources.Generator["resource_stages"] = r.resourceEvidence()
 	r.valid.TimingValid = r.computeTimingValidity()
 	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)

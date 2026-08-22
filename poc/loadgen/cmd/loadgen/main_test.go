@@ -75,7 +75,57 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 		genRuntime:   &dut.GeneratorRuntimeEvidence{},
 	}
 	seedTiming(r)
+	seedResources(r)
 	return r, p
+}
+
+// seedResources fills a synthetic shardRun with complete phase-spanning R12
+// resource evidence: all seven stages numeric and healthy, a stable nginx
+// worker set (replaced exactly once at the planned restart on the target), and
+// spare snapshots across failover for the restart target.
+func seedResources(r *shardRun) {
+	isTarget := r.cfg.shardID == r.cfg.restartTarget
+	mk := func() *dut.ControlMetrics {
+		cur, peak := int64(1024), int64(2048)
+		cpu, thrC, thrU := int64(5000), int64(0), int64(0)
+		oom, oomKill := int64(0), int64(0)
+		return &dut.ControlMetrics{
+			MemoryCurrentBytes: &cur, MemoryPeakBytes: &peak,
+			CpuUsageUsec: &cpu, CpuThrottledCount: &thrC, CpuThrottledUsec: &thrU,
+			MemoryOomEvents: &oom, MemoryOomKillEvents: &oomKill,
+		}
+	}
+	pids := func(stage string) []int64 {
+		if isTarget && (stage == "post_restart" || stage == "final") {
+			return []int64{201, 202}
+		}
+		return []int64{101, 102}
+	}
+	r.resMu.Lock()
+	r.resSnapshots = map[string]*dut.ControlMetrics{}
+	r.prefSnapshots = map[string]*dut.Preflight{}
+	for _, stage := range resourceStages {
+		r.resSnapshots[stage] = mk()
+		master := int64(100)
+		total := int64(100000)
+		active := int64(500)
+		r.prefSnapshots[stage] = &dut.Preflight{
+			NginxMasterPid:         &master,
+			NginxWorkerPids:        pids(stage),
+			WorkerConnectionsTotal: &total,
+			NginxActive:            &active,
+		}
+	}
+	if isTarget && r.cfg.spareControl == "" {
+		r.cfg.spareControl = "http://spare.invalid"
+	}
+	if isTarget {
+		r.spareResSnaps = map[string]*dut.ControlMetrics{
+			"post_restart": mk(),
+			"final":        mk(),
+		}
+	}
+	r.resMu.Unlock()
 }
 
 // seedTiming fills a synthetic shardRun with plausible measured phase-boundary
@@ -1611,5 +1661,194 @@ func TestPublisherNonOwnerSkipsGates(t *testing.T) {
 		if strings.Contains(reason, "publisher") {
 			t.Fatalf("non-owner must not be gated on publisher evidence: %s", reason)
 		}
+	}
+}
+
+// ── R12 phase-spanning DUT resource evidence ─────────────────────────────────
+
+// hasRejectNote reports whether any REJECT-level resource note matches.
+func hasRejectNote(res *coordinator.ShardExperimentResult, substr string) bool {
+	stages, _ := res.Resources.Generator["resource_stages"].(map[string]any)
+	notes, _ := stages["reject_reasons"].([]string)
+	for _, note := range notes {
+		if strings.Contains(note, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// Missing resource stages invalidate the run (INCONCLUSIVE, never silent).
+func TestResourceMissingStageInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.resMu.Lock()
+	delete(r.resSnapshots, "post_surge")
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "resource stage post_surge never captured") {
+		t.Fatalf("missing-stage reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("missing resource stage must not ACCEPT")
+	}
+}
+
+// A stage missing mandatory numeric fields is invalidating (no zero coercion).
+func TestResourceIncompleteFieldsInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.resMu.Lock()
+	r.resSnapshots["final"].CpuThrottledUsec = nil
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "missing mandatory numeric fields") {
+		t.Fatalf("incomplete-fields reason absent: %+v", res.Validity.Reasons)
+	}
+}
+
+// Memory peak at/above the frozen ceiling is REJECT-level with valid evidence.
+func TestResourceMemoryPeakLimitReject(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	peak := int64(dutMemoryPeakLimitBytes)
+	r.resMu.Lock()
+	r.resSnapshots["post_steady"].MemoryPeakBytes = &peak
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT for memory peak >= limit (%+v)", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// OOM-kill delta > 0 across the run is REJECT-level.
+func TestResourceOomKillDeltaReject(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	kill := int64(1)
+	r.resMu.Lock()
+	r.resSnapshots["final"].MemoryOomKillEvents = &kill
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject || !hasRejectNote(res, "OOM-kill delta 1 > 0") {
+		t.Fatalf("verdict = %s, reasons %+v", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// Required throttle delta > 0 across the run is REJECT-level.
+func TestResourceThrottleDeltaReject(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	thr := int64(3)
+	r.resMu.Lock()
+	r.resSnapshots["final"].CpuThrottledCount = &thr
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject || !hasRejectNote(res, "cpu throttle delta 3 > 0") {
+		t.Fatalf("verdict = %s, reasons %+v", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// Unplanned worker death on a bystander partition is REJECT-level.
+func TestResourceWorkerDeathReject(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.resMu.Lock()
+	r.prefSnapshots["post_reconnect"].NginxWorkerPids = []int64{101}
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject || !hasRejectNote(res, "worker death detected") {
+		t.Fatalf("verdict = %s, reasons %+v", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// The restart target's workers must be replaced exactly once and stay stable.
+func TestResourceTargetRestartWorkerStability(t *testing.T) {
+	cfg := testConfig(3)
+	cfg.shardID = 3
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	res := assembleOwner(r)
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "worker death") || strings.Contains(reason, "did not replace") {
+			t.Fatalf("healthy target restart flagged: %s", reason)
+		}
+	}
+	// A second change after the planned drill is unplanned worker death.
+	r.resMu.Lock()
+	r.prefSnapshots["final"].NginxWorkerPids = []int64{301, 302}
+	r.resMu.Unlock()
+	res = assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject || !hasRejectNote(res, "unplanned worker death") {
+		t.Fatalf("verdict = %s, reasons %+v", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// Worker_connections exhaustion at the final stage is REJECT-level.
+func TestResourceConnectionsExhaustedReject(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	total, active := int64(1000), int64(1000)
+	r.resMu.Lock()
+	r.prefSnapshots["final"].WorkerConnectionsTotal = &total
+	r.prefSnapshots["final"].NginxActive = &active
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	if res.Verdict != coordinator.VerdictReject || !hasRejectNote(res, "exhausted") {
+		t.Fatalf("verdict = %s, reasons %+v", res.Verdict, res.Validity.Reasons)
+	}
+}
+
+// Spare evidence is mandatory across failover on the restart target.
+func TestResourceSpareEvidenceMandatory(t *testing.T) {
+	cfg := testConfig(3)
+	cfg.shardID = 3
+	cfg.spareControl = "http://spare.invalid"
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	res := assembleOwner(r)
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "spare") {
+			t.Fatalf("seeded spare evidence flagged: %s", reason)
+		}
+	}
+	r.resMu.Lock()
+	delete(r.spareResSnaps, "post_restart")
+	r.resMu.Unlock()
+	res = assembleOwner(r)
+	if !hasPublisherReason(res, "spare resource evidence incomplete") {
+		t.Fatalf("missing-spare reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("missing spare evidence on the restart target must not ACCEPT")
+	}
+}
+
+// The wire carries the full stage map so gates are auditable.
+func TestResourceEvidenceOnWire(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	res := assembleOwner(r)
+	stages, ok := res.Resources.Generator["resource_stages"].(map[string]any)
+	if !ok {
+		t.Fatal("resource_stages evidence missing from the wire")
+	}
+	partition, ok := stages["partition_stages"].(map[string]any)
+	if !ok {
+		t.Fatal("partition_stages missing")
+	}
+	for _, stage := range resourceStages {
+		if _, ok := partition[stage]; !ok {
+			t.Fatalf("stage %s missing from wire evidence", stage)
+		}
+	}
+	if _, ok := stages["worker_topology"].(map[string]any)["baseline"]; !ok {
+		t.Fatal("baseline worker topology missing")
 	}
 }
