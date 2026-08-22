@@ -147,6 +147,7 @@ const server = http.createServer(async (req, res) => {
       coordinator.submitResult(value as unknown as ShardExperimentResult)
       const complete = coordinator.complete
       send(res, complete ? 200 : 202, { accepted: true, complete })
+      if (complete) setImmediate(persistGlobalResult)
       return
     }
     send(res, 404, { error: "not found" })
