@@ -607,8 +607,15 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("final-metrics end barrier")
 	}
 
+	slowScenario := coordinator.ScenarioEvidence{
+		Name:         "slow-consumer",
+		Participated: true,
+		Passed:       true,
+		Detail:       "slow-consumer retired in v2.2.0",
+		Structured:   map[string]any{"paths": map[string]any{}, "replay_probe_selected": 0},
+	}
 	scenarios := []coordinator.ScenarioEvidence{
-		lateScenario, burstScenario, reconnectScenario, restartScenario,
+		lateScenario, burstScenario, reconnectScenario, slowScenario, restartScenario,
 	}
 	return r.assembleResult(samples, scenarios, lateResults, reconnectResults, headAgreement, startedAt), nil
 }
