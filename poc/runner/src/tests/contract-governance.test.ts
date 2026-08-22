@@ -16,6 +16,7 @@ const POC_V205_REFERENCE = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CO
 const POC_V206 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_0_6.md")
 const POC_V210 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md")
 const POC_V211 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_1.md")
+const POC_V220 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_2_0.md")
 const MILESTONES = path.join(REPO_ROOT, "internal_docs/LIVE_MATCH_CENTRE_ASSIGNMENT_MILESTONES (3).md")
 
 function read(p: string): string {
@@ -24,21 +25,24 @@ function read(p: string): string {
 
 describe("contract governance", () => {
   it("exactly one canonical active contract exists and predecessors are historical", () => {
-    // §M3-RACE-3: v2.1.1 is the canonical active contract. v2.1.0 is preserved
-    // BYTE-UNCHANGED as historical evidence (its self-declared freeze remains
-    // as a historical artifact); the canonical producer must point at v2.1.1
-    // and never back at the superseded predecessor.
-    const active = read(POC_V211)
+    // §v2.2.0: the lightweight-generator contract is the canonical active
+    // freeze. v2.1.1 is preserved BYTE-UNCHANGED as historical evidence; the
+    // canonical producer must point at v2.2.0 and never back at a superseded
+    // predecessor.
+    const active = read(POC_V220)
     assert.match(active, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
-    assert.match(active, /Contract Version: v2\.1\.1/)
-    assert.match(active, /Supersedes: v2\.1\.0/)
+    assert.match(active, /Contract Version: v2\.2\.0/)
+    assert.match(active, /Supersedes: v2\.1\.1/)
     // Predecessor preserved historically: original version marker intact.
-    const pocV210 = read(POC_V210)
-    assert.match(pocV210, /Contract Version: v2\.1\.0/)
+    const pocV211 = read(POC_V211)
+    assert.match(pocV211, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
+    assert.match(pocV211, /Contract Version: v2\.1\.1/)
     // The canonical producer points at exactly the active document.
     const producer = read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts"))
-    assert.match(producer, /ACTIVE_CONTRACT_FILENAME = "EXPERIMENT_CONTRACT_v2_1_1\.md"/)
-    assert.doesNotMatch(producer, /EXPERIMENT_CONTRACT_v2_1_0\.md/)
+    assert.match(producer, /ACTIVE_CONTRACT_FILENAME = "EXPERIMENT_CONTRACT_v2_2_0\.md"/)
+    assert.doesNotMatch(producer, /EXPERIMENT_CONTRACT_v2_1_1\.md/)
+    const pocV210 = read(POC_V210)
+    assert.match(pocV210, /Contract Version: v2\.1\.0/)
     const pocV206 = read(POC_V206)
     assert.match(pocV206, /\[SUPERSEDED — HISTORICAL EVIDENCE ONLY\]/)
     assert.doesNotMatch(pocV206, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
@@ -125,7 +129,7 @@ describe("contract governance", () => {
       assert.match(source, /ACTIVE_CONTRACT_VERSION/, `${relative} must use the canonical producer`)
       assert.doesNotMatch(source, /contract_version:\s*["']v2\.0\./, `${relative} must not hard-code a version`)
     }
-    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.1\.1"/)
+    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.2\.0"/)
   })
 
   it("freezes the partitioned fan-out acceptance-recovery semantics in v2.1.0", () => {
@@ -180,6 +184,47 @@ describe("contract governance", () => {
       /burst_fan_out_p95_ms\s+<= 1000/,
       /late_join_p95_ms\s+<= 2000/,
       /\+40,000 viewers within SURGE_SECONDS=120/,
+      /aligned peak >= 100,000/,
+      /seeds = 42, 43, 44/,
+      /GLOBAL_RUNS = 3/,
+    ]) assert.match(contract, rule)
+  })
+
+  it("freezes the lightweight-generator reset semantics in v2.2.0", () => {
+    // §v2.2.0: assignment facts and POC methodology choices are separated;
+    // the Go crowd generator + TS control-plane split is frozen; the
+    // slow-client scenario is out of qualification.
+    const contract = read(POC_V220)
+    for (const rule of [
+      /Part I — Assignment facts/,
+      /Part II — POC methodology choices/,
+      /Go load generators\s+poc\/loadgen/,
+      /canonical match identity\s+match-001 \.\. match-008/,
+      /MUST equal\s+MATCH_IDS/,
+      /holds ZERO viewer connections/,
+      /POST \/v1\/reset/,
+      /POST \/v1\/start/,
+      /POST \/v1\/stop/,
+      /POST \/v1\/prefill/,
+      /POST \/v1\/burst/,
+      /GET  \/v1\/evidence/,
+      /histograms\.goal_fan_out/,
+      /histograms\.other_fan_out/,
+      /exactly shard_count samples/,
+      /Slow-client scenario — REMOVED from qualification/,
+      />= 4,000 free ports computed from the/,
+      /RUNTIME-measured range/,
+      /generator-only benchmark/,
+      /failure classifies as generator \| host\/kernel\/network \| DUT \|/,
+    ]) assert.match(contract, rule)
+    // Assignment thresholds carried forward unweakened.
+    for (const rule of [
+      /fan_out_p95_ms\s+<= 500/,
+      /surge_fan_out_p95_ms\s+<= 500/,
+      /burst_fan_out_p95_ms\s+<= 1000/,
+      /late_join_p95_ms\s+<= 2000/,
+      /\+40,000 viewers within 120 seconds/,
+      /\+40,000 within SURGE_SECONDS=120/,
       /aligned peak >= 100,000/,
       /seeds = 42, 43, 44/,
       /GLOBAL_RUNS = 3/,

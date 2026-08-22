@@ -27,9 +27,9 @@ type HeadState struct {
 
 // Evidence is the /v1/evidence response: independent canonical expectation.
 type Evidence struct {
-	Started   bool              `json:"started"`
-	Heads     map[string]HeadInfo `json:"heads"`
-	Totals    struct {
+	Started bool                `json:"started"`
+	Heads   map[string]HeadInfo `json:"heads"`
+	Totals  struct {
 		Published      int64 `json:"published"`
 		Attempts       int64 `json:"attempts"`
 		DefiniteFails  int64 `json:"definite_failures"`
@@ -41,9 +41,9 @@ type Evidence struct {
 }
 
 type HeadInfo struct {
-	Seq        int64     `json:"seq"`
-	State      HeadState `json:"state"`
-	LastEvent  string    `json:"last_event_type"`
+	Seq       int64     `json:"seq"`
+	State     HeadState `json:"state"`
+	LastEvent string    `json:"last_event_type"`
 }
 
 type Client struct {
@@ -92,13 +92,19 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 }
 
 // Reset clears retained Redis history for run isolation (owner shard, preflight).
-func (c *Client) Reset(ctx context.Context) error { return c.do(ctx, http.MethodPost, "/v1/reset", map[string]any{}, nil) }
+func (c *Client) Reset(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/reset", map[string]any{}, nil)
+}
 
 // Start begins steady publication (~9 match events/s + 1 lobby/s).
-func (c *Client) Start(ctx context.Context) error { return c.do(ctx, http.MethodPost, "/v1/start", map[string]any{}, nil) }
+func (c *Client) Start(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/start", map[string]any{}, nil)
+}
 
 // Stop halts publication.
-func (c *Client) Stop(ctx context.Context) error { return c.do(ctx, http.MethodPost, "/v1/stop", map[string]any{}, nil) }
+func (c *Client) Stop(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/v1/stop", map[string]any{}, nil)
+}
 
 // Prefill publishes an exact serialized range of one event type to one match —
 // the frozen-range producer for restart probes (owner shard only).

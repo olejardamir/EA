@@ -16,9 +16,9 @@ type BucketPair = [2]int64
 // Serialized mirrors the TS SerializedHistogram wire shape byte-for-byte:
 // {"max_ms":N,"total_count":N,"overflow_count":N,"buckets":[[ms,count],...]}.
 type Serialized struct {
-	MaxMs         int         `json:"max_ms"`
-	TotalCount    int64       `json:"total_count"`
-	OverflowCount int64       `json:"overflow_count"`
+	MaxMs         int          `json:"max_ms"`
+	TotalCount    int64        `json:"total_count"`
+	OverflowCount int64        `json:"overflow_count"`
 	Buckets       []BucketPair `json:"buckets"`
 }
 
@@ -112,13 +112,13 @@ func (h *Histogram) Serialize() Serialized {
 
 // Summary is the coordinator-facing percentile summary.
 type Summary struct {
-	P50Ms int `json:"p50_ms"`
-	P95Ms int `json:"p95_ms"`
-	P99Ms int `json:"p99_ms"`
-	MaxMs int `json:"max_ms"`
-	Count int64 `json:"count"`
-	OverflowCount int64 `json:"overflow_count"`
-	Distribution Serialized `json:"distribution"`
+	P50Ms         int        `json:"p50_ms"`
+	P95Ms         int        `json:"p95_ms"`
+	P99Ms         int        `json:"p99_ms"`
+	MaxMs         int        `json:"max_ms"`
+	Count         int64      `json:"count"`
+	OverflowCount int64      `json:"overflow_count"`
+	Distribution  Serialized `json:"distribution"`
 }
 
 func (h *Histogram) Summarize() Summary {

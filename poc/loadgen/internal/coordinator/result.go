@@ -8,26 +8,26 @@ package coordinator
 type Verdict string
 
 const (
-	VerdictAccept       Verdict = "ACCEPT"
-	VerdictReject       Verdict = "REJECT"
-	VerdictInconclusive Verdict = "INCONCLUSIVE"
+	VerdictAccept        Verdict = "ACCEPT"
+	VerdictReject        Verdict = "REJECT"
+	VerdictInconclusive  Verdict = "INCONCLUSIVE"
 	VerdictNotApplicable Verdict = "NOT_APPLICABLE"
 )
 
 type Validity struct {
-	GeneratorValid            bool     `json:"generator_valid"`
-	SourcePortHeadroomValid   bool     `json:"source_port_headroom_valid"`
-	NginxWorkerCapacityValid  bool     `json:"nginx_worker_capacity_valid"`
-	EnvironmentValid          bool     `json:"environment_valid"`
-	TimingValid               bool     `json:"timing_valid"`
-	Reasons                   []string `json:"reasons"`
+	GeneratorValid           bool     `json:"generator_valid"`
+	SourcePortHeadroomValid  bool     `json:"source_port_headroom_valid"`
+	NginxWorkerCapacityValid bool     `json:"nginx_worker_capacity_valid"`
+	EnvironmentValid         bool     `json:"environment_valid"`
+	TimingValid              bool     `json:"timing_valid"`
+	Reasons                  []string `json:"reasons"`
 }
 
 type HistogramWire struct {
-	MaxMs         int         `json:"max_ms"`
-	TotalCount    int64       `json:"total_count"`
-	OverflowCount int64       `json:"overflow_count"`
-	Buckets       [][2]int64  `json:"buckets"` // sparse [ms,count] pairs, TS tuple shape
+	MaxMs         int        `json:"max_ms"`
+	TotalCount    int64      `json:"total_count"`
+	OverflowCount int64      `json:"overflow_count"`
+	Buckets       [][2]int64 `json:"buckets"` // sparse [ms,count] pairs, TS tuple shape
 }
 
 type ScenarioEvidence struct {
@@ -55,15 +55,15 @@ type ShardExperimentResult struct {
 	SourceCommit    string `json:"source_commit"`
 	PublisherOwner  bool   `json:"publisher_owner"`
 
-	Verdict   Verdict  `json:"verdict"`
-	Validity  Validity `json:"validity"`
-	Samples   []AlignedSample `json:"samples"`
+	Verdict    Verdict         `json:"verdict"`
+	Validity   Validity        `json:"validity"`
+	Samples    []AlignedSample `json:"samples"`
 	Histograms struct {
-		FanOut     HistogramWire `json:"fan_out"`
-		GoalFanOut HistogramWire `json:"goal_fan_out"`
+		FanOut      HistogramWire `json:"fan_out"`
+		GoalFanOut  HistogramWire `json:"goal_fan_out"`
 		OtherFanOut HistogramWire `json:"other_fan_out"`
-		LateJoin   HistogramWire `json:"late_join"`
-		Burst      HistogramWire `json:"burst"`
+		LateJoin    HistogramWire `json:"late_join"`
+		Burst       HistogramWire `json:"burst"`
 	} `json:"histograms"`
 	CorrectnessCounters map[string]float64 `json:"correctness_counters"`
 	Workload            struct {

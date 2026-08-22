@@ -16,12 +16,12 @@ import (
 )
 
 type ControlMetrics struct {
-	MemoryCurrentBytes *int64 `json:"memory_current_bytes"`
-	MemoryPeakBytes    *int64 `json:"memory_peak_bytes"`
-	CpuUsageUsec       *int64 `json:"cpu_usage_usec"`
-	CpuThrottledCount  *int64 `json:"cpu_throttled_count"`
-	CpuThrottledUsec   *int64 `json:"cpu_throttled_usec"`
-	MemoryOomEvents    *int64 `json:"memory_oom_events"`
+	MemoryCurrentBytes  *int64 `json:"memory_current_bytes"`
+	MemoryPeakBytes     *int64 `json:"memory_peak_bytes"`
+	CpuUsageUsec        *int64 `json:"cpu_usage_usec"`
+	CpuThrottledCount   *int64 `json:"cpu_throttled_count"`
+	CpuThrottledUsec    *int64 `json:"cpu_throttled_usec"`
+	MemoryOomEvents     *int64 `json:"memory_oom_events"`
 	MemoryOomKillEvents *int64 `json:"memory_oom_kill_events"`
 }
 
@@ -47,12 +47,12 @@ func GetControlMetrics(ctx context.Context, controlURL string) (*ControlMetrics,
 
 // Preflight mirrors the control server's capacity preflight verdict.
 type Preflight struct {
-	Sufficient bool   `json:"sufficient"`
-	Reason     any    `json:"reason"`
+	Sufficient        bool   `json:"sufficient"`
+	Reason            any    `json:"reason"`
 	UsableSSECapacity *int64 `json:"usable_sse_capacity,omitempty"`
 	NginxWorkerFdSoft *int64 `json:"nginx_worker_fd_soft,omitempty"`
 	NginxWorkerFdHard *int64 `json:"nginx_worker_fd_hard,omitempty"`
-	CpuQuota  *int64  `json:"cpu_quota,omitempty"`
+	CpuQuota          *int64 `json:"cpu_quota,omitempty"`
 }
 
 func PreflightPartition(ctx context.Context, controlURL string, target int) (*Preflight, error) {
@@ -110,8 +110,8 @@ func Restart(ctx context.Context, controlURL string) error {
 // ── Minimal RESP client (INFO only; no external dependency) ─────────────
 
 type RedisInfo struct {
-	UsedBytes       int64
-	PeakBytes       int64
+	UsedBytes        int64
+	PeakBytes        int64
 	ConnectedClients int64
 }
 
@@ -183,17 +183,17 @@ func indexCRLF(b []byte) int {
 
 // SourcePortEvidence records the generator namespace ephemeral-port situation.
 type SourcePortEvidence struct {
-	IPLocalPortRangeLow  int `json:"ip_local_port_range_low"`
-	IPLocalPortRangeHigh int `json:"ip_local_port_range_high"`
-	RangeSize            int `json:"range_size"`
-	SteadyViewerSockets  int `json:"steady_viewer_sockets"`
-	ReconnectTIMEWaitAllowance int `json:"reconnect_timewait_allowance"`
-	ControlSockets       int `json:"control_sockets"`
-	SafetyMargin         int `json:"safety_margin"`
-	FreePorts            int `json:"free_ports"`
-	HeadroomValid        bool `json:"headroom_valid"`
-	FdSoftLimit          int64 `json:"fd_soft_limit"`
-	FdHardLimit          int64 `json:"fd_hard_limit"`
+	IPLocalPortRangeLow        int   `json:"ip_local_port_range_low"`
+	IPLocalPortRangeHigh       int   `json:"ip_local_port_range_high"`
+	RangeSize                  int   `json:"range_size"`
+	SteadyViewerSockets        int   `json:"steady_viewer_sockets"`
+	ReconnectTIMEWaitAllowance int   `json:"reconnect_timewait_allowance"`
+	ControlSockets             int   `json:"control_sockets"`
+	SafetyMargin               int   `json:"safety_margin"`
+	FreePorts                  int   `json:"free_ports"`
+	HeadroomValid              bool  `json:"headroom_valid"`
+	FdSoftLimit                int64 `json:"fd_soft_limit"`
+	FdHardLimit                int64 `json:"fd_hard_limit"`
 }
 
 // ReadSourcePortRange parses /proc/sys/net/ipv4/ip_local_port_range.
@@ -239,12 +239,8 @@ func ReadFdlimit() (soft, hard int64, err error) {
 	return 0, 0, fmt.Errorf("Max open files not found in /proc/self/limits")
 }
 
-// BuildSourcePortEvidence computes frozen headroom accounting.
-// Frozen allowance model (contract v2.2.0 §source-ports):
-//
-//	free = rangeSize - steady - reconnectTIME_WAIT(10% of steady, min 2500)
-//	       - control(64) - safety(512)
-//	valid ⇔ free ≥ 4000 AND fdSoft ≥ steady*1.35
+// BuildSourcePortEvidence reads the live kernel/FD environment and applies
+// computeSourcePortEvidence.
 func BuildSourcePortEvidence(steadyViewers int) (*SourcePortEvidence, error) {
 	low, high, err := ReadSourcePortRange()
 	if err != nil {
@@ -254,22 +250,32 @@ func BuildSourcePortEvidence(steadyViewers int) (*SourcePortEvidence, error) {
 	if err != nil {
 		return nil, err
 	}
+	return ComputeSourcePortEvidence(low, high, fdSoft, fdHard, steadyViewers), nil
+}
+
+// ComputeSourcePortEvidence is the pure frozen headroom accounting model
+// (contract v2.2.0 §source-ports):
+//
+//	free = rangeSize - steady - reconnectTIME_WAIT(10% of steady, min 2500)
+//	       - control(64) - safety(512)
+//	valid ⇔ free ≥ 4000 AND fdSoft ≥ steady*1.35
+func ComputeSourcePortEvidence(low, high int, fdSoft, fdHard int64, steadyViewers int) *SourcePortEvidence {
 	timewait := steadyViewers / 10
 	if timewait < 2500 {
 		timewait = 2500
 	}
 	ev := &SourcePortEvidence{
-		IPLocalPortRangeLow:  low,
-		IPLocalPortRangeHigh: high,
-		RangeSize:            high - low + 1,
-		SteadyViewerSockets:  steadyViewers,
+		IPLocalPortRangeLow:        low,
+		IPLocalPortRangeHigh:       high,
+		RangeSize:                  high - low + 1,
+		SteadyViewerSockets:        steadyViewers,
 		ReconnectTIMEWaitAllowance: timewait,
-		ControlSockets:       64,
-		SafetyMargin:         512,
-		FdSoftLimit:          fdSoft,
-		FdHardLimit:          fdHard,
+		ControlSockets:             64,
+		SafetyMargin:               512,
+		FdSoftLimit:                fdSoft,
+		FdHardLimit:                fdHard,
 	}
 	ev.FreePorts = ev.RangeSize - steadyViewers - timewait - ev.ControlSockets - ev.SafetyMargin
 	ev.HeadroomValid = ev.FreePorts >= 4000 && fdSoft >= int64(float64(steadyViewers)*1.35)
-	return ev, nil
+	return ev
 }

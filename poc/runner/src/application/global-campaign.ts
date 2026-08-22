@@ -29,6 +29,8 @@ export interface GlobalCampaignResult {
   }
   histograms: {
     fan_out: ReturnType<typeof campaignHistogramSummary>
+    goal_fan_out: ReturnType<typeof campaignHistogramSummary>
+    other_fan_out: ReturnType<typeof campaignHistogramSummary>
     late_join: ReturnType<typeof campaignHistogramSummary>
     burst: ReturnType<typeof campaignHistogramSummary>
   }
@@ -197,8 +199,10 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
   }
   const worstCv = Math.max(...Object.values(dispersionMetrics))
   const dispersionStable = Number.isFinite(worstCv) && worstCv <= DISPERSION_THRESHOLD_CV
-
   const fanOut = mergeHistograms(runs.map((run) => run.histograms?.fan_out?.distribution ?? EMPTY_DISTRIBUTION))
+  // §v2.2.0: class-split deep-cohort distributions aggregated across runs.
+  const goalFanOut = mergeHistograms(runs.map((run) => run.histograms?.goal_fan_out?.distribution ?? EMPTY_DISTRIBUTION))
+  const otherFanOut = mergeHistograms(runs.map((run) => run.histograms?.other_fan_out?.distribution ?? EMPTY_DISTRIBUTION))
   const lateJoin = mergeHistograms(runs.map((run) => run.histograms?.late_join?.distribution ?? EMPTY_DISTRIBUTION))
   const burst = mergeHistograms(runs.map((run) => run.histograms?.burst?.distribution ?? EMPTY_DISTRIBUTION))
   if (lateJoin.count < runs.length * (runs[0]?.shard_count ?? 1)) {
@@ -244,6 +248,8 @@ export function aggregateGlobalCampaign(globalRuns: GlobalExperimentResult[], po
     },
     histograms: {
       fan_out: campaignHistogramSummary(fanOut),
+      goal_fan_out: campaignHistogramSummary(goalFanOut),
+      other_fan_out: campaignHistogramSummary(otherFanOut),
       late_join: campaignHistogramSummary(lateJoin),
       burst: campaignHistogramSummary(burst),
     },

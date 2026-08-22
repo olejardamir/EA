@@ -95,8 +95,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reasons: [],
     },
     samples: scenarioSamples(shardId),
+    // §v2.2.0 wire invariant: fan_out == goal + other + burst populations.
     histograms: {
-      fan_out: histogram([10 + shardId * 10, 20 + shardId * 10]),
+      fan_out: histogram([10 + shardId * 10, 20 + shardId * 10, 30 + shardId * 10]),
+      goal_fan_out: histogram([10 + shardId * 10]),
+      other_fan_out: histogram([20 + shardId * 10]),
       late_join: histogram([100]),
       burst: histogram([30 + shardId * 10]),
     },
@@ -203,7 +206,7 @@ describe("GlobalExperimentCoordinator", () => {
     assert.equal(result.publisher_owner_shard_id, 0)
     assert.equal(result.workload_rates.events_published, 100)
     assert.equal(result.resources.nchan_partitions[0].evidence.memory_peak_run_bytes, 1000)
-    assert.equal(result.histograms.fan_out.count, 4)
+    assert.equal(result.histograms.fan_out.count, 6)
     assert.equal(result.verdict, "ACCEPT")
     assert.equal(result.global_direct_accept_eligible, true)
   })

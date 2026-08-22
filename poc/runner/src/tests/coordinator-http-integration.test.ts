@@ -137,8 +137,11 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       reasons: [],
     },
     samples: sampleSeries(shardId),
+    // §v2.2.0 wire invariant: fan_out == goal + other + burst populations.
     histograms: {
-      fan_out: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[20, 1], [40, 1]] },
+      fan_out: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[20, 1], [40, 1], [25, 1]] },
+      goal_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] },
+      other_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[40, 1]] },
       late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[5, 1]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
     },

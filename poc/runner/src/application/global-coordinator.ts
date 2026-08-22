@@ -99,8 +99,14 @@ export interface ShardExperimentResult {
   verdict: "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"
   validity: ShardValidity
   samples: AlignedSample[]
+  // §v2.2.0: five-histogram wire shape. fan_out is the merged all-class
+  // distribution; goal_fan_out / other_fan_out carry the deep cohort's
+  // publish->wire split by event class; late_join holds exactly one catch-up
+  // sample per shard; burst is the burst-window class.
   histograms: {
     fan_out: SerializedHistogram
+    goal_fan_out: SerializedHistogram
+    other_fan_out: SerializedHistogram
     late_join: SerializedHistogram
     burst: SerializedHistogram
   }
@@ -147,6 +153,8 @@ export interface GlobalExperimentResult {
   workload_rates: ShardExperimentResult["workload"]
   histograms: {
     fan_out: ReturnType<typeof histogramSummary>
+    goal_fan_out: ReturnType<typeof histogramSummary>
+    other_fan_out: ReturnType<typeof histogramSummary>
     late_join: ReturnType<typeof histogramSummary>
     burst: ReturnType<typeof histogramSummary>
   }
@@ -449,10 +457,21 @@ export class GlobalExperimentCoordinator {
     if (activeEvidence.global_active_peak < this.globalTarget) rejectReasons.push(`aligned global active peak ${activeEvidence.global_active_peak} < ${this.globalTarget}`)
 
     const mergedFanOut = mergeHistograms(shardResults.map((result) => result.histograms.fan_out ?? emptyHistogram()))
+    // §v2.2.0: class-split deep-cohort latency evidence (goal vs other).
+    const mergedGoalFanOut = mergeHistograms(shardResults.map((result) => result.histograms.goal_fan_out ?? emptyHistogram()))
+    const mergedOtherFanOut = mergeHistograms(shardResults.map((result) => result.histograms.other_fan_out ?? emptyHistogram()))
     const mergedLateJoin = mergeHistograms(shardResults.map((result) => result.histograms.late_join ?? emptyHistogram()))
     const mergedBurst = mergeHistograms(shardResults.map((result) => result.histograms.burst ?? emptyHistogram()))
     if (mergedFanOut.count === 0) validityReasons.push("global fan-out histogram is empty")
     if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
+    if (mergedGoalFanOut.count + mergedOtherFanOut.count === 0) {
+      validityReasons.push("global class-split fan-out histograms are empty")
+    } else if (mergedFanOut.count > 0 && mergedGoalFanOut.count + mergedOtherFanOut.count + mergedBurst.count !== mergedFanOut.count) {
+      validityReasons.push(
+        `class-split populations (${mergedGoalFanOut.count} goal + ${mergedOtherFanOut.count} other + ${mergedBurst.count} burst)` +
+        ` do not reproduce the merged fan-out population (${mergedFanOut.count})`,
+      )
+    }
     // §v2.1.0: one late-join sample per shard — every independent history/fan-out
     // ownership domain must be probed against the owner-frozen expectation.
     if (mergedLateJoin.count !== this.shardCount) {
@@ -635,6 +654,8 @@ export class GlobalExperimentCoordinator {
       workload_rates: ownerResult?.workload ?? { events_published: 0, phase_rates: [] },
       histograms: {
         fan_out: histogramSummary(mergedFanOut),
+        goal_fan_out: histogramSummary(mergedGoalFanOut),
+        other_fan_out: histogramSummary(mergedOtherFanOut),
         late_join: histogramSummary(mergedLateJoin),
         burst: histogramSummary(mergedBurst),
       },

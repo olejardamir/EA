@@ -18,21 +18,21 @@ package tracker
 type Kind uint8
 
 const (
-	First       Kind = iota // first frame on the connection: initializes last_seq
-	Next                    // seq == last+1
-	Duplicate               // seq == last
-	Gap                     // seq > last+1 (missing = seq-last-1)
-	OutOfOrder              // seq < last
+	First      Kind = iota // first frame on the connection: initializes last_seq
+	Next                   // seq == last+1
+	Duplicate              // seq == last
+	Gap                    // seq > last+1 (missing = seq-last-1)
+	OutOfOrder             // seq < last
 )
 
 // Tracker holds the minimal per-client continuity state (~48 bytes).
 type Tracker struct {
-	LastSeq     uint64
-	Received    uint64
-	Missing     uint64
-	Duplicates  uint64
-	OutOfOrder  uint64
-	SawFrame    bool
+	LastSeq    uint64
+	Received   uint64
+	Missing    uint64
+	Duplicates uint64
+	OutOfOrder uint64
+	SawFrame   bool
 }
 
 // Observe advances the state machine for one delivered frame id.

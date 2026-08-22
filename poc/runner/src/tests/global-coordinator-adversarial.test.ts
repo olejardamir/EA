@@ -93,8 +93,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reasons: [],
     },
     samples: fullSampleSet(shardId),
+    // §v2.2.0 wire invariant: fan_out == goal + other + burst populations.
     histograms: {
-      fan_out: histogram([10, 20]),
+      fan_out: histogram([10, 20, 15]),
+      goal_fan_out: histogram([10]),
+      other_fan_out: histogram([20]),
       late_join: histogram([5]),
       burst: histogram([15]),
     },
@@ -320,8 +323,8 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     coordinator.register(registration(0))
     coordinator.register(registration(1))
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
-    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
+    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
+    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram([]), burst: histogram([1]) } }))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.validity.valid, false)
     assert.ok(result.validity.reasons.some((reason) => reason.includes("global fan-out histogram is empty")))

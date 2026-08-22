@@ -177,23 +177,23 @@ func (s *StateTracker) AgreeWithHead(seq int64, home, away, elapsed int, period 
 // late-join history and restart paths. Shape-compatible with the coordinator's
 // isExactRestartPathEvidence predicate.
 type PathResult struct {
-	TransportResumeID       string `json:"transport_resume_id"`
-	ExpectedFirstSeq        int64  `json:"expected_first_seq"`
-	ExpectedLastSeq         int64  `json:"expected_last_seq"`
-	ReceivedFirstSeq        *int64 `json:"received_first_seq"`
-	ReceivedLastSeq         *int64 `json:"received_last_seq"`
-	ExpectedCount           int64  `json:"expected_count"`
-	ReceivedRequiredCount   int64  `json:"received_required_count"`
-	MissingRequired         int64  `json:"missing_required"`
+	TransportResumeID        string  `json:"transport_resume_id"`
+	ExpectedFirstSeq         int64   `json:"expected_first_seq"`
+	ExpectedLastSeq          int64   `json:"expected_last_seq"`
+	ReceivedFirstSeq         *int64  `json:"received_first_seq"`
+	ReceivedLastSeq          *int64  `json:"received_last_seq"`
+	ExpectedCount            int64   `json:"expected_count"`
+	ReceivedRequiredCount    int64   `json:"received_required_count"`
+	MissingRequired          int64   `json:"missing_required"`
 	MissingRequiredSequences []int64 `json:"missing_required_sequences"`
-	Duplicates              int64  `json:"duplicates"`
-	OutOfOrder              int64  `json:"out_of_order"`
-	OutOfRangeBeforeCount   int64  `json:"out_of_range_before_count"`
-	OutOfRangeAfterCount    int64  `json:"out_of_range_after_count"`
-	MissingPrefix           bool   `json:"missing_prefix"`
-	TargetReached           bool   `json:"target_reached"`
-	RecoveryMs              int64  `json:"recovery_ms"`
-	Passed                  bool   `json:"passed"`
+	Duplicates               int64   `json:"duplicates"`
+	OutOfOrder               int64   `json:"out_of_order"`
+	OutOfRangeBeforeCount    int64   `json:"out_of_range_before_count"`
+	OutOfRangeAfterCount     int64   `json:"out_of_range_after_count"`
+	MissingPrefix            bool    `json:"missing_prefix"`
+	TargetReached            bool    `json:"target_reached"`
+	RecoveryMs               int64   `json:"recovery_ms"`
+	Passed                   bool    `json:"passed"`
 }
 
 // EvaluateRequiredRange judges membership in the independently frozen interval.

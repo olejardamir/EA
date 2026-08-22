@@ -818,6 +818,14 @@ async function main(): Promise<void> {
         samples: coordinator.stopSampling(),
         histograms: {
           fan_out: metrics.getFanOutHistogram().serialize(),
+          // §v2.2.0: class-split publish->wire latency is measured by the Go
+          // deep cohort (which decodes payloads). This legacy TypeScript
+          // runner cannot attribute classes without reintroducing the
+          // per-frame payload parsing cost that motivated the reset, so it
+          // honestly reports empty splits; the coordinator treats them as
+          // missing evidence (INCONCLUSIVE) rather than zero latency.
+          goal_fan_out: { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] },
+          other_fan_out: { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] },
           late_join: metrics.getLateJoinHistogram().serialize(),
           burst: phaseHists.burst?.fanOut.distribution
             ?? { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] },

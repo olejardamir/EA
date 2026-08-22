@@ -42,11 +42,11 @@ type Registration struct {
 }
 
 type BarrierReceipt struct {
-	ExperimentRunID      string `json:"experiment_run_id"`
-	Phase                string `json:"phase"`
-	Boundary             string `json:"boundary"`
-	ReleasedAtMs         int64  `json:"released_at_ms"`
-	ParticipatingShardIDs []int `json:"participating_shard_ids"`
+	ExperimentRunID       string `json:"experiment_run_id"`
+	Phase                 string `json:"phase"`
+	Boundary              string `json:"boundary"`
+	ReleasedAtMs          int64  `json:"released_at_ms"`
+	ParticipatingShardIDs []int  `json:"participating_shard_ids"`
 }
 
 type AlignedSample struct {
@@ -65,10 +65,11 @@ type Client struct {
 	http            *http.Client
 	ExperimentRunID string
 
-	mu        sync.Mutex
-	samples   []AlignedSample
-	curPhase  string
+	mu          sync.Mutex
+	samples     []AlignedSample
+	curPhase    string
 	stopSampler chan struct{}
+	samplerDone chan struct{}
 }
 
 func NewClient(baseURL string, reg Registration) *Client {
@@ -142,8 +143,10 @@ func (c *Client) Barrier(phase, boundary string) (*BarrierReceipt, error) {
 
 // StartSampling captures aligned population samples every interval until Stop.
 func (c *Client) StartSampling(interval time.Duration, read func() (int64, int64, int64, int64)) {
-	c.stopSampler = make(chan struct{})
 	c.mu.Lock()
+	c.stopSampler = make(chan struct{})
+	c.samplerDone = make(chan struct{})
+	stop, done := c.stopSampler, c.samplerDone
 	c.curPhase = "preflight"
 	c.mu.Unlock()
 	capture := func() {
@@ -161,13 +164,14 @@ func (c *Client) StartSampling(interval time.Duration, read func() (int64, int64
 	}
 	capture()
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				capture()
-			case <-c.stopSampler:
+			case <-stop:
 				return
 			}
 		}
@@ -176,9 +180,13 @@ func (c *Client) StartSampling(interval time.Duration, read func() (int64, int64
 
 // StopSampling drains collected samples.
 func (c *Client) StopSampling() []AlignedSample {
-	if c.stopSampler != nil {
-		close(c.stopSampler)
-		c.stopSampler = nil
+	c.mu.Lock()
+	stop, done := c.stopSampler, c.samplerDone
+	c.stopSampler, c.samplerDone = nil, nil
+	c.mu.Unlock()
+	if stop != nil {
+		close(stop)
+		<-done
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

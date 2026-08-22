@@ -106,8 +106,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reasons: [],
     },
     samples: samplesFor(shardId),
+    // §v2.2.0 wire invariant: fan_out == goal + other + burst populations.
     histograms: {
-      fan_out: histogram([10, 20]),
+      fan_out: histogram([10, 20, 15]),
+      goal_fan_out: histogram([10]),
+      other_fan_out: histogram([20]),
       late_join: histogram([100]),
       burst: histogram([15]),
     },
@@ -204,7 +207,7 @@ describe("partition topology (§v2.1.0)", () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
     coordinator.submitResult(shardResult(0))
-    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([10]), late_join: histogram([]), burst: histogram([15]) } }))
+    coordinator.submitResult(shardResult(1, { histograms: { fan_out: histogram([10]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram([]), burst: histogram([15]) } }))
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "INCONCLUSIVE")
@@ -214,7 +217,7 @@ describe("partition topology (§v2.1.0)", () => {
   it("invalidates over-sampled late-join history beyond one sample per partition", async () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([10]), late_join: histogram([100, 100]), burst: histogram([15]) } }))
+    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([10]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram([100, 100]), burst: histogram([15]) } }))
     coordinator.submitResult(shardResult(1))
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()

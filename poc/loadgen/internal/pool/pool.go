@@ -146,10 +146,10 @@ type Pool struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	attempted    atomic.Int64
-	established  atomic.Int64
-	surgeCursor  atomic.Int64
-	useSpare     atomic.Bool // dials go to spareSub once the failover is activated
+	attempted   atomic.Int64
+	established atomic.Int64
+	surgeCursor atomic.Int64
+	useSpare    atomic.Bool // dials go to spareSub once the failover is activated
 
 	headFn func(matchID string) (int64, bool) // injected expected-head lookup (publisher evidence)
 }
@@ -174,6 +174,9 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		client:      &http.Client{Transport: transport},
 		ctx:         ctx,
 		cancel:      cancel,
+		goalHist:    *hist.New(hist.DefaultMaxMs),
+		otherHist:   *hist.New(hist.DefaultMaxMs),
+		burstHist:   *hist.New(hist.DefaultMaxMs),
 	}
 }
 

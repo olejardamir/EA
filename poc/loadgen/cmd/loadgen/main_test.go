@@ -1,0 +1,885 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"ea/loadgen/internal/coordinator"
+	"ea/loadgen/internal/deep"
+	"ea/loadgen/internal/dut"
+	"ea/loadgen/internal/hist"
+	"ea/loadgen/internal/pool"
+	"ea/loadgen/internal/publisher"
+)
+
+const testCommit = "c89159e8882206de9fffa2b170a38d76854288ce"
+
+// validValidity is the all-green validity state (no reasons, every flag true).
+func validValidity() coordinator.Validity {
+	return coordinator.Validity{
+		GeneratorValid:           true,
+		SourcePortHeadroomValid:  true,
+		NginxWorkerCapacityValid: true,
+		EnvironmentValid:         true,
+		TimingValid:              true,
+	}
+}
+
+func testConfig(shardID int) *config {
+	return &config{
+		campaignID:     "camp-test",
+		runIndex:       0,
+		shardID:        shardID,
+		shardTotal:     4,
+		globalTarget:   100000,
+		localTarget:    25000,
+		surgeLocal:     10000,
+		seed:           42,
+		sourceCommit:   testCommit,
+		publisherOwner: false,
+		restartTarget:  3,
+		subURL:         "http://nchan-p0:8081/sub",
+		pubURL:         "http://nchan-p0:8081/pub",
+		controlURL:     "http://nchan-p0:8081/control",
+		spareSubURL:    "",
+		publisherURL:   "",
+		redisAddr:      "redis:6379",
+	}
+}
+
+func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
+	p := pool.New("http://127.0.0.1:1/sub", matchIDs(), cfg.localTarget)
+	cl := coordinator.NewClient("http://127.0.0.1:1", coordinator.Registration{
+		CampaignID: cfg.campaignID, ShardID: cfg.shardID, ShardCount: cfg.shardTotal,
+	})
+	cl.ExperimentRunID = "run-test-0001"
+	r := &shardRun{
+		cfg:      cfg,
+		pool:     p,
+		pub:      publisher.New(""),
+		cl:       cl,
+		valid:    validValidity(),
+		genStart: time.Now(),
+		srcPort:  &dut.SourcePortEvidence{HeadroomValid: true},
+		redisInfo: &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
+		nchanMetrics: &dut.ControlMetrics{},
+	}
+	return r, p
+}
+
+func passingScenarios() []coordinator.ScenarioEvidence {
+	return []coordinator.ScenarioEvidence{
+		{Name: "late-join", Participated: true, Passed: true},
+		{Name: "burst", Participated: true, Passed: true},
+		{Name: "reconnect", Participated: true, Passed: true},
+		{Name: "restart-replacement", Participated: false, Passed: true},
+	}
+}
+
+func zeroCounters() map[string]float64 {
+	return map[string]float64{}
+}
+
+// ── config ───────────────────────────────────────────────────────────────────
+
+func TestLoadConfigMissingRequiredEnv(t *testing.T) {
+	for _, name := range []string{"CAMPAIGN_ID", "GIT_COMMIT_SHA", "COORDINATOR_URL", "NCHAN_SUB_URL"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CAMPAIGN_ID", "c")
+			t.Setenv("GIT_COMMIT_SHA", testCommit)
+			t.Setenv("COORDINATOR_URL", "http://coord")
+			t.Setenv("NCHAN_SUB_URL", "http://sub")
+			t.Setenv(name, "")
+			if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("want error naming %s, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsShortCommitSHA(t *testing.T) {
+	t.Setenv("CAMPAIGN_ID", "c")
+	t.Setenv("GIT_COMMIT_SHA", "abc123")
+	t.Setenv("COORDINATOR_URL", "http://coord")
+	t.Setenv("NCHAN_SUB_URL", "http://sub")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "40-hex") {
+		t.Fatalf("want 40-hex error, got %v", err)
+	}
+}
+
+func TestLoadConfigRejectsShardIDOutOfRange(t *testing.T) {
+	base := func() {
+		t.Helper()
+		t.Setenv("CAMPAIGN_ID", "c")
+		t.Setenv("GIT_COMMIT_SHA", testCommit)
+		t.Setenv("COORDINATOR_URL", "http://coord")
+		t.Setenv("NCHAN_SUB_URL", "http://sub")
+	}
+	base()
+	t.Setenv("SHARD_TOTAL", "4")
+	t.Setenv("SHARD_ID", "4")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "SHARD_ID") {
+		t.Fatalf("want SHARD_ID range error, got %v", err)
+	}
+	base()
+	t.Setenv("SHARD_TOTAL", "4")
+	t.Setenv("SHARD_ID", "-1")
+	if _, err := loadConfig(); err == nil {
+		t.Fatal("want negative SHARD_ID rejected")
+	}
+}
+
+func TestLoadConfigRejectsRestartTargetRange(t *testing.T) {
+	t.Setenv("CAMPAIGN_ID", "c")
+	t.Setenv("GIT_COMMIT_SHA", testCommit)
+	t.Setenv("COORDINATOR_URL", "http://coord")
+	t.Setenv("NCHAN_SUB_URL", "http://sub")
+	t.Setenv("SHARD_TOTAL", "4")
+	t.Setenv("RESTART_TARGET_SHARD", "5")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "RESTART_TARGET_SHARD") {
+		t.Fatalf("want restart target range error, got %v", err)
+	}
+}
+
+func TestLoadConfigSurgeLocalMathAndTrimming(t *testing.T) {
+	t.Setenv("CAMPAIGN_ID", "c")
+	t.Setenv("GIT_COMMIT_SHA", testCommit)
+	t.Setenv("COORDINATOR_URL", "http://coord/")
+	t.Setenv("NCHAN_SUB_URL", "http://sub/")
+	t.Setenv("GLOBAL_TARGET", "100000")
+	t.Setenv("TARGET_CONNECTIONS", "25000")
+	t.Setenv("SHARD_TOTAL", "4")
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	// (100000+40000)/4 - 25000 = 10000
+	if cfg.surgeLocal != 10000 {
+		t.Fatalf("surgeLocal = %d, want 10000", cfg.surgeLocal)
+	}
+	if cfg.coordinatorURL != "http://coord" || cfg.subURL != "http://sub" {
+		t.Fatalf("trailing slashes not trimmed: %q %q", cfg.coordinatorURL, cfg.subURL)
+	}
+	if cfg.restartTarget != 3 { // defaults to shardTotal-1
+		t.Fatalf("restartTarget = %d, want 3", cfg.restartTarget)
+	}
+}
+
+func TestLoadConfigSurgeLocalClampsNegative(t *testing.T) {
+	t.Setenv("CAMPAIGN_ID", "c")
+	t.Setenv("GIT_COMMIT_SHA", testCommit)
+	t.Setenv("COORDINATOR_URL", "http://coord")
+	t.Setenv("NCHAN_SUB_URL", "http://sub")
+	t.Setenv("TARGET_CONNECTIONS", "60000") // local > per-shard share
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.surgeLocal != 0 {
+		t.Fatalf("surgeLocal = %d, want clamped 0", cfg.surgeLocal)
+	}
+}
+
+// ── population ───────────────────────────────────────────────────────────────
+
+func TestBuildPopulationExactTotal(t *testing.T) {
+	for _, target := range []int{5000, 25000} {
+		p := pool.New("", matchIDs(), target)
+		if err := buildPopulation(p, target); err != nil {
+			t.Fatalf("target=%d: %v", target, err)
+		}
+		if got := p.ViewerCount(); got != target {
+			t.Fatalf("target=%d registered %d viewers", target, got)
+		}
+		lobbyN := target * lobbyFractionPct / 100
+		wantDeep := matchCount * deepPerMatch
+		wantRec := reconnectPerShard
+		_ = lobbyN
+		_ = wantDeep
+		_ = wantRec
+	}
+}
+
+func TestBuildPopulationCohortMixMath(t *testing.T) {
+	target := 25000
+	lobbyN := target * lobbyFractionPct / 100 // 500
+	matchN := target - lobbyN                 // 24500
+	base := (matchN - matchCount*deepPerMatch) / matchCount
+	extra := (matchN - matchCount*deepPerMatch) - base*matchCount
+	recPerMatch := reconnectPerShard / matchCount
+
+	// frozen invariants from the architecture design (§cohort mix)
+	if lobbyN != 500 || wantInt(matchCount) != 8 || deepPerMatch != 32 ||
+		reconnectPerShard != 64 || recPerMatch != 8 {
+		t.Fatalf("frozen cohort constants drifted: lobby=%d base=%d extra=%d rec=%d",
+			lobbyN, base, extra, recPerMatch)
+	}
+	lightTotal := (base-recPerMatch)*matchCount + extra
+	total := lobbyN + matchCount*(deepPerMatch+recPerMatch) + lightTotal
+	if total != target {
+		t.Fatalf("mix sums to %d, want %d", total, target)
+	}
+}
+
+func wantInt(n int) int { return n }
+
+func TestBuildPopulationRejectsTooSmallTarget(t *testing.T) {
+	p := pool.New("", matchIDs(), 300)
+	err := buildPopulation(p, 300)
+	if err == nil || !strings.Contains(err.Error(), "too small") {
+		t.Fatalf("want too-small error, got %v", err)
+	}
+}
+
+func TestMatchIDsShape(t *testing.T) {
+	ids := matchIDs()
+	if len(ids) != matchCount {
+		t.Fatalf("len = %d, want %d", len(ids), matchCount)
+	}
+	if ids[0] != "match-001" || ids[len(ids)-1] != "match-008" {
+		t.Fatalf("unexpected ids %v..%v", ids[0], ids[len(ids)-1])
+	}
+	for i, id := range ids {
+		want := fmt.Sprintf("match-%03d", i+1)
+		if id != want {
+			t.Fatalf("ids[%d] = %q, want %q", i, id, want)
+		}
+	}
+}
+
+// ── counter snapshots (windowed deltas) ─────────────────────────────────────
+
+func TestCounterSnapshotDeltaArithmetic(t *testing.T) {
+	a := counterSnapshot{missing: 10, duplicates: 6, outOfOrder: 4, failures: 2, unexpected: 1, schema: 3, agreement: 5}
+	b := counterSnapshot{missing: 7, duplicates: 6, outOfOrder: 0, failures: 0, unexpected: 1, schema: 1, agreement: 5}
+	d := a.sub(b)
+	if d.missing != 3 || d.duplicates != 0 || d.outOfOrder != 4 || d.failures != 2 ||
+		d.unexpected != 0 || d.schema != 2 || d.agreement != 0 {
+		t.Fatalf("delta wrong: %+v", d)
+	}
+}
+
+func TestTakeSnapshotReadsPoolCounters(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	p.Counters.MissingSequences.Store(11)
+	p.Counters.Duplicates.Store(4)
+	snap := takeSnapshot(p)
+	if snap.missing != 11 || snap.duplicates != 4 {
+		t.Fatalf("snapshot mismatch: %+v", snap)
+	}
+	_ = r
+}
+
+// ── verdict classification (frozen local rule) ───────────────────────────────
+
+func TestClassifyShardRules(t *testing.T) {
+	tests := []struct {
+		name       string
+		mutate     func(*shardRun, map[string]float64, *[]coordinator.ScenarioEvidence)
+		want       coordinator.Verdict
+	}{
+		{
+			name:   "all clean accepts",
+			mutate: func(*shardRun, map[string]float64, *[]coordinator.ScenarioEvidence) {},
+			want:   coordinator.VerdictAccept,
+		},
+		{
+			name: "validity reason forces inconclusive",
+			mutate: func(r *shardRun, _ map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				r.reasonf("partition healthcheck: boom")
+			},
+			want: coordinator.VerdictInconclusive,
+		},
+		{
+			name: "missing sequences rejects",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["missing_sequences"] = 1
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "reconnect gaps reject",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["reconnect_gaps"] = 2
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "restart failover duplicates reject",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["restart_failover_duplicates"] = 1
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "connection failures reject",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["connection_failures"] = 1
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "schema violations reject",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["schema_violations"] = 1
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "state agreement violations reject",
+			mutate: func(_ *shardRun, c map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				c["state_agreement_violations"] = 1
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "baseline shortfall rejects",
+			mutate: func(r *shardRun, _ map[string]float64, _ *[]coordinator.ScenarioEvidence) {
+				r.baselineShortfall = true
+			},
+			want: coordinator.VerdictReject,
+		},
+		{
+			name: "failed scenario rejects",
+			mutate: func(_ *shardRun, _ map[string]float64, s *[]coordinator.ScenarioEvidence) {
+				(*s)[2].Passed = false // reconnect scenario failed
+			},
+			want: coordinator.VerdictReject,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r, p := testShardRun(testConfig(0))
+			defer p.Stop()
+			scenarios := passingScenarios()
+			counters := zeroCounters()
+			tc.mutate(r, counters, &scenarios)
+			if got := r.classifyShard(scenarios, counters); got != tc.want {
+				t.Fatalf("verdict = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyShardInvalidityFlagForcesInconclusive(t *testing.T) {
+	for _, flag := range []string{"GeneratorValid", "SourcePortHeadroomValid", "NginxWorkerCapacityValid", "EnvironmentValid", "TimingValid"} {
+		t.Run(flag, func(t *testing.T) {
+			r, p := testShardRun(testConfig(0))
+			defer p.Stop()
+			switch flag {
+			case "GeneratorValid":
+				r.valid.GeneratorValid = false
+			case "SourcePortHeadroomValid":
+				r.valid.SourcePortHeadroomValid = false
+			case "NginxWorkerCapacityValid":
+				r.valid.NginxWorkerCapacityValid = false
+			case "EnvironmentValid":
+				r.valid.EnvironmentValid = false
+			case "TimingValid":
+				r.valid.TimingValid = false
+			}
+			got := r.classifyShard(passingScenarios(), zeroCounters())
+			if got != coordinator.VerdictInconclusive {
+				t.Fatalf("%s=false gave %s, want INCONCLUSIVE", flag, got)
+			}
+		})
+	}
+}
+
+// ── result assembly (wire conformance) ───────────────────────────────────────
+
+func TestAssembleResultWireConformance(t *testing.T) {
+	r, p := testShardRun(testConfig(2))
+	defer p.Stop()
+	r.pubPublished = 12345
+
+	res := r.assembleResult(nil, passingScenarios(),
+		map[string]*deep.PathResult{}, map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+
+	if res.ContractVersion != coordinator.ContractVersion {
+		t.Fatalf("contract version = %q", res.ContractVersion)
+	}
+	if res.AggregateScope != "shard" || res.Scope != "shard" {
+		t.Fatalf("scope fields wrong: %q/%q", res.AggregateScope, res.Scope)
+	}
+	if res.GlobalDirectAcceptEligible {
+		t.Fatal("shard results must never be globally direct-accept eligible")
+	}
+	if res.ShardID != 2 || res.ShardCount != 4 || res.Seed != 42 || res.LocalTarget != 25000 {
+		t.Fatalf("identity fields wrong: %+v", res)
+	}
+	if res.SourceCommit != testCommit {
+		t.Fatalf("source commit not propagated")
+	}
+	if res.Verdict != coordinator.VerdictAccept {
+		t.Fatalf("clean run verdict = %s, want ACCEPT", res.Verdict)
+	}
+	if !res.Validity.GeneratorValid || !res.Validity.EnvironmentValid {
+		t.Fatalf("validity flags not derived from evidence: %+v", res.Validity)
+	}
+
+	// mandatory gated counters must always be present with finite values
+	for _, name := range gatedCorrectnessCounters {
+		v, ok := res.CorrectnessCounters[name]
+		if !ok {
+			t.Fatalf("gated counter %q missing", name)
+		}
+		if v != 0 {
+			t.Fatalf("gated counter %q = %v on clean run", name, v)
+		}
+	}
+	for _, name := range []string{"connection_failures", "unexpected_disconnects",
+		"schema_violations", "state_agreement_violations"} {
+		if _, ok := res.CorrectnessCounters[name]; !ok {
+			t.Fatalf("mandatory counter %q missing", name)
+		}
+	}
+
+	// non-owner shard must report zero published events
+	if res.Workload.EventsPublished != 0 {
+		t.Fatalf("non-owner reported published=%d", res.Workload.EventsPublished)
+	}
+	// resources maps present
+	if res.Resources.Generator == nil || res.Resources.Nchan == nil || res.Resources.Redis == nil {
+		t.Fatal("resources maps must be populated")
+	}
+	if res.Resources.Redis["connected_clients"] != int64(8) {
+		t.Fatalf("redis evidence lost: %v", res.Resources.Redis)
+	}
+	// spare resources only from the restart-target shard
+	if res.Resources.Spare != nil {
+		t.Fatal("spare resources must be omitted on non-target shards")
+	}
+	// histograms present and structurally valid
+	for name, h := range map[string]coordinator.HistogramWire{
+		"fan_out": res.Histograms.FanOut, "goal": res.Histograms.GoalFanOut,
+		"other": res.Histograms.OtherFanOut, "late_join": res.Histograms.LateJoin,
+		"burst": res.Histograms.Burst,
+	} {
+		if h.MaxMs <= 0 {
+			t.Fatalf("histogram %s has MaxMs=%d", name, h.MaxMs)
+		}
+	}
+}
+
+func TestAssembleResultOwnerReportsPublished(t *testing.T) {
+	cfg := testConfig(0)
+	cfg.publisherOwner = true
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	r.pubPublished = 999
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res.Workload.EventsPublished != 999 {
+		t.Fatalf("owner published = %d, want 999", res.Workload.EventsPublished)
+	}
+	if res.PublisherOwner != true {
+		t.Fatal("publisher_owner flag lost")
+	}
+}
+
+func TestAssembleResultSpareResourcesOnRestartTargetOnly(t *testing.T) {
+	cfg := testConfig(3) // restart target
+	cfg.spareSubURL = "http://spare:8081/sub"
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	r.spareMetrics = &dut.ControlMetrics{}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res.Resources.Spare == nil {
+		t.Fatal("restart-target shard must emit spare resource evidence")
+	}
+
+	r2, p2 := testShardRun(testConfig(1)) // bystander
+	defer p2.Stop()
+	r2.spareMetrics = &dut.ControlMetrics{}
+	res2 := r2.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res2.Resources.Spare != nil {
+		t.Fatal("bystander must not emit spare resources")
+	}
+}
+
+func TestAssembleResultLateJoinHistogramRecordsRecovery(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	neg := int64(-1)
+	late := map[string]*deep.PathResult{
+		"late_join:match_001": {Passed: true, RecoveryMs: 120},
+		"late_join:match_002": {Passed: false, RecoveryMs: neg}, // clamp to max
+		"spare_probe":         {Passed: true, RecoveryMs: 5},    // not a late-join key
+	}
+	res := r.assembleResult(nil, passingScenarios(), late, map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	lj := res.Histograms.LateJoin
+	if lj.TotalCount != 2 {
+		t.Fatalf("late-join histogram count = %d, want 2 (probe keys only)", lj.TotalCount)
+	}
+	var overflowOrMax int64
+	for _, b := range lj.Buckets {
+		if b[0] >= int64(hist.DefaultMaxMs) {
+			overflowOrMax += b[1]
+		}
+	}
+	if overflowOrMax < 1 {
+		t.Fatal("negative recovery_ms was not clamped into the max bucket")
+	}
+}
+
+// ── failure result (mid-run death fallback) ─────────────────────────────────
+
+func TestFailureResultShape(t *testing.T) {
+	r, p := testShardRun(testConfig(1))
+	defer p.Stop()
+	runErr := errors.New("steady window interrupted")
+	res := r.failureResult(runErr)
+
+	if res.Verdict != coordinator.VerdictInconclusive {
+		t.Fatalf("verdict = %s, want INCONCLUSIVE", res.Verdict)
+	}
+	if len(res.Validity.Reasons) != 1 || res.Validity.Reasons[0] != runErr.Error() {
+		t.Fatalf("reasons = %v", res.Validity.Reasons)
+	}
+	if len(res.Samples) != 0 {
+		t.Fatal("failure result must carry no samples")
+	}
+	if len(res.Scenarios) != 1 || res.Scenarios[0].Name != "restart-replacement" ||
+		res.Scenarios[0].Participated || !res.Scenarios[0].Passed {
+		t.Fatalf("bystander scenario evidence wrong: %+v", res.Scenarios)
+	}
+	for _, name := range gatedCorrectnessCounters {
+		if v, ok := res.CorrectnessCounters[name]; !ok || v != 0 {
+			t.Fatalf("gated counter %q missing/zero: %v %v", name, ok, v)
+		}
+	}
+	for name, h := range map[string]coordinator.HistogramWire{
+		"fan_out": res.Histograms.FanOut, "goal": res.Histograms.GoalFanOut,
+		"other": res.Histograms.OtherFanOut, "late_join": res.Histograms.LateJoin,
+		"burst": res.Histograms.Burst,
+	} {
+		if h.TotalCount != 0 || h.MaxMs != hist.DefaultMaxMs {
+			t.Fatalf("histogram %s not the canonical empty wire: %+v", name, h)
+		}
+	}
+	if res.ExperimentRunID != r.cl.ExperimentRunID || res.ShardID != 1 {
+		t.Fatal("identity binding lost in failure path")
+	}
+}
+
+// ── phase rates ──────────────────────────────────────────────────────────────
+
+func TestPhaseRatesMath(t *testing.T) {
+	samples := []coordinator.AlignedSample{
+		{TimestampMs: 0, Phase: "warmup", ConnectionsAttempted: 0, ConnectionsEstablished: 0},
+		{TimestampMs: 1000, Phase: "warmup", ConnectionsAttempted: 500, ConnectionsEstablished: 400},
+		{TimestampMs: 2000, Phase: "warmup", ConnectionsAttempted: 1000, ConnectionsEstablished: 900},
+		{TimestampMs: 2000, Phase: "surge", ConnectionsAttempted: 1000, ConnectionsEstablished: 900},
+		{TimestampMs: 4000, Phase: "surge", ConnectionsAttempted: 3000, ConnectionsEstablished: 2900},
+	}
+	rates := phaseRates(samples)
+	if len(rates) != 2 {
+		t.Fatalf("phases = %d, want 2", len(rates))
+	}
+	w, s := rates[0], rates[1]
+	if w.Phase != "warmup" || s.Phase != "surge" {
+		t.Fatalf("phase order wrong: %s %s", w.Phase, s.Phase)
+	}
+	// warmup: dt=2s, attempted 1000 → 500/s; established 900 → 450/s
+	if w.AttemptedPerSec != 500 || w.AcceptedPerSec != 450 {
+		t.Fatalf("warmup rates = %v/%v", w.AttemptedPerSec, w.AcceptedPerSec)
+	}
+	// surge: dt=2s, attempted 2000 → 1000/s; established 2000 → 1000/s
+	if s.AttemptedPerSec != 1000 || s.AcceptedPerSec != 1000 {
+		t.Fatalf("surge rates = %v/%v", s.AttemptedPerSec, s.AcceptedPerSec)
+	}
+}
+
+func TestPhaseRatesZeroDurationYieldsZero(t *testing.T) {
+	samples := []coordinator.AlignedSample{
+		{TimestampMs: 1000, Phase: "steady"},
+		{TimestampMs: 1000, Phase: "steady"},
+	}
+	rates := phaseRates(samples)
+	if len(rates) != 1 || rates[0].AttemptedPerSec != 0 || rates[0].AcceptedPerSec != 0 {
+		t.Fatalf("zero-duration rates wrong: %+v", rates)
+	}
+}
+
+// ── control metrics conversion ───────────────────────────────────────────────
+
+func TestControlMetricsMapNilIsEmpty(t *testing.T) {
+	m := controlMetricsMap(nil)
+	if m == nil || len(m) != 0 {
+		t.Fatalf("nil metrics must map to empty map, got %v", m)
+	}
+}
+
+func TestControlMetricsMapDerefsAllKeys(t *testing.T) {
+	v := int64(42)
+	m := controlMetricsMap(&dut.ControlMetrics{
+		MemoryCurrentBytes: &v, MemoryPeakBytes: &v, CpuUsageUsec: &v,
+		CpuThrottledCount: &v, CpuThrottledUsec: &v,
+		MemoryOomEvents: &v, MemoryOomKillEvents: &v,
+	})
+	for _, key := range []string{"memory_current_bytes", "memory_peak_bytes", "cpu_usage_usec",
+		"cpu_throttled_count", "cpu_throttled_usec", "memory_oom_events", "oom_kill_events"} {
+		if m[key] != int64(42) {
+			t.Fatalf("%s = %v, want 42", key, m[key])
+		}
+	}
+}
+
+func TestControlMetricsMapNilPointersEmitZero(t *testing.T) {
+	// oom_kill_events is mandatory-finite for EVERY partition even when the
+	// counter is absent upstream.
+	m := controlMetricsMap(&dut.ControlMetrics{})
+	if m["oom_kill_events"] != int64(0) {
+		t.Fatalf("oom_kill_events = %v, want finite 0", m["oom_kill_events"])
+	}
+	if len(m) != 7 {
+		t.Fatalf("expected all 7 keys emitted, got %d", len(m))
+	}
+}
+
+// ── scenario accounting ──────────────────────────────────────────────────────
+
+func passedPath() *deep.PathResult {
+	return &deep.PathResult{Passed: true}
+}
+
+func TestLateJoinScenarioAccounting(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+
+	allPass := map[string]*deep.PathResult{}
+	for _, m := range matchIDs() {
+		allPass["late_join:"+m] = &deep.PathResult{Passed: true}
+	}
+	sc := r.lateJoinScenario(allPass)
+	if !sc.Participated || !sc.Passed {
+		t.Fatalf("full-pass late-join must pass: %+v", sc)
+	}
+	if sc.Structured["probes_run"] != matchCount {
+		t.Fatalf("probes_run = %v", sc.Structured["probes_run"])
+	}
+
+	oneFails := map[string]*deep.PathResult{}
+	for _, m := range matchIDs() {
+		oneFails["late_join:"+m] = &deep.PathResult{Passed: true}
+	}
+	oneFails["late_join:match-003"].Passed = false
+	sc = r.lateJoinScenario(oneFails)
+	if sc.Passed {
+		t.Fatal("any failing probe must fail the scenario")
+	}
+
+	tooFew := map[string]*deep.PathResult{"late_join:match-001": passedPath()}
+	sc = r.lateJoinScenario(tooFew)
+	if sc.Passed {
+		t.Fatal("incomplete probe set must fail the scenario")
+	}
+}
+
+func TestReconnectScenarioParticipationGate(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+
+	results := map[string]*deep.PathResult{
+		"rec:a": passedPath(), "rec:b": passedPath(),
+	}
+	sc := r.reconnectScenario(2, results)
+	if !sc.Participated || !sc.Passed {
+		t.Fatalf("released cohort all-passing must pass: %+v", sc)
+	}
+
+	sc = r.reconnectScenario(0, results)
+	if sc.Participated {
+		t.Fatal("zero released must be non-participating")
+	}
+	// frozen rule: Passed requires participation; a zero-release window is
+	// reported as not-passed evidence rather than a silent pass.
+	if sc.Passed {
+		t.Fatal("non-participating scenario must not claim pass")
+	}
+
+	failed := map[string]*deep.PathResult{"rec:a": passedPath(), "rec:b": {}}
+	sc = r.reconnectScenario(2, failed)
+	if sc.Participated && sc.Passed {
+		t.Fatal("failed replay must fail the scenario")
+	}
+
+	empty := map[string]*deep.PathResult{}
+	sc = r.reconnectScenario(2, empty)
+	if sc.Passed {
+		t.Fatal("released>0 with zero evaluated results must fail")
+	}
+}
+
+func TestCountPassedCounts(t *testing.T) {
+	results := map[string]*deep.PathResult{
+		"a": passedPath(), "b": {}, "c": passedPath(),
+	}
+	if got := countPassed(results); got != 2 {
+		t.Fatalf("countPassed = %d, want 2", got)
+	}
+}
+
+// ── restart scenario dispatch ────────────────────────────────────────────────
+
+func TestRestartDispatchBystander(t *testing.T) {
+	cfg := testConfig(0) // not restart target (3), not publisher owner
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	sc := r.runRestartScenario(t.Context())
+	if sc.Name != "restart-replacement" || sc.Participated || !sc.Passed {
+		t.Fatalf("bystander dispatch wrong: %+v", sc)
+	}
+	if _, ok := sc.Structured["paths"]; !ok {
+		t.Fatal("bystander structured evidence must carry paths map")
+	}
+}
+
+func TestRestartDispatchFailoverUnavailableWithoutSpare(t *testing.T) {
+	cfg := testConfig(3) // restart target
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	sc := r.runRestartScenario(t.Context())
+	if !sc.Participated || sc.Passed {
+		t.Fatalf("target shard without spare must participate-and-fail: %+v", sc)
+	}
+	if !strings.Contains(sc.Detail, "unavailable") {
+		t.Fatalf("detail should explain unavailability: %q", sc.Detail)
+	}
+}
+
+func TestRestartDispatchSpareProbeUnavailableWithoutURLs(t *testing.T) {
+	cfg := testConfig(0)
+	cfg.publisherOwner = true // owner path, but spare/publisher URLs empty
+	r, p := testShardRun(cfg)
+	defer p.Stop()
+	sc := r.runRestartScenario(t.Context())
+	if !sc.Participated || sc.Passed {
+		t.Fatalf("owner without spare URLs must participate-and-fail: %+v", sc)
+	}
+	if !strings.Contains(sc.Detail, "unavailable") {
+		t.Fatalf("detail should explain unavailability: %q", sc.Detail)
+	}
+}
+
+func TestRestartIdentityBindsRun(t *testing.T) {
+	r, p := testShardRun(testConfig(2))
+	defer p.Stop()
+	id := r.restartIdentity()
+	if id["campaign_id"] != "camp-test" ||
+		id["experiment_run_id"] != "run-test-0001" ||
+		id["shard_id"] != 2 {
+		t.Fatalf("restart identity wrong: %+v", id)
+	}
+	if _, ok := id["run_index"]; !ok {
+		t.Fatal("run_index required by coordinator predicate")
+	}
+}
+
+// ── head cache ───────────────────────────────────────────────────────────────
+
+func TestHeadLookupMissWithoutCache(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	if _, ok := r.headLookup("match_001"); ok {
+		t.Fatal("empty cache must miss")
+	}
+}
+
+func TestRefreshHeadsMapsPublisherEvidenceToCanonicalHeads(t *testing.T) {
+	// Offline check of the mapping contract via a stubbed HTTP server would
+	// duplicate publisher client tests; here we verify the cache store/load
+	// round trip through headLookup after a manual store.
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	heads := map[string]pool.CanonicalHead{"match_001": {Seq: 77}}
+	r.headCache.Store(&heads)
+	seq, ok := r.headLookup("match_001")
+	if !ok || seq != 77 {
+		t.Fatalf("headLookup = %d,%v want 77,true", seq, ok)
+	}
+}
+
+// ── histogram wire conversion ────────────────────────────────────────────────
+
+func TestWireConversionPreservesHistogramLayout(t *testing.T) {
+	h := hist.New(hist.DefaultMaxMs)
+	h.Record(10)
+	h.Record(20)
+	h.Record(-1) // negative → overflow
+	h.Record(hist.DefaultMaxMs + 1) // clamps into the max bucket
+	s := h.Serialize()
+	w := wire(s)
+	if w.MaxMs != s.MaxMs || w.TotalCount != s.TotalCount || w.OverflowCount != s.OverflowCount {
+		t.Fatalf("wire layout mismatch: %+v vs %+v", w, s)
+	}
+	if len(w.Buckets) != len(s.Buckets) {
+		t.Fatalf("bucket count mismatch: %d vs %d", len(w.Buckets), len(s.Buckets))
+	}
+	// total counts all samples incl. the negative one (overflow); the
+	// >maxMs sample clamps into the terminal bucket.
+	if w.TotalCount != 4 || w.OverflowCount != 1 {
+		t.Fatalf("counts wrong: total=%d overflow=%d", w.TotalCount, w.OverflowCount)
+	}
+	last := w.Buckets[len(w.Buckets)-1]
+	if last[0] != int64(hist.DefaultMaxMs) || last[1] != 1 {
+		t.Fatalf("clamped bucket wrong: %v", last)
+	}
+}
+
+// ── wait helpers (floor semantics) ───────────────────────────────────────────
+
+func TestWaitActiveFloorSemantics(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+
+	if r.waitActive(0, 50*time.Millisecond) {
+		t.Fatal("baseline<=0 cannot settle")
+	}
+	// baseline=1 → floor(1*0.98)=0 → settles immediately at zero activity.
+	if !r.waitActive(1, 50*time.Millisecond) {
+		t.Fatal("floor-0 baseline must settle")
+	}
+	// active stays 0; baseline 25 floor 24 (98%) — must time out false.
+	if r.waitActive(25, 60*time.Millisecond) {
+		t.Fatal("below-floor pool must not settle")
+	}
+}
+
+func TestWaitEstablishedFloorSemantics(t *testing.T) {
+	p := pool.New("", matchIDs(), 100)
+	defer p.Stop()
+	// target=1 → floor(1*0.98)=0 → passes with zero established connections.
+	if !waitEstablished(p, 1, 50*time.Millisecond) {
+		t.Fatal("floor-0 target must pass")
+	}
+	// floor(100 * 0.98) = 98 > 0 active → short timeout returns false quickly
+	if waitEstablished(p, 100, 60*time.Millisecond) {
+		t.Fatal("below-floor establishment must not pass")
+	}
+}
+
+// ── ramp surge unit bounds ───────────────────────────────────────────────────
+
+func TestRampSurgeNoopWhenNonpositive(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	before := p.ViewerCount()
+	r.rampSurge(t.Context(), 0, 100*time.Millisecond)
+	r.rampSurge(t.Context(), -5, 100*time.Millisecond)
+	if p.ViewerCount() != before {
+		t.Fatal("non-positive surge must add nothing")
+	}
+}

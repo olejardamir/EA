@@ -39,8 +39,11 @@ function campaignShard(index: number, shardId: number): ShardExperimentResult {
     verdict: "ACCEPT",
     validity: { generator_valid: true, source_port_headroom_valid: true, nginx_worker_capacity_valid: true, environment_valid: true, timing_valid: true, reasons: [] },
     samples: [],
+    // §v2.2.0 wire invariant: fan_out == goal + other + burst populations.
     histograms: {
-      fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] },
+      fan_out: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[10, 1], [15, 1], [30, 1]] },
+      goal_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] },
+      other_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[15, 1]] },
       late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[30, 1]] },
     },
@@ -82,7 +85,9 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
     },
     workload_rates: { events_published: 100, phase_rates: [] },
     histograms: {
-      fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
+      fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 3, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[10, 3]] } },
+      goal_fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
+      other_fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
       late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[20, 4]] } },
       burst: { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[30, 4]] } },
     },
@@ -118,7 +123,7 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     assert.equal(result.contract_version, ACTIVE_CONTRACT_VERSION)
     assert.equal(result.run_count, 3)
     assert.deepEqual(result.run_indices, [0, 1, 2])
-    assert.equal(result.histograms.fan_out.count, 3)
+    assert.equal(result.histograms.fan_out.count, 9)
     assert.equal(result.verdict, "ACCEPT")
     assert.equal(result.global_direct_accept_eligible, true)
     assert.equal(result.global_target, 100_000)

@@ -265,9 +265,12 @@ export class MatchEventPublisher {
   // Holds the per-match busy lock for the ENTIRE prefill range to prevent interleaving
   // with normal publication. This makes the prefill range deterministic and independently
   // frozen expected range/state provable.
+  // §v2.2.0: the event type is caller-selected (frozen restart drill uses
+  // "corner"); the default preserves historical behavior.
   async publishPrefill(
     matchId: string,
     count: number,
+    eventType = "corner",
   ): Promise<{
     published: number
     firstSeq: number
@@ -298,14 +301,14 @@ export class MatchEventPublisher {
             clock: { ...state.clock },
             last_event_type: state.last_event_type,
           }
-          advanceMatchState(candidate, "corner", this.config.random)
+          advanceMatchState(candidate, eventType, this.config.random)
 
           const transmitTimestamp = new Date().toISOString()
-          const event = createEventPayload(matchId, candidate.seq, "corner", candidate.score, candidate.clock, transmitTimestamp)
+          const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock, transmitTimestamp)
           const body = JSON.stringify(event)
 
           this._pendingPublishes++
-          const ok = await this.config.publisher.publish(matchId, body, "corner")
+          const ok = await this.config.publisher.publish(matchId, body, eventType)
           this._pendingPublishes--
 
           if (ok) {
