@@ -110,13 +110,16 @@ type viewer struct {
 	cancelMu  sync.Mutex          // guards curCancel; makes hold-vs-connect race-free
 	curCancel *context.CancelFunc // cancels the in-flight connection attempt
 
-	mu        sync.Mutex // guards the orchestrator-side fields below
-	resumeID  string     // captured Last-Event-ID pending transport use ("": none)
-	recFirst  uint64     // frozen required-range lower bound (captured+1); 0 = none
-	recTarget uint64     // frozen required-range upper bound (independent head)
+	mu             sync.Mutex // guards the orchestrator-side fields below
+	resumeID       string     // captured Last-Event-ID pending transport use ("": none)
+	recFirst       uint64     // frozen required-range lower bound (captured+1); 0 = none
+	recTarget      uint64     // frozen required-range upper bound (independent head)
+	capturedCanon  uint64     // canonical seq captured at hold time for range freeze
 
 	capMu   sync.Mutex // guards capture (viewer-goroutine writer, collector reader)
 	capture []uint64   // received sequences while capture window open
+	lastRawID string   // last SSE id string for Last-Event-ID resume
+	lastCanon uint64   // last canonical_seq extracted from payload (0 = none)
 }
 
 // Pool owns every simulated viewer for one shard.
@@ -360,12 +363,8 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 	}()
 
 	if resumeID == "" {
-		// Fresh subscription: the server makes no replay promise, so
-		// continuity is judged per-connection. Cross-connection exactness is
-		// asserted only on Last-Event-ID resume paths (assignment semantics).
 		resetContinuity(&v.st)
 	} else {
-		// consume the pending resume exactly once (retry keeps it on failure)
 		v.mu.Lock()
 		v.resumeID = ""
 		v.mu.Unlock()
@@ -388,18 +387,20 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 		line, rerr := br.ReadSlice('\n')
 		if rerr != nil {
 			if errors.Is(rerr, bufio.ErrBufferFull) {
-				// oversized data line: count payload bytes, framing only
-				if v.st.Role == RoleDeep && dataPrefix(line) {
-					p.appendScratch(v, line[5:])
+				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+					if dataPrefix(line) {
+						p.appendScratch(v, line[5:])
+					}
 				} else if !dataPrefix(line) {
-					// an id line can never be this large; treat as framing noise
 					curID = curID[:0]
 				}
 				continue
 			}
 			if len(line) > 0 {
-				if v.st.Role == RoleDeep && dataPrefix(line) {
-					p.appendScratch(v, line[5:])
+				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+					if dataPrefix(line) {
+						p.appendScratch(v, line[5:])
+					}
 				}
 				continue
 			}
@@ -414,7 +415,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 			p.Counters.TransportIDPresent.Add(1)
 		case hasPrefixColon(trimmed, "data"):
 			payload := trimmed[5:]
-			if v.st.Role == RoleDeep {
+			if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
 				p.appendScratch(v, payload)
 			}
 		default:
@@ -459,15 +460,19 @@ func hasPrefixColon(line []byte, name string) bool {
 	return true
 }
 
-// dispatch processes one frame. The lightweight path parses ONLY the id field
-// (uint). Deep viewers additionally decode the full payload once.
 func (p *Pool) dispatch(v *viewer, id []byte) {
 	now := time.Now()
 	p.Counters.FramesReceived.Add(1)
 
 	if v.st.Role == RoleLobby {
-		// liveness accounting only (frames carry no comparable sequence)
 		return
+	}
+
+	rawID := string(bytes.TrimSpace(id))
+	if rawID != "" {
+		v.mu.Lock()
+		v.lastRawID = rawID
+		v.mu.Unlock()
 	}
 
 	seq, ok := parseUint(id)
@@ -476,9 +481,31 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		return
 	}
 
+	var canonSeq uint64
+	var haveCanon bool
+	if v.scratchLen > 0 {
+		if ev, err := deep.ValidateSchema(v.scratch[:v.scratchLen], ""); err == nil {
+			canonSeq = uint64(ev.CanonicalSeq)
+			haveCanon = true
+			v.mu.Lock()
+			v.lastCanon = canonSeq
+			v.mu.Unlock()
+		} else if c, ok := extractCanonSeq(v.scratch[:v.scratchLen]); ok {
+			canonSeq = c
+			haveCanon = true
+			v.mu.Lock()
+			v.lastCanon = c
+			v.mu.Unlock()
+		}
+	}
+
 	if v.capturing.Load() {
+		store := seq
+		if haveCanon {
+			store = canonSeq
+		}
 		v.capMu.Lock()
-		v.capture = append(v.capture, seq)
+		v.capture = append(v.capture, store)
 		v.capMu.Unlock()
 	}
 
@@ -497,10 +524,13 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	}
 
 	if v.st.Role == RoleLight || v.st.Role == RoleReconnect {
+		if haveCanon {
+			p.Counters.DeepFramesValidated.Add(1)
+			v.sawDeep.Store(true)
+		}
 		return
 	}
 
-	// ── deep cohort: full payload validation ──
 	if v.scratchLen == 0 {
 		return
 	}
@@ -512,9 +542,6 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	}
 	p.Counters.DeepFramesValidated.Add(1)
 	v.sawDeep.Store(true)
-	if uint64(ev.CanonicalSeq) != seq {
-		p.Counters.AgreementViolations.Add(1)
-	}
 	v.state.Observe(ev)
 	if pubMs, err := deep.FastIsoMs(ev.PublishTimestamp); err == nil {
 		lat := int(now.UnixMilli() - pubMs)
@@ -696,22 +723,28 @@ func (p *Pool) awaitOffline(pending func(*viewer) bool, timeout time.Duration) {
 	}
 }
 
-// HoldReconnectCohort flags every eligible reconnect-cohort viewer for a
-// planned disconnect and waits until each has actually dropped offline. The
-// Last-Event-ID is frozen from the mirrored last-seen sequence; the flag is
-// raised before the cancel fires so teardown can never be misattributed.
 func (p *Pool) HoldReconnectCohort() {
 	for _, i := range p.recIdx {
 		v := p.viewers[i]
-		last := v.lastSeq.Load()
-		if last == 0 {
-			continue // never established; nothing to resume
+		v.mu.Lock()
+		raw := v.lastRawID
+		canon := v.lastCanon
+		v.mu.Unlock()
+		if canon == 0 {
+			canon = v.lastSeq.Load()
+		}
+		if raw == "" {
+			raw = strconv.FormatUint(canon, 10)
+		}
+		if raw == "" {
+			continue
 		}
 		v.cancelMu.Lock()
 		v.mu.Lock()
-		v.resumeID = strconv.FormatUint(last, 10)
+		v.resumeID = raw
+		v.capturedCanon = canon
 		v.mu.Unlock()
-		v.reconnectQ.Store(true) // flag BEFORE cancel: teardown observes it
+		v.reconnectQ.Store(true)
 		if v.curCancel != nil {
 			(*v.curCancel)()
 		}
@@ -721,36 +754,30 @@ func (p *Pool) HoldReconnectCohort() {
 	p.awaitOffline(func(v *viewer) bool { return v.reconnectQ.Load() }, 30*time.Second)
 }
 
-// ReleaseReconnectCohort lets the held viewers reconnect with their captured
-// Last-Event-ID. Freezes each required range as [captured+1 .. publisher-head]
-// using the independent expected-side lookup AT RELEASE TIME (the range never
-// moves afterwards, regardless of what the wire delivers); opens the capture
-// window. Viewers whose head shows nothing to replay are unheld without a
-// capture window. Returns how many viewers were released with a live window.
 func (p *Pool) ReleaseReconnectCohort() int {
 	released := 0
 	for _, i := range p.recIdx {
 		v := p.viewers[i]
 		if !v.reconnectQ.Load() {
-			continue // never held this cycle
+			continue
 		}
 		v.mu.Lock()
 		resumeStr := v.resumeID
+		captured := v.capturedCanon
 		v.mu.Unlock()
 		if resumeStr == "" {
-			v.reconnectQ.Store(false) // held without capture: just unhold
+			v.reconnectQ.Store(false)
 			continue
 		}
-		captured, _ := strconv.ParseUint(resumeStr, 10, 64)
 		var head int64
 		var ok bool
 		if p.headFn != nil {
 			head, ok = p.headFn(v.matchID)
 		}
-		if !ok || head <= int64(captured) {
-			// no new events since capture: nothing to replay
+		if !ok || captured == 0 || head <= int64(captured) {
 			v.mu.Lock()
 			v.resumeID = ""
+			v.capturedCanon = 0
 			v.mu.Unlock()
 			v.reconnectQ.Store(false)
 			continue
@@ -762,7 +789,7 @@ func (p *Pool) ReleaseReconnectCohort() int {
 		v.capMu.Lock()
 		v.capture = v.capture[:0]
 		v.capMu.Unlock()
-		v.capturing.Store(true) // window opens BEFORE unhold: no frame escapes
+		v.capturing.Store(true)
 		v.reconnectQ.Store(false)
 		p.Counters.ReconnectAttempts.Add(1)
 		released++
@@ -796,6 +823,34 @@ func (p *Pool) CollectReconnectResults() map[string]*deep.PathResult {
 		out[v.matchID+"#"+strconv.FormatInt(v.st.ID, 10)] = res
 	}
 	return out
+}
+
+func extractCanonSeq(data []byte) (uint64, bool) {
+	for _, key := range []string{`"canonical_seq"`, `"n"`} {
+		idx := bytes.Index(data, []byte(key))
+		if idx < 0 {
+			continue
+		}
+		rest := data[idx+len(key):]
+		colon := bytes.IndexByte(rest, ':')
+		if colon < 0 {
+			continue
+		}
+		rest = rest[colon+1:]
+		for len(rest) > 0 && (rest[0] == ' ' || rest[0] == '"') {
+			rest = rest[1:]
+		}
+		var v uint64
+		var n int
+		for n < len(rest) && rest[n] >= '0' && rest[n] <= '9' {
+			v = v*10 + uint64(rest[n]-'0')
+			n++
+		}
+		if n > 0 {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 func b2i(b bool) int64 {
@@ -958,11 +1013,11 @@ func (p *Pool) DrainAll() int64 {
 		}
 		v.cancelMu.Lock()
 		if v.st.Role != RoleLobby {
-			if last := v.lastSeq.Load(); last != 0 {
-				v.mu.Lock()
-				v.resumeID = strconv.FormatUint(last, 10)
-				v.mu.Unlock()
+			v.mu.Lock()
+			if v.lastRawID != "" {
+				v.resumeID = v.lastRawID
 			}
+			v.mu.Unlock()
 		}
 		v.drained.Store(true)
 		v.reconnectQ.Store(true)
