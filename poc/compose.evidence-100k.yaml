@@ -284,6 +284,10 @@ services:
       SHARD_TOTAL: "4"
       RESTART_TARGET_SHARD: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+      # Align the Go runtime with the container CPU quota: GOMAXPROCS defaulting
+      # to host core count makes the scheduler overshoot the quota on every GC
+      # cycle and trip the frozen generator throttle/CPU-peak gates.
+      GOMAXPROCS: "4"
     deploy:
       resources:
         limits:
