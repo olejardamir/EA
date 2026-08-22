@@ -549,6 +549,13 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	ev, err := deep.ValidateSchema(data, v.matchID)
 	if err != nil {
 		p.Counters.SchemaViolations.Add(1)
+		if p.Counters.SchemaViolations.Load() < 5 {
+			n := 120
+			if len(data) < n {
+				n = len(data)
+			}
+			fmt.Printf("[pool] schema_violation shard deep %q err=%v data=%.120q\n", v.matchID, err, string(data[:n]))
+		}
 		return
 	}
 	p.Counters.DeepFramesValidated.Add(1)
