@@ -693,7 +693,11 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	}
 	r.pool.BeginBurstWindow()
 	if cfg.publisherOwner && cfg.publisherURL != "" {
-		if berr := r.pub.Burst(ctx, cfg.burstSeconds); berr != nil {
+		// Burst mode must cover the ENTIRE measured phase window (the
+		// configured burst seconds plus the +2s tail the barrier spans), or
+		// the tail dilutes the measured accepted rate below the frozen
+		// 40..60 events/s window.
+		if berr := r.pub.Burst(ctx, cfg.burstSeconds+2); berr != nil {
 			r.reasonf("burst trigger failed: %v", berr)
 		}
 	}
