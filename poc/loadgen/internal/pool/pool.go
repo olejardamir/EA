@@ -934,9 +934,6 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 		if isHistoryProbe && scratchLen > 0 {
 			if ev, err := deep.ValidateSchema(scratch[:scratchLen], spec.MatchID); err == nil {
 				collectSeq = uint64(ev.CanonicalSeq)
-				if collectSeq != seq && spec.ResumeID != "" {
-					p.Counters.AgreementViolations.Add(1)
-				}
 			} else {
 				p.Counters.SchemaViolations.Add(1)
 			}
