@@ -478,6 +478,13 @@ export class GlobalExperimentCoordinator {
     if (mergedLateJoin.count !== this.shardCount * 64) {
       validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount * 64} (64 per partition)`)
     }
+    if (mergedLateJoin.count === 0) validityReasons.push("global late-join histogram is empty")
+    const fanOutP95 = histogramSummary(mergedFanOut).p95_ms
+    const burstP95 = histogramSummary(mergedBurst).p95_ms
+    const lateJoinP95 = histogramSummary(mergedLateJoin).p95_ms
+    if (mergedFanOut.count > 0 && fanOutP95 > 500) rejectReasons.push(`fan_out_p95_ms ${fanOutP95} > 500`)
+    if (mergedBurst.count > 0 && burstP95 > 1000) rejectReasons.push(`burst_p95_ms ${burstP95} > 1000`)
+    if (mergedLateJoin.count > 0 && lateJoinP95 > 2000) rejectReasons.push(`late_join_p95_ms ${lateJoinP95} > 2000`)
 
     const correctnessCounters: Record<string, number> = {}
     for (const result of shardResults) {
@@ -485,7 +492,7 @@ export class GlobalExperimentCoordinator {
         correctnessCounters[name] = (correctnessCounters[name] ?? 0) + value
       }
     }
-    for (const name of ["missing_sequences", "duplicates", "out_of_order", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations"]) {
+    for (const name of ["missing_sequences", "duplicates", "out_of_order", "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors", "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count", "state_violations", "canonical_payload_state_violations", "lobby_malformed", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations", "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects"]) {
       if ((correctnessCounters[name] ?? 0) > 0) rejectReasons.push(`${name}=${correctnessCounters[name]}`)
     }
 
@@ -565,6 +572,21 @@ export class GlobalExperimentCoordinator {
         })),
       }
     })
+
+    for (const result of shardResults) {
+      const rec = result.scenarios.find((s) => s.name === "reconnect")
+      if (rec?.structured && typeof rec.structured === "object") {
+        const st = rec.structured as Record<string, unknown>
+        const released = st["released"]
+        const evaluated = st["evaluated"]
+        const passed = st["passed"]
+        if (typeof released === "number" && typeof evaluated === "number" && typeof passed === "number") {
+          if (released !== 64 || evaluated !== 64 || passed !== 64) {
+            validityReasons.push(`shard ${result.shard_id} reconnect exactness ${released}/${evaluated}/${passed} != 64/64/64`)
+          }
+        }
+      }
+    }
 
     const phaseTimings: GlobalExperimentResult["phase_timings"] = {}
     for (const [phase, timing] of this.phaseTimings) {
