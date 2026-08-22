@@ -758,6 +758,24 @@ func (p *Pool) awaitOffline(pending func(*viewer) bool, timeout time.Duration) {
 }
 
 func (p *Pool) HoldReconnectCohort() {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		allReady := true
+		for _, i := range p.recIdx {
+			v := p.viewers[i]
+			v.mu.Lock()
+			ready := v.lastRawID != "" || v.lastCanon != 0 || v.lastSeq.Load() != 0
+			v.mu.Unlock()
+			if !ready {
+				allReady = false
+				break
+			}
+		}
+		if allReady {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	for _, i := range p.recIdx {
 		v := p.viewers[i]
 		v.mu.Lock()
