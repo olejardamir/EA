@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -234,6 +235,13 @@ type shardRun struct {
 	genMon     *dut.GeneratorMonitor
 	genRuntime *dut.GeneratorRuntimeEvidence
 
+	// R11: per-boundary publisher evidence snapshots (owner shard only) so
+	// publisher health and accepted publication rates drive the verdict from
+	// measured counters instead of `events_published > 0`.
+	runCtx    context.Context
+	pubPhaseMu sync.Mutex
+	pubPhase  map[string]*publisher.Evidence
+
 	// R10: local wall-clock record of every coordinated phase boundary,
 	// consumed to compute TimingValid from evidence instead of a constant.
 	timingMu     sync.Mutex
@@ -409,6 +417,21 @@ func (r *shardRun) barrier(phase, boundary string) bool {
 		r.phaseEnd[phase] = now
 	}
 	r.timingMu.Unlock()
+	// R11: the owner shard snapshots the publisher's cumulative counters at
+	// every coordinated boundary so phase-scoped publication health is
+	// measured evidence, not an end-of-run aggregate.
+	if r.runCtx != nil && r.pub != nil && r.cfg.publisherOwner && r.cfg.publisherURL != "" {
+		if ev, err := r.pub.Evidence(r.runCtx); err == nil {
+			r.pubPhaseMu.Lock()
+			if r.pubPhase == nil {
+				r.pubPhase = map[string]*publisher.Evidence{}
+			}
+			r.pubPhase[phase+":"+boundary] = ev
+			r.pubPhaseMu.Unlock()
+		} else {
+			r.logf("publisher snapshot %s:%s failed: %v", phase, boundary, err)
+		}
+	}
 	return true
 }
 
@@ -428,6 +451,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentResult, error) {
 	cfg := r.cfg
 	startedAt := time.Now()
+	r.runCtx = ctx
 	r.runStartWall = startedAt
 
 	// ── preflight ──
@@ -1371,6 +1395,145 @@ func (r *shardRun) timingEvidence() map[string]any {
 	return out
 }
 
+// R11 frozen publication-rate windows (accepted publisher events per second
+// over the measured phase window).
+const (
+	steadyPublicationRateMin = 8.0
+	steadyPublicationRateMax = 12.0
+	burstPublicationRateMin  = 40.0
+	burstPublicationRateMax  = 60.0
+	publisherPendingPeakMax  = 1000
+	expectedMatchCount       = 8
+)
+
+func (r *shardRun) pubSnapshot(key string) (*publisher.Evidence, bool) {
+	r.pubPhaseMu.Lock()
+	defer r.pubPhaseMu.Unlock()
+	ev, ok := r.pubPhase[key]
+	return ev, ok
+}
+
+// publicationRate computes the accepted publication rate for a phase window
+// from the boundary snapshots and the measured wall-clock duration.
+func (r *shardRun) publicationRate(phase string) (float64, bool) {
+	startEv, okStart := r.pubSnapshot(phase + ":start")
+	endEv, okEnd := r.pubSnapshot(phase + ":end")
+	if !okStart || !okEnd {
+		return 0, false
+	}
+	r.timingMu.Lock()
+	startT, hasStart := r.phaseStart[phase]
+	endT, hasEnd := r.phaseEnd[phase]
+	r.timingMu.Unlock()
+	if !hasStart || !hasEnd {
+		return 0, false
+	}
+	dt := endT.Sub(startT).Seconds()
+	if dt <= 0 {
+		return 0, false
+	}
+	return float64(endEv.Totals.Published-startEv.Totals.Published) / dt, true
+}
+
+// applyPublisherGates applies the frozen R11 publisher health rules on the
+// owner shard: zero definite/ambiguous failures, bounded pending peak, every
+// match head present and advanced across the run, and accepted publication
+// rates inside the frozen steady/burst windows. Any failure means the
+// generator failed to produce the required workload (INCONCLUSIVE).
+func (r *shardRun) applyPublisherGates() {
+	if !r.cfg.publisherOwner || r.cfg.publisherURL == "" {
+		return
+	}
+	finalEv, ok := r.pubSnapshot("final-metrics:start")
+	if !ok {
+		r.reasonf("publisher evidence never captured at final boundary")
+		return
+	}
+	totals := finalEv.Totals
+	if totals.DefiniteFails != 0 {
+		r.reasonf("publisher definite failures %d != 0", totals.DefiniteFails)
+	}
+	if totals.AmbiguousFails != 0 {
+		r.reasonf("publisher ambiguous failures %d != 0", totals.AmbiguousFails)
+	}
+	if totals.PendingPeak > publisherPendingPeakMax {
+		r.reasonf("publisher pending peak %d > %d", totals.PendingPeak, publisherPendingPeakMax)
+	}
+	if totals.Published <= 0 {
+		r.reasonf("publisher produced no accepted workload")
+	}
+	warmupEv, okWarmup := r.pubSnapshot("warmup:end")
+	if okWarmup && len(finalEv.Heads) != expectedMatchCount {
+		r.reasonf("publisher reported %d match heads, want %d", len(finalEv.Heads), expectedMatchCount)
+	}
+	if okWarmup {
+		for id, head := range finalEv.Heads {
+			startHead, okHead := warmupEv.Heads[id]
+			if !okHead {
+				r.reasonf("match %s head missing at warmup baseline", id)
+				continue
+			}
+			if head.Seq <= startHead.Seq {
+				r.reasonf("match %s head did not advance (%d -> %d)", id, startHead.Seq, head.Seq)
+			}
+		}
+	}
+	for _, phase := range []string{"steady", "burst"} {
+		minRate, maxRate := steadyPublicationRateMin, steadyPublicationRateMax
+		if phase == "burst" {
+			minRate, maxRate = burstPublicationRateMin, burstPublicationRateMax
+		}
+		rate, okRate := r.publicationRate(phase)
+		if !okRate {
+			r.reasonf("publisher %s publication rate not measurable (missing boundary snapshots)", phase)
+			continue
+		}
+		if rate < minRate || rate > maxRate {
+			r.reasonf("publisher %s accepted rate %.2f events/s outside frozen [%.1f, %.1f] window",
+				phase, rate, minRate, maxRate)
+		}
+	}
+}
+
+// publisherEvidence renders the per-boundary publisher counter snapshots and
+// measured publication rates for the wire so every gate is auditable (R11).
+func (r *shardRun) publisherEvidence() map[string]any {
+	r.pubPhaseMu.Lock()
+	keys := make([]string, 0, len(r.pubPhase))
+	snapshots := make(map[string]*publisher.Evidence, len(r.pubPhase))
+	for key, ev := range r.pubPhase {
+		keys = append(keys, key)
+		snapshots[key] = ev
+	}
+	r.pubPhaseMu.Unlock()
+	sort.Strings(keys)
+	out := map[string]any{}
+	for _, key := range keys {
+		ev := snapshots[key]
+		heads := map[string]int64{}
+		for id, h := range ev.Heads {
+			heads[id] = h.Seq
+		}
+		out[key] = map[string]any{
+			"attempts":           ev.Totals.Attempts,
+			"published":          ev.Totals.Published,
+			"definite_failures":  ev.Totals.DefiniteFails,
+			"ambiguous_failures": ev.Totals.AmbiguousFails,
+			"pending_peak":       ev.Totals.PendingPeak,
+			"heads":              heads,
+			"fetched_at_ms":      ev.FetchedAtMs,
+		}
+	}
+	rates := map[string]float64{}
+	for _, phase := range []string{"steady", "burst"} {
+		if rate, ok := r.publicationRate(phase); ok {
+			rates[phase+"_accepted_per_sec"] = rate
+		}
+	}
+	out["publication_rates"] = rates
+	return out
+}
+
 // applyGeneratorGates applies the frozen R09 generator validity rules: the
 // generator container's own CPU/throttle/OOM/scheduler-lag health must be
 // proven, or the run's evidence cannot be trusted (INCONCLUSIVE).
@@ -1602,6 +1765,8 @@ func (r *shardRun) assembleResult(
 
 	// validity snapshot taken after every reason is recorded so late
 	// evidence failures (e.g. unmeasured restart window) reach the wire.
+	r.applyPublisherGates()
+	res.Resources.Generator["publisher"] = r.publisherEvidence()
 	r.valid.TimingValid = r.computeTimingValidity()
 	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)

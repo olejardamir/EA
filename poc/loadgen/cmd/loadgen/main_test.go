@@ -1434,3 +1434,182 @@ func TestTimingHealthyRunValid(t *testing.T) {
 		}
 	}
 }
+
+// ── R11 publisher health and event rates ─────────────────────────────────────
+
+// seedPublisher fills an owner shard's run with plausible per-boundary
+// publisher snapshots: healthy totals, eight advancing heads, and steady/burst
+// publication rates inside the frozen windows. Tests then corrupt specific
+// fields to prove invalidation.
+func seedPublisher(r *shardRun) {
+	r.cfg.publisherOwner = true
+	r.cfg.publisherURL = "http://publisher.invalid"
+	now := time.Now()
+	mkHeads := func(seq int64) map[string]publisher.HeadInfo {
+		heads := map[string]publisher.HeadInfo{}
+		for i := 0; i < expectedMatchCount; i++ {
+			heads[fmt.Sprintf("match-%d", i)] = publisher.HeadInfo{Seq: seq}
+		}
+		return heads
+	}
+	snap := func(published int64, seq int64) *publisher.Evidence {
+		ev := &publisher.Evidence{}
+		ev.Started = true
+		ev.Heads = mkHeads(seq)
+		ev.Totals.Published = published
+		ev.Totals.Attempts = published + 2
+		ev.Totals.PendingPeak = 10
+		ev.FetchedAtMs = now.UnixMilli()
+		return ev
+	}
+	r.pubPhaseMu.Lock()
+	r.pubPhase = map[string]*publisher.Evidence{
+		"warmup:end":          snap(10, 1),
+		"steady:start":        snap(20, 2),
+		"steady:end":          snap(120, 12), // +100 over the seeded 10s steady window → 10.0/s
+		"burst:start":         snap(130, 13),
+		"burst:end":           snap(1680, 63), // +1550 over the seeded 31s burst window → 50.0/s
+		"final-metrics:start": snap(1690, 64),
+	}
+	r.pubPhaseMu.Unlock()
+}
+
+// assembleOwner runs assembleResult on a shard carrying seeded publisher
+// evidence, applying any test-provided corruption first.
+func assembleOwner(r *shardRun) *coordinator.ShardExperimentResult {
+	return r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+}
+
+func hasPublisherReason(res *coordinator.ShardExperimentResult, substr string) bool {
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// A healthy owner shard with full publisher evidence stays valid.
+func TestPublisherHealthyRunValid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	res := assembleOwner(r)
+	if !res.Validity.GeneratorValid && hasPublisherReason(res, "publisher") {
+		t.Fatalf("healthy publisher evidence must not add reasons: %+v", res.Validity.Reasons)
+	}
+	if _, ok := res.Resources.Generator["publisher"].(map[string]any); !ok {
+		t.Fatal("structured publisher evidence must be exposed on the wire")
+	}
+}
+
+// Missing publisher boundary snapshots invalidate the owner's evidence.
+func TestPublisherMissingSnapshotsInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	r.pubPhaseMu.Lock()
+	delete(r.pubPhase, "final-metrics:start")
+	r.pubPhaseMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "publisher evidence never captured") {
+		t.Fatalf("missing final snapshot reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("missing publisher evidence must not ACCEPT")
+	}
+}
+
+// Any definite or ambiguous publisher failure invalidates the workload.
+func TestPublisherFailuresInvalidate(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	r.pubPhaseMu.Lock()
+	r.pubPhase["final-metrics:start"].Totals.DefiniteFails = 1
+	r.pubPhase["final-metrics:start"].Totals.AmbiguousFails = 2
+	r.pubPhaseMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "definite failures 1 != 0") || !hasPublisherReason(res, "ambiguous failures 2 != 0") {
+		t.Fatalf("failure reasons absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("publisher failures must not ACCEPT")
+	}
+}
+
+// Pending peak above the frozen ceiling invalidates.
+func TestPublisherPendingPeakGate(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	r.pubPhaseMu.Lock()
+	r.pubPhase["final-metrics:start"].Totals.PendingPeak = 1001
+	r.pubPhaseMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "pending peak 1001 > 1000") {
+		t.Fatalf("pending-peak reason absent: %+v", res.Validity.Reasons)
+	}
+}
+
+// Every match head must be present and advanced across the run.
+func TestPublisherHeadAdvancementGates(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	r.pubPhaseMu.Lock()
+	delete(r.pubPhase["final-metrics:start"].Heads, "match-7")
+	stalled := r.pubPhase["final-metrics:start"].Heads["match-6"]
+	stalled.Seq = r.pubPhase["warmup:end"].Heads["match-6"].Seq
+	r.pubPhase["final-metrics:start"].Heads["match-6"] = stalled
+	r.pubPhaseMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "reported 7 match heads, want 8") {
+		t.Fatalf("head-count reason absent: %+v", res.Validity.Reasons)
+	}
+	if !hasPublisherReason(res, "match match-6 head did not advance") {
+		t.Fatalf("stalled-head reason absent: %+v", res.Validity.Reasons)
+	}
+}
+
+// Accepted publication rates outside the frozen windows invalidate.
+func TestPublisherRateWindowGates(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	seedTiming(r)
+	seedPublisher(r)
+	r.pubPhaseMu.Lock()
+	r.pubPhase["steady:end"].Totals.Published = 400 // 38/s — above the steady window
+	r.pubPhase["burst:end"].Totals.Published = 1400 // ~41/s... below burst floor? no: (1400-130)/31 ≈ 41/s inside; use 2000 → 60.3/s outside
+	r.pubPhase["burst:end"].Totals.Published = 2000
+	r.pubPhaseMu.Unlock()
+	res := assembleOwner(r)
+	if !hasPublisherReason(res, "steady accepted rate") || !hasPublisherReason(res, "outside frozen") {
+		t.Fatalf("rate-window reasons absent: %+v", res.Validity.Reasons)
+	}
+	if !strings.Contains(strings.Join(res.Validity.Reasons, "\n"), "burst accepted rate") {
+		t.Fatalf("burst rate reason absent: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("out-of-window publication rates must not ACCEPT")
+	}
+}
+
+// Non-owner shards carry no publisher gate obligations.
+func TestPublisherNonOwnerSkipsGates(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	res := assembleOwner(r)
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "publisher") {
+			t.Fatalf("non-owner must not be gated on publisher evidence: %s", reason)
+		}
+	}
+}

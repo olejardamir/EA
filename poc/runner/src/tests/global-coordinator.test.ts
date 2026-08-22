@@ -20,6 +20,7 @@ import {
 } from "./restart-evidence-fixture.js"
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
+import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -124,7 +125,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { cpu_percent_of_capacity_peak: 50, timing: validTimingEvidence() },
+      generator: { cpu_percent_of_capacity_peak: 50, timing: validTimingEvidence(), publisher: validPublisherEvidence() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: owner ? { memory_peak_run_bytes: 500, memory_used_bytes: 500 } : {},
     },

@@ -600,6 +600,74 @@ export class GlobalExperimentCoordinator {
       }
     }
 
+    // R11 cross-check: workload proof must come from measured publisher health,
+    // not `events_published > 0`. The publisher-owner shard must expose the
+    // structured per-boundary counter snapshots; definite/ambiguous failures
+    // and an over-ceiling pending peak invalidate the aggregate, and the
+    // accepted publication rates must sit inside the frozen windows.
+    const ownerResults = shardResults.filter((result) => result.publisher_owner)
+    if (ownerResults.length !== 1) {
+      validityReasons.push(`publisher-owner results ${ownerResults.length}; expected exactly 1`)
+    } else {
+      const owner = ownerResults[0]
+      const pub = (owner.resources.generator as Record<string, unknown>)["publisher"]
+      if (!pub || typeof pub !== "object") {
+        validityReasons.push(`shard ${owner.shard_id} missing structured publisher evidence`)
+      } else {
+        const p = pub as Record<string, unknown>
+        let totalsFinal: Record<string, unknown> | null = null
+        for (const boundary of ["steady:start", "steady:end", "burst:start", "burst:end", "final-metrics:start"]) {
+          const snap = p[boundary]
+          if (!snap || typeof snap !== "object") {
+            validityReasons.push(`shard ${owner.shard_id} publisher snapshot ${boundary} missing`)
+            continue
+          }
+          const s = snap as Record<string, unknown>
+          for (const field of ["attempts", "published", "definite_failures", "ambiguous_failures", "pending_peak"]) {
+            if (typeof s[field] !== "number") {
+              validityReasons.push(`shard ${owner.shard_id} publisher snapshot ${boundary} missing ${field}`)
+            }
+          }
+          const heads = s["heads"]
+          if (!heads || typeof heads !== "object" || Object.keys(heads as Record<string, unknown>).length === 0) {
+            validityReasons.push(`shard ${owner.shard_id} publisher snapshot ${boundary} has no match heads`)
+          }
+          if (boundary === "final-metrics:start") totalsFinal = s
+        }
+        if (totalsFinal) {
+          if ((totalsFinal["definite_failures"] as number) !== 0) {
+            validityReasons.push(`publisher definite failures ${totalsFinal["definite_failures"]} != 0`)
+          }
+          if ((totalsFinal["ambiguous_failures"] as number) !== 0) {
+            validityReasons.push(`publisher ambiguous failures ${totalsFinal["ambiguous_failures"]} != 0`)
+          }
+          if ((totalsFinal["pending_peak"] as number) > 1000) {
+            validityReasons.push(`publisher pending peak ${totalsFinal["pending_peak"]} > 1000`)
+          }
+        }
+        const rates = p["publication_rates"]
+        const rateWindows: Array<[string, number, number]> = [
+          ["steady_accepted_per_sec", 8.0, 12.0],
+          ["burst_accepted_per_sec", 40.0, 60.0],
+        ]
+        if (!rates || typeof rates !== "object") {
+          validityReasons.push(`shard ${owner.shard_id} publisher publication rates missing`)
+        } else {
+          const r = rates as Record<string, unknown>
+          for (const [key, minRate, maxRate] of rateWindows) {
+            const value = r[key]
+            if (typeof value !== "number") {
+              validityReasons.push(`shard ${owner.shard_id} publisher rate ${key} not measurable`)
+              continue
+            }
+            if (value < minRate || value > maxRate) {
+              validityReasons.push(`publisher ${key.replace("_accepted_per_sec", "")} accepted rate ${value.toFixed(2)} events/s outside frozen [${minRate.toFixed(1)}, ${maxRate.toFixed(1)}] window`)
+            }
+          }
+        }
+      }
+    }
+
     // R04: machine-proven surge population/deadline gates. Every shard must
     // carry structured surge evidence; the global sums must hit the exact
     // assignment numbers (start population, +40k attempted AND established,

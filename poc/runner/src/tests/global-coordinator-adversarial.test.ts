@@ -21,6 +21,7 @@ import {
 } from "./restart-evidence-fixture.js"
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 import { validTimingEvidence } from "./timing-evidence-fixture.js"
+import { validPublisherEvidence } from "./publisher-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -122,7 +123,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: { timing: validTimingEvidence() },
+      generator: { timing: validTimingEvidence(), publisher: validPublisherEvidence() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: owner ? { memory_used_bytes: 500 } : {},
     },
@@ -768,5 +769,110 @@ describe("R10 structured timing evidence cross-check", () => {
     const result = coordinator.buildGlobalResult()
     assert.ok(!result.validity.reasons.some((reason) => reason.includes("timing")), `no timing reasons expected, got: ${JSON.stringify(result.validity.reasons)}`)
     assert.equal(result.verdict, "ACCEPT")
+  })
+})
+
+// R11: workload proof must come from measured publisher health — structured
+// per-boundary snapshots, zero definite/ambiguous failures, bounded pending
+// peak, and accepted publication rates inside the frozen windows.
+describe("R11 publisher health and event-rate cross-check", () => {
+  function timingInvalidationCase(name: string, mutate: (owner: ShardExperimentResult) => void, expectedReason: string): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const owner = shardResult(0)
+      mutate(owner)
+      coordinator.submitResult(owner)
+      coordinator.submitResult(shardResult(1))
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, "INCONCLUSIVE")
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(result.validity.reasons.some((reason) => reason.includes(expectedReason)), `expected "${expectedReason}" validity reason, got: ${JSON.stringify(result.validity.reasons)}`)
+    })
+  }
+
+  timingInvalidationCase(
+    "rejects a run with no structured publisher evidence on the owner",
+    (owner) => { delete (owner.resources.generator as Record<string, unknown>).publisher },
+    "missing structured publisher evidence",
+  )
+  timingInvalidationCase(
+    "rejects publisher evidence missing a mandatory boundary snapshot",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      delete p["steady:end"]
+    },
+    "publisher snapshot steady:end missing",
+  )
+  timingInvalidationCase(
+    "rejects publisher snapshots missing mandatory counter fields",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      delete ((p["final-metrics:start"] as Record<string, unknown>)["pending_peak"])
+    },
+    "publisher snapshot final-metrics:start missing pending_peak",
+  )
+  timingInvalidationCase(
+    "rejects definite publisher failures",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      ;((p["final-metrics:start"] as Record<string, unknown>)["definite_failures"]) = 3
+    },
+    "publisher definite failures 3 != 0",
+  )
+  timingInvalidationCase(
+    "rejects ambiguous publisher failures",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      ;((p["final-metrics:start"] as Record<string, unknown>)["ambiguous_failures"]) = 1
+    },
+    "publisher ambiguous failures 1 != 0",
+  )
+  timingInvalidationCase(
+    "rejects a pending peak above the frozen ceiling",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      ;((p["final-metrics:start"] as Record<string, unknown>)["pending_peak"]) = 1001
+    },
+    "publisher pending peak 1001 > 1000",
+  )
+  timingInvalidationCase(
+    "rejects an unmeasurable steady publication rate",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      delete (p["publication_rates"] as Record<string, unknown>).steady_accepted_per_sec
+    },
+    "publisher rate steady_accepted_per_sec not measurable",
+  )
+  timingInvalidationCase(
+    "rejects a burst publication rate outside the frozen window",
+    (owner) => {
+      const p = (owner.resources.generator as Record<string, unknown>).publisher as Record<string, unknown>
+      ;((p["publication_rates"] as Record<string, unknown>)["burst_accepted_per_sec"]) = 70.5
+    },
+    "publisher burst accepted rate 70.50 events/s outside frozen [40.0, 60.0] window",
+  )
+
+  it("accepts a healthy run with complete publisher proof and no publisher reasons", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(shardResult(1))
+    const result = coordinator.buildGlobalResult()
+    assert.ok(!result.validity.reasons.some((reason) => reason.includes("publisher")), `no publisher reasons expected, got: ${JSON.stringify(result.validity.reasons)}`)
+    assert.equal(result.verdict, "ACCEPT")
+  })
+
+  it("flags a missing publisher-owner result", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    const nonOwner = shardResult(1)
+    nonOwner.publisher_owner = true // duplicate owner registration on submit is impossible via fixtures; simulate two owners
+    const secondOwner = shardResult(0)
+    coordinator.submitResult(secondOwner)
+    coordinator.submitResult(nonOwner)
+    const result = coordinator.buildGlobalResult()
+    assert.notEqual(result.verdict, "ACCEPT")
+    assert.equal(result.global_direct_accept_eligible, false)
   })
 })
