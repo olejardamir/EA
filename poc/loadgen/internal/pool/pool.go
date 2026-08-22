@@ -50,22 +50,28 @@ const (
 // Counters is the shard-global atomic aggregate (design doc §4: no locks on
 // the hot path — one atomic add per frame counter at most).
 type Counters struct {
-	FramesReceived        atomic.Int64
-	TransportIDPresent    atomic.Int64
-	MissingSequences      atomic.Int64
-	Duplicates            atomic.Int64
-	OutOfOrder            atomic.Int64
-	GapEvents             atomic.Int64
-	ConnectionFailures    atomic.Int64
-	UnexpectedDisconnects atomic.Int64
-	PlannedDisconnects    atomic.Int64
-	SchemaViolations      atomic.Int64
-	StateViolations       atomic.Int64
-	AgreementViolations   atomic.Int64 // deep: payload canonical_seq != sse id
-	DeepFramesValidated   atomic.Int64 // frames fully validated by the deep cohort
-	LobbyMalformed        atomic.Int64
-	ReconnectAttempts     atomic.Int64
-	ReconnectSucceeded    atomic.Int64
+	FramesReceived             atomic.Int64
+	TransportIDPresent         atomic.Int64
+	MissingTransportID         atomic.Int64
+	MissingSequences           atomic.Int64
+	Duplicates                 atomic.Int64
+	OutOfOrder                 atomic.Int64
+	GapEvents                  atomic.Int64
+	ConnectionFailures         atomic.Int64
+	UnexpectedDisconnects      atomic.Int64
+	PlannedDisconnects         atomic.Int64
+	SchemaViolations           atomic.Int64
+	StateViolations            atomic.Int64
+	AgreementViolations        atomic.Int64 // deep: payload canonical_seq != sse id (deprecated, transport vs canonical separate)
+	DeepFramesValidated        atomic.Int64 // frames fully validated by the deep cohort
+	LobbyMalformed             atomic.Int64
+	ReconnectAttempts          atomic.Int64
+	ReconnectSucceeded         atomic.Int64
+	MissingCanonicalSeq        atomic.Int64
+	CanonicalParseErrors       atomic.Int64
+	JSONParseErrors            atomic.Int64
+	InvalidTimestampCount      atomic.Int64
+	CanonicalStateViolations   atomic.Int64
 }
 
 // ClientState mirrors design doc §3.1 (~64 B, fixed, no arrays). Owned by the
@@ -465,79 +471,58 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	p.Counters.FramesReceived.Add(1)
 
 	if v.st.Role == RoleLobby {
+		if v.scratchLen > 0 {
+			if !bytes.Contains(v.scratch[:v.scratchLen], []byte(`"matches"`)) {
+				p.Counters.LobbyMalformed.Add(1)
+			}
+		}
 		return
 	}
 
 	rawID := string(bytes.TrimSpace(id))
-	if rawID != "" {
-		v.mu.Lock()
-		v.lastRawID = rawID
-		v.mu.Unlock()
-	}
-
-	seq, ok := parseUint(id)
-	if !ok {
-		p.Counters.SchemaViolations.Add(1)
+	if rawID == "" {
+		p.Counters.MissingTransportID.Add(1)
 		return
 	}
+	v.mu.Lock()
+	v.lastRawID = rawID
+	v.mu.Unlock()
+	p.Counters.TransportIDPresent.Add(1)
 
 	var canonSeq uint64
 	var haveCanon bool
 	if v.scratchLen > 0 {
-		if ev, err := deep.ValidateSchema(v.scratch[:v.scratchLen], ""); err == nil {
-			canonSeq = uint64(ev.CanonicalSeq)
-			haveCanon = true
-			v.mu.Lock()
-			v.lastCanon = canonSeq
-			v.mu.Unlock()
-		} else if c, ok := extractCanonSeq(v.scratch[:v.scratchLen]); ok {
+		if c, ok := extractCanonSeq(v.scratch[:v.scratchLen]); ok {
 			canonSeq = c
 			haveCanon = true
 			v.mu.Lock()
 			v.lastCanon = c
 			v.mu.Unlock()
+		} else {
+			if bytes.Index(v.scratch[:v.scratchLen], []byte(`"canonical_seq"`)) < 0 {
+				p.Counters.MissingCanonicalSeq.Add(1)
+			} else {
+				p.Counters.CanonicalParseErrors.Add(1)
+			}
+			p.Counters.JSONParseErrors.Add(1)
+			return
 		}
+	} else {
+		p.Counters.MissingCanonicalSeq.Add(1)
+		return
 	}
 
 	if v.capturing.Load() {
-		store := seq
-		if haveCanon {
-			store = canonSeq
-		}
 		v.capMu.Lock()
-		v.capture = append(v.capture, store)
+		v.capture = append(v.capture, canonSeq)
 		v.capMu.Unlock()
 	}
 
-	if v.st.Role == RoleLight {
-		v.st.Received++
-		if haveCanon {
-			v.st.LastSeq = canonSeq
-			v.lastSeq.Store(canonSeq)
-			v.mu.Lock()
-			v.lastCanon = canonSeq
-			v.mu.Unlock()
-			p.Counters.DeepFramesValidated.Add(1)
-			v.sawDeep.Store(true)
-		} else {
-			v.st.LastSeq = seq
-			v.lastSeq.Store(seq)
-		}
-		return
-	}
-	observeSeq := seq
-	if haveCanon {
-		observeSeq = canonSeq
-	}
-	kind, missing := observe(&v.st, observeSeq)
-	if haveCanon {
-		v.lastSeq.Store(v.st.LastSeq)
-		v.mu.Lock()
-		v.lastCanon = observeSeq
-		v.mu.Unlock()
-	} else {
-		v.lastSeq.Store(v.st.LastSeq)
-	}
+	kind, missing := observe(&v.st, canonSeq)
+	v.lastSeq.Store(v.st.LastSeq)
+	v.mu.Lock()
+	v.lastCanon = canonSeq
+	v.mu.Unlock()
 	if missing > 0 {
 		p.Counters.MissingSequences.Add(missing)
 	}
@@ -550,12 +535,15 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		p.Counters.OutOfOrder.Add(1)
 	}
 
-	if v.st.Role == RoleReconnect {
-		if haveCanon {
-			p.Counters.DeepFramesValidated.Add(1)
-			v.sawDeep.Store(true)
+	if v.st.Role == RoleLight || v.st.Role == RoleReconnect {
+		p.Counters.DeepFramesValidated.Add(1)
+		v.sawDeep.Store(true)
+		if v.st.Role == RoleLight {
+			return
 		}
-		return
+		if v.st.Role == RoleReconnect {
+			return
+		}
 	}
 
 	if v.scratchLen == 0 {
@@ -565,12 +553,23 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	ev, err := deep.ValidateSchema(data, v.matchID)
 	if err != nil {
 		p.Counters.SchemaViolations.Add(1)
+		p.Counters.JSONParseErrors.Add(1)
+		if strings.Contains(err.Error(), "publish_timestamp") {
+			p.Counters.InvalidTimestampCount.Add(1)
+		}
 		return
 	}
 	p.Counters.DeepFramesValidated.Add(1)
 	v.sawDeep.Store(true)
+	prevViolations := v.state.Violations
 	v.state.Observe(ev)
-	if pubMs, err := deep.FastIsoMs(ev.PublishTimestamp); err == nil {
+	if v.state.Violations > prevViolations {
+		p.Counters.CanonicalStateViolations.Add(1)
+		p.Counters.StateViolations.Add(1)
+	}
+	if pubMs, err := deep.FastIsoMs(ev.PublishTimestamp); err != nil {
+		p.Counters.InvalidTimestampCount.Add(1)
+	} else {
 		lat := int(now.UnixMilli() - pubMs)
 		if lat < 0 {
 			lat = 0

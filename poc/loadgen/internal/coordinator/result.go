@@ -85,4 +85,4 @@ type ShardExperimentResult struct {
 
 // ContractVersion is the single canonical producer of the active contract
 // version on the Go side; it must equal ACTIVE_CONTRACT_VERSION in TS.
-const ContractVersion = "v2.2.0"
+const ContractVersion = "v2.3.0"

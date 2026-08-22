@@ -564,14 +564,6 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("reconnect end barrier")
 	}
 
-	if !r.barrier("slow-consumer", "start") {
-		return nil, fmt.Errorf("slow-consumer start barrier")
-	}
-	sleepCtx(ctx, 2*time.Second)
-	if !r.barrier("slow-consumer", "end") {
-		return nil, fmt.Errorf("slow-consumer end barrier")
-	}
-
 	// ── restart-replacement (partition-targeted drill) ──
 	if !r.barrier("restart-replacement", "start") {
 		return nil, fmt.Errorf("restart start barrier")
@@ -607,15 +599,8 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("final-metrics end barrier")
 	}
 
-	slowScenario := coordinator.ScenarioEvidence{
-		Name:         "slow-consumer",
-		Participated: true,
-		Passed:       true,
-		Detail:       "slow-consumer retired in v2.2.0",
-		Structured:   map[string]any{"paths": map[string]any{}, "replay_probe_selected": 0},
-	}
 	scenarios := []coordinator.ScenarioEvidence{
-		lateScenario, burstScenario, reconnectScenario, slowScenario, restartScenario,
+		lateScenario, burstScenario, reconnectScenario, restartScenario,
 	}
 	return r.assembleResult(samples, scenarios, lateResults, reconnectResults, headAgreement, startedAt), nil
 }
@@ -704,23 +689,30 @@ func countPassed(results map[string]*deep.PathResult) int {
 // complete buffer implies exactness over any subrange, and recovery_ms is the
 // late-join catch-up latency sample.
 func (r *shardRun) runLateJoinProbes(ctx context.Context) map[string]*deep.PathResult {
-	out := make(map[string]*deep.PathResult, matchCount)
-	for _, m := range matchIDs() {
-		head, ok := r.headLookup(m)
-		if !ok || head < 1 {
-			out["late_join:"+m] = &deep.PathResult{TransportResumeID: "history", Passed: false}
-			continue
+	out := make(map[string]*deep.PathResult, matchCount*8)
+	sem := make(chan struct{}, 8)
+	for round := 0; round < 8; round++ {
+		for _, m := range matchIDs() {
+			sem <- struct{}{}
+			head, ok := r.headLookup(m)
+			if !ok || head < 1 {
+				out[fmt.Sprintf("late_join:%s:round-%d", m, round)] = &deep.PathResult{TransportResumeID: "history", Passed: false}
+				<-sem
+				continue
+			}
+			spec := pool.ProbeSpec{
+				Key:     fmt.Sprintf("late_join:%s:round-%d", m, round),
+				URL:     r.cfg.subURL + "/history/" + m,
+				MatchID: m,
+				ResumeID: "history",
+				First:   1,
+				Target:  uint64(head),
+			}
+			res := r.pool.RunProbe(ctx, spec, lateJoinProbeTO)
+			out[spec.Key] = res
+			r.logf("late-join %s round %d passed=%v recovery_ms=%d missing=%d", m, round, res.Passed, res.RecoveryMs, res.MissingRequired)
+			<-sem
 		}
-		spec := pool.ProbeSpec{
-			Key:     "late_join:" + m,
-			URL:     r.cfg.subURL + "/history/" + m,
-			MatchID: m,
-			First:   1,
-			Target:  uint64(head),
-		}
-		res := r.pool.RunProbe(ctx, spec, lateJoinProbeTO)
-		out[spec.Key] = res
-		r.logf("late-join %s passed=%v recovery_ms=%d missing=%d", m, res.Passed, res.RecoveryMs, res.MissingRequired)
 	}
 	return out
 }
@@ -736,14 +728,15 @@ func (r *shardRun) lateJoinScenario(results map[string]*deep.PathResult) coordin
 			exact++
 		}
 	}
+	expected := matchCount * 8
 	return coordinator.ScenarioEvidence{
 		Name:         "late-join",
 		Participated: true,
-		Passed:       len(results) == matchCount && passed == matchCount,
+		Passed:       len(results) == expected && passed == expected,
 		Detail: fmt.Sprintf("%d/%d probes exact, %d/%d passed",
-			exact, matchCount, passed, matchCount),
+			exact, expected, passed, expected),
 		Structured: map[string]any{
-			"probes_expected": matchCount,
+			"probes_expected": expected,
 			"probes_run":      len(results),
 			"probes_passed":   passed,
 			"probes_exact":    exact,
@@ -999,6 +992,9 @@ var gatedCorrectnessCounters = []string{
 	"missing_sequences", "duplicates", "out_of_order",
 	"reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations",
 	"restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
+	"missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
+	"json_parse_errors", "invalid_timestamp_count", "canonical_payload_state_violations",
+	"schema_validation_errors", "lobby_malformed",
 }
 
 // assembleResult builds the wire-conformant ShardExperimentResult. Every
@@ -1088,10 +1084,17 @@ func (r *shardRun) assembleResult(
 		"unexpected_disconnects":            float64(r.pool.Counters.UnexpectedDisconnects.Load()),
 		"planned_disconnects":               float64(r.pool.Counters.PlannedDisconnects.Load()),
 		"schema_violations":                 float64(r.pool.Counters.SchemaViolations.Load()),
+		"schema_validation_errors":          float64(r.pool.Counters.SchemaViolations.Load()),
+		"json_parse_errors":                 float64(r.pool.Counters.JSONParseErrors.Load()),
+		"invalid_timestamp_count":           float64(r.pool.Counters.InvalidTimestampCount.Load()),
 		"state_violations":                  float64(r.pool.Counters.StateViolations.Load()),
+		"canonical_payload_state_violations": float64(r.pool.Counters.CanonicalStateViolations.Load()),
 		"agreement_violations":              float64(r.pool.Counters.AgreementViolations.Load()),
 		"state_agreement_violations":        float64(agreement.disagreed),
 		"transport_id_present":              float64(r.pool.Counters.TransportIDPresent.Load()),
+		"missing_transport_id":              float64(r.pool.Counters.MissingTransportID.Load()),
+		"missing_canonical_seq":             float64(r.pool.Counters.MissingCanonicalSeq.Load()),
+		"canonical_seq_parse_errors":        float64(r.pool.Counters.CanonicalParseErrors.Load()),
 		"deep_frames_validated":             float64(r.pool.Counters.DeepFramesValidated.Load()),
 		"frames_received":                   float64(r.pool.Counters.FramesReceived.Load()),
 		"lobby_malformed":                   float64(r.pool.Counters.LobbyMalformed.Load()),

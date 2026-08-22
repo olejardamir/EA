@@ -27,8 +27,8 @@ fi
 
 export GIT_COMMIT_SHA="$SOURCE_COMMIT"
 export CAMPAIGN_ID CAMPAIGN_STARTED_AT_MS
-[[ "$GLOBAL_RUNS" =~ ^[0-9]+$ ]] && (( GLOBAL_RUNS >= 3 && GLOBAL_RUNS <= 8 )) || {
-  echo "GLOBAL_RUNS must be in the frozen 3..8 range" >&2
+[[ "$GLOBAL_RUNS" =~ ^[0-9]+$ ]] && (( GLOBAL_RUNS == 3 )) || {
+  echo "GLOBAL_RUNS must be exactly 3" >&2
   exit 2
 }
 [[ "$BASE_GLOBAL_SEED" =~ ^[0-9]+$ ]] || { echo "BASE_GLOBAL_SEED must be an integer" >&2; exit 2; }

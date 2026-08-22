@@ -14,7 +14,6 @@ export const COORDINATED_PHASES = [
   "burst",
   "post-burst",
   "reconnect",
-  "slow-consumer",
   "restart-replacement",
   "final-metrics",
 ] as const
@@ -74,7 +73,7 @@ export interface ShardResourceEvidence {
 }
 
 export interface ShardScenarioEvidence {
-  name: "late-join" | "burst" | "reconnect" | "slow-consumer" | "restart-replacement"
+  name: "late-join" | "burst" | "reconnect" | "restart-replacement"
   participated: boolean
   passed: boolean
   detail: string
@@ -476,8 +475,8 @@ export class GlobalExperimentCoordinator {
         ` do not reproduce the merged fan-out population (${mergedFanOut.count})`,
       )
     }
-    if (mergedLateJoin.count !== this.shardCount && mergedLateJoin.count !== this.shardCount * 8) {
-      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount} (one per partition)`)
+    if (mergedLateJoin.count !== this.shardCount * 64) {
+      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount * 64} (64 per partition)`)
     }
 
     const correctnessCounters: Record<string, number> = {}
@@ -490,7 +489,7 @@ export class GlobalExperimentCoordinator {
       if ((correctnessCounters[name] ?? 0) > 0) rejectReasons.push(`${name}=${correctnessCounters[name]}`)
     }
 
-    const scenarioNames: ShardScenarioEvidence["name"][] = ["late-join", "burst", "reconnect", "slow-consumer", "restart-replacement"]
+    const scenarioNames: ShardScenarioEvidence["name"][] = ["late-join", "burst", "reconnect", "restart-replacement"]
     const scenarioResults = scenarioNames.map((name) => {
       const records = shardResults.flatMap((result) => result.scenarios.filter((scenario) => scenario.name === name).map((scenario) => ({ shardId: result.shard_id, owner: result.publisher_owner, scenario })))
       const participants = records.filter(({ scenario }) => scenario.participated)
@@ -523,7 +522,7 @@ export class GlobalExperimentCoordinator {
           && !!targetPool
           && targetPool.failed === 0
           && targetPool.gaps === 0
-          && targetPool.duplicates <= 1
+          && targetPool.duplicates === 0
           && targetPool.order_violations === 0
           && typeof targetPool.reestablished === "number" && targetPool.reestablished > 0
           && restartEvidenceMatchesRun(targetRecords[0].scenario.structured, {
@@ -544,32 +543,11 @@ export class GlobalExperimentCoordinator {
       }
       if (!passed) rejectReasons.push(`${name} scenario failed or had no participant`)
       if (active) {
-        // §v2.1.0: the restart phase transiently dips while the target partition is
-        // drained and failed over — floor relaxed to 70% of global target for that
-        // phase only. All other phases hold their frozen minimums.
         let requiredMin = name === "reconnect"
           ? Math.floor(this.globalTarget * 0.9)
           : name === "restart-replacement"
             ? Math.floor(this.globalTarget * 0.7)
             : this.globalTarget
-        if (name === "slow-consumer") {
-          // §v2.1.1 drift item 11: the mandatory Last-Event-ID replay probe
-          // detaches exactly its selected clients mid-phase and reattaches them
-          // inside the same measured window, so the aligned active minimum can
-          // transiently sit below the full target by the harness's own planned
-          // action. The allowance is derived from the reported evidence — the
-          // sum of per-shard replay_probe_selected — never a free constant, is
-          // capped at the frozen slow-cohort fraction (5%) so malformed or
-          // adversarial evidence cannot collapse the floor, and is zero when no
-          // probe evidence exists. Any uncontrolled disconnect beyond the
-          // probed cohort still fails this gate.
-          const probeSelectedSum = records.reduce((sum, { scenario }) => {
-            const value = scenario.structured?.replay_probe_selected
-            return sum + (typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0)
-          }, 0)
-          const allowance = Math.min(probeSelectedSum, Math.floor(this.globalTarget * SLOW_COHORT_FRACTION))
-          requiredMin = this.globalTarget - allowance
-        }
         if (active.active_min < requiredMin) rejectReasons.push(`${name} active minimum ${active.active_min} < ${requiredMin}`)
       } else {
         validityReasons.push(`${name} has no complete aligned active-population evidence`)
@@ -732,7 +710,7 @@ export function alignSamples(results: ShardExperimentResult[], shardCount: numbe
   }
 
   const scenarios: GlobalActiveEvidence["scenarios"] = {}
-  for (const phase of ["late-join", "burst", "reconnect", "slow-consumer", "restart-replacement"] as CoordinatedPhase[]) {
+  for (const phase of ["late-join", "burst", "reconnect", "restart-replacement"] as CoordinatedPhase[]) {
     const phaseBuckets = buckets.filter((bucket) => bucket.phase === phase)
     if (phaseBuckets.length === 0) continue
     const populations = phaseBuckets.map((bucket) => bucket.active)
