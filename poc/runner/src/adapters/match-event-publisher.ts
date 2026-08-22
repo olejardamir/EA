@@ -127,112 +127,110 @@ export class MatchEventPublisher {
     this.running = true
     this._eventsPublished = 0
 
-    const scheduleMatchEvents = () => {
-      if (!this.running) return
-
-      // Burst uses the standard weighted match distribution: concentrating
-      // 80% of burst traffic on one match serializes it behind that match's
-      // publish round-trip (per-match canonical ordering, §6.20) and caps the
-      // achievable rate below the frozen 40..60 events/s window under load.
-      const weights = MATCH_WEIGHTS
-
-      const random = this.config.random
-      const matchIdx = weightedRandom(weights, random)
+    // One serialized publication chain PER MATCH. §6.20 requires per-match
+    // canonical ordering, which a per-match serial chain provides by
+    // construction while letting up to |MATCH_IDS| publishes be in flight
+    // concurrently across matches. The previous single self-rescheduling loop
+    // chained its continuation behind every publish's completion, so at most
+    // ONE publish was ever in flight — capping throughput at 1/publish-RTT,
+    // far below the frozen burst window whenever Nchan latency rises.
+    // Per-chain nominal rate = global rate × match weight share, which keeps
+    // the frozen workload distribution exact without per-tick reselection.
+    const totalWeight = MATCH_WEIGHTS.reduce((sum, weight) => sum + weight, 0)
+    MATCH_WEIGHTS.forEach((weight, matchIdx) => {
       const matchId = MATCH_IDS[matchIdx]
+      const share = weight / totalWeight
 
-      // §6.20: If this match already has a publish in-flight, skip this tick
-      // to preserve per-match canonical ordering. The retry must be a short
-      // spin (not the full publication interval): backing off by the whole
-      // interval while the weighted-hot match is in flight collapses the
-      // effective burst rate far below the frozen 40..60 events/s window.
-      if (this._matchBusy.get(matchId)) {
-        const timer = setTimeout(scheduleMatchEvents, BUSY_RETRY_MS)
-        this.timers.push(timer)
-        return
-      }
+      const scheduleMatchEvents = () => {
+        if (!this.running) return
 
-      this._matchBusy.set(matchId, true)
+        const random = this.config.random
 
-      const state = this.matchStates[matchIdx]
-      const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight), random)
-      const eventType = EVENT_TYPES[eventTypeIdx].type
+        const state = this.matchStates[matchIdx]
+        const eventTypeIdx = weightedRandom(EVENT_TYPES.map((e) => e.weight), random)
+        const eventType = EVENT_TYPES[eventTypeIdx].type
 
-      // §AS: Build candidate state without mutating the committed state.
-      // Clone current state, advance the clone, and build the payload from it.
-      // The committed state is only updated after an unambiguous Nchan acceptance.
-      const candidate: MatchState = {
-        seq: state.seq,
-        score: { ...state.score },
-        clock: { ...state.clock },
-        last_event_type: state.last_event_type,
-      }
-      advanceMatchState(candidate, eventType, random)
-
-      // §3.5: Freeze T0 at creation time — this is what gets serialized and transmitted.
-      // publish_timestamp in the JSON body is the transmitted clock reference.
-      // Acceptance time is measured separately for scheduler lag computation.
-      const publishStartMs = Date.now()
-      const transmitTimestamp = new Date().toISOString()
-      const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock, transmitTimestamp)
-      const body = JSON.stringify(event)
-
-      const finalize = () => {
-        this._matchBusy.set(matchId, false)
-        // Nominal 55/s burst target: measured accepted rate must land inside
-        // the frozen [40, 60] events/s window; event-loop lag and in-flight
-        // latency consume ~15-20% of a naive 50/s schedule, so aim above the
-        // window midpoint while staying below its ceiling.
-        const rate = this.config.burstMode ? BURST_RATE_PER_SEC : STEADY_RATE_PER_SEC
-        const intervalMs = 1000 / rate
-        const jitter = intervalMs * 0.3 * (random() - 0.5)
-        // Pace from the START of the previous publication: the in-flight
-        // round-trip is part of the interval, not additive to it. Waiting the
-        // full interval after completion collapses the effective burst rate
-        // below the frozen 40..60 events/s window.
-        const elapsedMs = Date.now() - publishStartMs
-        const waitMs = Math.max(BUSY_RETRY_MS, intervalMs + jitter - elapsedMs)
-        const timer = setTimeout(scheduleMatchEvents, waitMs)
-        this.timers.push(timer)
-      }
-
-      this._pendingPublishes++
-      this._matchAttempts++
-      this.config.publisher.publish(matchId, body, eventType).then((ok) => {
-        this._pendingPublishes--
-        if (ok) {
-          // §3.5: Measure scheduler lag (acceptance - transmission), do NOT mutate event timestamp
-          const acceptanceTime = new Date().toISOString()
-          const transmitMs = new Date(transmitTimestamp).getTime()
-          const acceptMs = new Date(acceptanceTime).getTime()
-          const schedulerLagMs = acceptMs - transmitMs
-          this._schedulerLagSamples.push(schedulerLagMs)
-          // §AS: Atomically commit candidate state only after Nchan acceptance
-          state.seq = candidate.seq
-          state.score = candidate.score
-          state.clock = candidate.clock
-          state.last_event_type = candidate.last_event_type
-          // §AS/§4.1: Only commit head tracker and counters after Nchan acceptance
-          // §4.1: Update head state with score/clock for late-join reconstruction verification
-          this.config.headTracker.updateHeadState(matchId, state.seq, state.score, { period: state.clock.period, elapsed: state.clock.elapsed_seconds })
-          this._eventsPublished++
-          this._totalPublished++
-          this._matchPublished++
-          if (PUB_DEBUG) {
-            console.log(`PUBDBG ${JSON.stringify({ t: acceptMs, match: matchId, seq: candidate.seq, ev: eventType })}`)
-          }
-          const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
-          this._eventsPublishedByMatch.set(matchId, prev + 1)
-          const expected = this.config.getSubscriberCount?.(matchId) ?? 0
-          this.config.onPublish?.(matchId, expected)
+        // §AS: Build candidate state without mutating the committed state.
+        // Clone current state, advance the clone, and build the payload from it.
+        // The committed state is only updated after an unambiguous Nchan acceptance.
+        const candidate: MatchState = {
+          seq: state.seq,
+          score: { ...state.score },
+          clock: { ...state.clock },
+          last_event_type: state.last_event_type,
         }
-        // §AS: On failure, committed state is unchanged — no revert needed
-        finalize()
-      }).catch(() => {
-        // §AS: On exception, committed state is unchanged — no revert needed
-        this._pendingPublishes--
-        finalize()
-      })
-    }
+        advanceMatchState(candidate, eventType, random)
+
+        // §3.5: Freeze T0 at creation time — this is what gets serialized and transmitted.
+        // publish_timestamp in the JSON body is the transmitted clock reference.
+        // Acceptance time is measured separately for scheduler lag computation.
+        const publishStartMs = Date.now()
+        const transmitTimestamp = new Date().toISOString()
+        const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock, transmitTimestamp)
+        const body = JSON.stringify(event)
+
+        const finalize = () => {
+          this._matchBusy.set(matchId, false)
+          // Nominal 55/s burst target split by match share: measured accepted
+          // rate must land inside the frozen [40, 60] events/s window;
+          // event-loop lag and in-flight latency consume part of a naive
+          // schedule, so aim above the window midpoint below its ceiling.
+          const rate = (this.config.burstMode ? BURST_RATE_PER_SEC : STEADY_RATE_PER_SEC) * share
+          const intervalMs = 1000 / rate
+          const jitter = intervalMs * 0.3 * (random() - 0.5)
+          // Pace from the START of the previous publication: the in-flight
+          // round-trip is part of the interval, not additive to it.
+          const elapsedMs = Date.now() - publishStartMs
+          const waitMs = Math.max(BUSY_RETRY_MS, intervalMs + jitter - elapsedMs)
+          const timer = setTimeout(scheduleMatchEvents, waitMs)
+          this.timers.push(timer)
+        }
+
+        this._pendingPublishes++
+        this._matchAttempts++
+        // Hold the per-match busy lock across the in-flight publish so the
+        // prefill path (spare-probe) waits for chain quiescence (§3.1.G).
+        this._matchBusy.set(matchId, true)
+        this.config.publisher.publish(matchId, body, eventType).then((ok) => {
+          this._pendingPublishes--
+          if (ok) {
+            // §3.5: Measure scheduler lag (acceptance - transmission), do NOT mutate event timestamp
+            const acceptanceTime = new Date().toISOString()
+            const transmitMs = new Date(transmitTimestamp).getTime()
+            const acceptMs = new Date(acceptanceTime).getTime()
+            const schedulerLagMs = acceptMs - transmitMs
+            this._schedulerLagSamples.push(schedulerLagMs)
+            // §AS: Atomically commit candidate state only after Nchan acceptance
+            state.seq = candidate.seq
+            state.score = candidate.score
+            state.clock = candidate.clock
+            state.last_event_type = candidate.last_event_type
+            // §AS/§4.1: Only commit head tracker and counters after Nchan acceptance
+            // §4.1: Update head state with score/clock for late-join reconstruction verification
+            this.config.headTracker.updateHeadState(matchId, state.seq, state.score, { period: state.clock.period, elapsed: state.clock.elapsed_seconds })
+            this._eventsPublished++
+            this._totalPublished++
+            this._matchPublished++
+            if (PUB_DEBUG) {
+              console.log(`PUBDBG ${JSON.stringify({ t: acceptMs, match: matchId, seq: candidate.seq, ev: eventType })}`)
+            }
+            const prev = this._eventsPublishedByMatch.get(matchId) ?? 0
+            this._eventsPublishedByMatch.set(matchId, prev + 1)
+            const expected = this.config.getSubscriberCount?.(matchId) ?? 0
+            this.config.onPublish?.(matchId, expected)
+          }
+          // §AS: On failure, committed state is unchanged — no revert needed
+          finalize()
+        }).catch(() => {
+          // §AS: On exception, committed state is unchanged — no revert needed
+          this._pendingPublishes--
+          finalize()
+        })
+      }
+
+      // Stagger chain start slightly so the chains do not tick in lockstep.
+      setTimeout(scheduleMatchEvents, matchIdx * 5)
+    })
 
     const scheduleLobby = () => {
       if (!this.running) return
@@ -262,7 +260,6 @@ export class MatchEventPublisher {
       this.timers.push(timer)
     }
 
-    scheduleMatchEvents()
     scheduleLobby()
   }
 
