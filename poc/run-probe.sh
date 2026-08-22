@@ -19,6 +19,14 @@ PROBE_TARGET=$(( VIEWERS / 4 ))
 STAMP="$(date +%Y%m%dT%H%M%S)"
 PROJECT="ea-probe-${VIEWERS}-${STAMP,,}"
 
+for p in 6379 8080 8081 18080 18081 28080 28081 38080 38081 48080 48081 8300; do
+  if ss -tlnH 2>/dev/null | grep -q ":${p} " ; then
+    echo "[probe] host port ${p} already in use — stop the dev stack (ea-dev-redis/ea-nchan-dev) or other host service before probing" >&2
+    ss -tlnp 2>&1 | grep ":${p} " | head -n 5 >&2 || true
+    exit 2
+  fi
+done
+
 echo "[probe] viewers=${VIEWERS} per-shard=${PROBE_TARGET} project=${PROJECT}"
 set +e
 GIT_COMMIT_SHA="$SOURCE_COMMIT" \
