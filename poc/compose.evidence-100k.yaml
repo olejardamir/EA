@@ -35,6 +35,9 @@ services:
         limits:
           cpus: "2"
           memory: 2G
+    # Redis serializes every publication accept and inter-partition fanout;
+    # it must not yield to desktop load during measurement windows.
+    cpu_shares: 262144
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -59,7 +62,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 200000
@@ -88,7 +91,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 200000
@@ -117,7 +120,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 200000
@@ -146,7 +149,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 200000
@@ -175,7 +178,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 200000
@@ -200,13 +203,14 @@ services:
     environment:
       PUBLISHER_PORT: "8300"
       NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"
       REDIS_URL: "redis://host.docker.internal:6379"
       GLOBAL_SEED: "${GLOBAL_SEED:-42}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Elevated CFS scheduler weight: the publisher's event loop paces the
     # frozen burst-rate workload and must not starve under host contention.
-    cpu_shares: 2048
+    cpu_shares: 262144
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8300/healthz"]
       interval: 2s
@@ -301,7 +305,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 120000
@@ -345,7 +349,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 120000
@@ -389,7 +393,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 120000
@@ -433,7 +437,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
-    cpu_shares: 2048
+    cpu_shares: 262144
     ulimits:
       nofile:
         soft: 120000
