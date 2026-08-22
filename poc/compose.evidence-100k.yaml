@@ -59,6 +59,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 200000
@@ -87,6 +88,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 200000
@@ -115,6 +117,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 200000
@@ -143,6 +146,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 200000
@@ -171,6 +175,7 @@ services:
         limits:
           cpus: "3"
           memory: 6G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 200000
@@ -199,6 +204,9 @@ services:
       GLOBAL_SEED: "${GLOBAL_SEED:-42}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Elevated CFS scheduler weight: the publisher's event loop paces the
+    # frozen burst-rate workload and must not starve under host contention.
+    cpu_shares: 2048
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8300/healthz"]
       interval: 2s
@@ -293,6 +301,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 120000
@@ -336,6 +345,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 120000
@@ -379,6 +389,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 120000
@@ -422,6 +433,7 @@ services:
         limits:
           cpus: "4"
           memory: 4G
+    cpu_shares: 2048
     ulimits:
       nofile:
         soft: 120000
