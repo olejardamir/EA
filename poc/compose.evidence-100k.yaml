@@ -206,6 +206,10 @@ services:
     environment:
       PUBLISHER_PORT: "8300"
       NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      # Per-partition accept endpoints: match i publishes via partition
+      # (i mod 4) so no single node carries every publication accept plus its
+      # own subscriber-connection storm (history is Redis-interconnected).
+      NCHAN_PUB_URLS: "http://host.docker.internal:8080,http://host.docker.internal:18080,http://host.docker.internal:28080,http://host.docker.internal:38080"
       PUB_DEBUG: "${PUB_DEBUG:-0}"
       REDIS_URL: "redis://host.docker.internal:6379"
       GLOBAL_SEED: "${GLOBAL_SEED:-42}"
