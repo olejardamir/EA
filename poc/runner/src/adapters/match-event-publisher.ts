@@ -19,7 +19,7 @@ const BUSY_RETRY_MS = 2
 // accepted rate lands inside the frozen [40, 60] window under realistic
 // event-loop lag (see finalize pacing below).
 const STEADY_RATE_PER_SEC = 9
-const BURST_RATE_PER_SEC = 55
+const BURST_RATE_PER_SEC = 58
 
 // Publish round-trips at/above this many milliseconds are traced unconditionally.
 const SLOW_PUBLISH_LOG_MS = 500
