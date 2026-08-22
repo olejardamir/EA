@@ -1286,9 +1286,11 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 	drained := r.pool.DrainAll()
 	r.logf("failover drain: %d viewers held offline", drained)
 
+	r.logf("failover: issuing literal partition restart via control server")
 	restartStart := time.Now()
 	restartErr := dut.Restart(ctx, r.cfg.controlURL)
 	if restartErr != nil {
+		r.logf("failover: restart control call failed after %dms: %v", time.Since(restartStart).Milliseconds(), restartErr)
 		scenario.Detail = "literal restart failed: " + restartErr.Error()
 		// release the held pool regardless so the run can continue collecting
 		r.pool.ReleaseDrain()
@@ -1296,7 +1298,7 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 		return scenario
 	}
 	restartMs := time.Since(restartStart).Milliseconds()
-	r.timingMu.Lock()
+	r.logf("failover: restart control call returned in %dms", restartMs)
 	r.markRestartWindow(restartMs)
 
 	r.pool.SetSpare(r.cfg.spareSubURL)

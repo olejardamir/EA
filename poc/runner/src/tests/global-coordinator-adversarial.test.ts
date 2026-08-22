@@ -1080,3 +1080,37 @@ describe("R15 mandatory correctness field presence", () => {
     assert.ok(JSON.stringify(result).includes("schema_validation_errors=4"))
   })
 })
+
+describe("aborted-shard partial results must invalidate, never crash persistence", () => {
+  function partialResultCase(name: string, mutate: (target: ShardExperimentResult) => void): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const target = shardResult(1)
+      mutate(target)
+      coordinator.submitResult(shardResult(0))
+      coordinator.submitResult(target)
+      let result
+      try {
+        result = coordinator.buildGlobalResult()
+      } catch (error) {
+        assert.fail(`buildGlobalResult threw on partial evidence: ${String(error)}`)
+      }
+      assert.equal(result.verdict, "INCONCLUSIVE")
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(
+        result.validity.reasons.some((reason) => reason.includes("missing structured generator evidence")),
+        `expected missing-generator reason, got: ${JSON.stringify(result.validity.reasons)}`,
+      )
+    })
+  }
+
+  partialResultCase(
+    "generator evidence null (aborted submit path)",
+    (target) => { ;(target.resources as unknown as Record<string, unknown>).generator = null },
+  )
+  partialResultCase(
+    "generator evidence absent",
+    (target) => { delete (target.resources as unknown as Record<string, unknown>).generator },
+  )
+})

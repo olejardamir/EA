@@ -219,6 +219,16 @@ function emptyHistogram(): SerializedHistogram {
   return { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] }
 }
 
+// Structured generator evidence can be absent when an aborted shard submits a
+// partial result; every cross-check must treat absence as an invalidating
+// reason instead of crashing the coordinator's persistence path.
+function generatorEvidence(result: ShardExperimentResult): Record<string, unknown> | null {
+  const gen = result.resources?.generator
+  return gen !== null && gen !== undefined && typeof gen === "object"
+    ? (gen as unknown as Record<string, unknown>)
+    : null
+}
+
 // §v2.1.1 §10 (restart-range live tail): frames ABOVE the frozen range are live
 // continuation on a live channel — diagnostic out_of_range_after counters only,
 // never a replay defect. Exactness is judged INSIDE the frozen interval:
@@ -582,7 +592,12 @@ export class GlobalExperimentCoordinator {
     // its own timing_valid flag has untrustworthy measurement (INCONCLUSIVE).
     const nowMs = Date.now()
     for (const result of shardResults) {
-      const timing = (result.resources.generator as Record<string, unknown>)["timing"]
+      const gen = generatorEvidence(result)
+      if (!gen) {
+        validityReasons.push(`shard ${result.shard_id} missing structured generator evidence`)
+        continue
+      }
+      const timing = gen["timing"]
       if (!timing || typeof timing !== "object") {
         validityReasons.push(`shard ${result.shard_id} missing structured timing evidence`)
         continue
@@ -636,7 +651,8 @@ export class GlobalExperimentCoordinator {
       validityReasons.push(`publisher-owner results ${ownerResults.length}; expected exactly 1`)
     } else {
       const owner = ownerResults[0]
-      const pub = (owner.resources.generator as Record<string, unknown>)["publisher"]
+      const ownerGen = generatorEvidence(owner)
+      const pub = ownerGen ? ownerGen["publisher"] : null
       if (!pub || typeof pub !== "object") {
         validityReasons.push(`shard ${owner.shard_id} missing structured publisher evidence`)
       } else {
@@ -709,7 +725,8 @@ export class GlobalExperimentCoordinator {
       "oom_kill_events",
     ] as const
     for (const result of shardResults) {
-      const stagesRoot = (result.resources.generator as Record<string, unknown>)["resource_stages"]
+      const gen = generatorEvidence(result)
+      const stagesRoot = gen ? gen["resource_stages"] : null
       if (!stagesRoot || typeof stagesRoot !== "object") {
         validityReasons.push(`shard ${result.shard_id} missing structured resource-stage evidence`)
         continue
@@ -787,7 +804,8 @@ export class GlobalExperimentCoordinator {
     let globalDeepDisagreed = 0
     let globalDeepUnmatched = 0
     for (const result of shardResults) {
-      const da = (result.resources.generator as Record<string, unknown>)["deep_agreement"]
+      const gen = generatorEvidence(result)
+      const da = gen ? gen["deep_agreement"] : null
       if (!da || typeof da !== "object") {
         validityReasons.push(`shard ${result.shard_id} missing structured deep-cohort head-agreement evidence`)
         continue
