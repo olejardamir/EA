@@ -825,7 +825,6 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 		}
 		received = append(received, seq)
 		if spec.ResumeID != "" && scratchLen > 0 {
-			// deep check on resumed payload when available (agreement proof)
 			if ev, err := deep.ValidateSchema(scratch[:scratchLen], spec.MatchID); err == nil {
 				if uint64(ev.CanonicalSeq) != seq {
 					p.Counters.AgreementViolations.Add(1)
@@ -834,6 +833,7 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 				p.Counters.SchemaViolations.Add(1)
 			}
 		}
+		scratch = scratch[:0]
 		scratchLen = 0
 		if seq >= spec.Target {
 			return deep.EvaluateRequiredRange(spec.ResumeID, int64(spec.First), int64(spec.Target), received, time.Since(start).Milliseconds())
@@ -858,13 +858,8 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 			p.Counters.TransportIDPresent.Add(1)
 		case hasPrefixColon(trimmed, "data"):
 			payload := bytes.TrimLeft(trimmed[5:], " ")
-			if scratchLen+len(payload) > cap(scratch) {
-				grow := make([]byte, scratchLen+len(payload), (scratchLen+len(payload))*2)
-				copy(grow, scratch[:scratchLen])
-				scratch = grow
-			}
-			copy(scratch[scratchLen:], payload)
-			scratchLen += len(payload)
+			scratch = append(scratch[:scratchLen], payload...)
+			scratchLen = len(scratch)
 		}
 		if pctx.Err() != nil {
 			break
