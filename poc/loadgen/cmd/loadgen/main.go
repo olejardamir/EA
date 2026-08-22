@@ -520,6 +520,9 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if !r.barrier("stabilization", "end") {
 		return nil, fmt.Errorf("stabilization end barrier")
 	}
+	// R06 provenance: from here on the population is at the post-surge full
+	// target — deep-cohort latency counts toward the terminal fan-out gates.
+	r.pool.BeginFullTargetWindow()
 
 	// ── late join: full retained history probe per match against this
 	// shard's own partition node (every ownership domain covered) ──

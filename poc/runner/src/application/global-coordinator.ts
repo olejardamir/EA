@@ -491,6 +491,7 @@ export class GlobalExperimentCoordinator {
       validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount * 64} (64 per partition)`)
     }
     if (mergedLateJoin.count === 0) validityReasons.push("global late-join histogram is empty")
+    if (mergedSurge.count === 0) validityReasons.push("global surge histogram is empty")
     const fanOutP95 = histogramSummary(mergedFanOut).p95_ms
     const burstP95 = histogramSummary(mergedBurst).p95_ms
     const lateJoinP95 = histogramSummary(mergedLateJoin).p95_ms

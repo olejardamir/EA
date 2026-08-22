@@ -103,6 +103,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       other_fan_out: histogram([20 + shardId * 10]),
       late_join: histogram(Array(64).fill(100)),
       burst: histogram([30 + shardId * 10]),
+      surge_fan_out: histogram([12 + shardId * 10, 18 + shardId * 10]),
     },
     correctness_counters: {
       missing_sequences: 0,

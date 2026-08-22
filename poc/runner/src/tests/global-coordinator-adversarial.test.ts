@@ -101,6 +101,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       other_fan_out: histogram([20]),
       late_join: histogram(Array(64).fill(5)),
       burst: histogram([15]),
+      surge_fan_out: histogram([12, 18]),
     },
     correctness_counters: {
       missing_sequences: 0,
@@ -488,6 +489,19 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     const result = coordinator.buildGlobalResult()
     assert.equal(result.validity.valid, false)
     assert.ok(result.validity.reasons.some((reason) => reason.includes("global fan-out histogram is empty")))
+  })
+
+  it("treats an empty surge latency histogram as invalidating (R06)", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0))
+    coordinator.register(registration(1))
+    await completeBarriers(coordinator)
+    const emptySurge = { fan_out: histogram([10]), goal_fan_out: histogram([10]), other_fan_out: histogram([20]), late_join: histogram(Array(64).fill(5)), burst: histogram([15]), surge_fan_out: histogram([]) }
+    coordinator.submitResult(shardResult(0, { histograms: emptySurge }))
+    coordinator.submitResult(shardResult(1, { histograms: emptySurge }))
+    const result = coordinator.buildGlobalResult()
+    assert.equal(result.verdict, "INCONCLUSIVE")
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("global surge histogram is empty")))
   })
 
   it("reports REJECT when any correctness counter is nonzero across shards", async () => {

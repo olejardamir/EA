@@ -550,3 +550,52 @@ func TestParseUintRejectsNonNumericIDs(t *testing.T) {
 		}
 	}
 }
+
+// ── R06: full-target latency provenance ─────────────────────────────────────
+
+// Lower-population samples (pre-surge steady traffic) must never enter the
+// goal/other fan-out evidence; surge/burst windows own their samples at any
+// time. Only inside the full-target window do plain deep samples count.
+func TestFullTargetWindowLatencyProvenance(t *testing.T) {
+	p := New("http://unused/sub/", []string{"m1"}, 4)
+	defer p.Stop()
+
+	// Before the full-target window opens: nothing may reach goal/other.
+	p.routeLatency(100, "goal")
+	p.routeLatency(120, "other")
+	if got := p.GoalHistogram().TotalCount + p.OtherHistogram().TotalCount; got != 0 {
+		t.Fatalf("pre-full-target samples leaked into fan-out evidence: %d", got)
+	}
+
+	// Surge window owns its samples regardless of the gate state.
+	p.BeginSurgeWindow()
+	p.routeLatency(200, "other")
+	p.EndSurgeWindow()
+	if got := p.SurgeHistogram().TotalCount; got != 1 {
+		t.Fatalf("surge histogram total = %d, want 1", got)
+	}
+	if got := p.GoalHistogram().TotalCount + p.OtherHistogram().TotalCount; got != 0 {
+		t.Fatal("surge sample must not dilute fan-out evidence")
+	}
+
+	// Burst window likewise.
+	p.BeginBurstWindow()
+	p.routeLatency(300, "goal")
+	p.EndBurstWindow()
+	if got := p.BurstHistogram().TotalCount; got != 1 {
+		t.Fatalf("burst histogram total = %d, want 1", got)
+	}
+	if got := p.GoalHistogram().TotalCount + p.OtherHistogram().TotalCount; got != 0 {
+		t.Fatal("burst sample must not dilute fan-out evidence")
+	}
+
+	// After BeginFullTargetWindow: plain samples land in their classes.
+	p.BeginFullTargetWindow()
+	p.routeLatency(10, "goal")
+	p.routeLatency(20, "other")
+	p.routeLatency(30, "other")
+	goal, other := p.GoalHistogram(), p.OtherHistogram()
+	if goal.TotalCount != 1 || other.TotalCount != 2 {
+		t.Fatalf("post-window routing wrong: goal=%d other=%d, want 1/2", goal.TotalCount, other.TotalCount)
+	}
+}

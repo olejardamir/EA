@@ -149,6 +149,10 @@ type Pool struct {
 	histMu    sync.Mutex // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
 	surgeOpen atomic.Bool
+	// fullTargetOpen gates terminal fan-out evidence: only deep-cohort
+	// latency observed after the post-surge full population is reached may
+	// enter the goal/other histograms (R06 provenance rule).
+	fullTargetOpen atomic.Bool
 
 	pathMu      sync.Mutex
 	PathResults map[string]*deep.PathResult
@@ -572,27 +576,49 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	if pubMs, err := deep.FastIsoMs(ev.PublishTimestamp); err != nil {
 		p.Counters.InvalidTimestampCount.Add(1)
 	} else {
-		lat := int(now.UnixMilli() - pubMs)
-		if lat < 0 {
-			lat = 0
+		latMs := int(now.UnixMilli() - pubMs)
+		if latMs < 0 {
+			latMs = 0
 		}
-		p.histMu.Lock()
-		if p.surgeOpen.Load() {
-			p.surgeHist.Record(lat)
-		} else if p.burstOpen.Load() {
-			p.burstHist.Record(lat)
-		} else if ev.EventType == "goal" {
-			p.goalHist.Record(lat)
-		} else {
-			p.otherHist.Record(lat)
-		}
-		p.histMu.Unlock()
+		p.routeLatency(latMs, ev.EventType)
+	}
+}
+
+// routeLatency applies the frozen phase-window provenance rules for
+// deep-cohort latency evidence: surge and burst windows own their samples;
+// everything else counts toward the terminal fan-out gates ONLY inside the
+// post-surge full-target window — lower-population samples (60k warmup/steady)
+// must never dilute the 100k full-target gate.
+func (p *Pool) routeLatency(latMs int, eventType string) {
+	p.histMu.Lock()
+	defer p.histMu.Unlock()
+	if p.surgeOpen.Load() {
+		p.surgeHist.Record(latMs)
+		return
+	}
+	if p.burstOpen.Load() {
+		p.burstHist.Record(latMs)
+		return
+	}
+	if !p.fullTargetOpen.Load() {
+		return
+	}
+	if eventType == "goal" {
+		p.goalHist.Record(latMs)
+	} else {
+		p.otherHist.Record(latMs)
 	}
 }
 
 func (p *Pool) BeginSurgeWindow() { p.surgeOpen.Store(true) }
 
 func (p *Pool) EndSurgeWindow() { p.surgeOpen.Store(false) }
+
+// BeginFullTargetWindow opens the terminal fan-out evidence window: from here
+// on the population is at the post-surge full target, so deep-cohort latency
+// counts toward the goal/other fan-out gates. Samples observed before this
+// point are excluded (lower-load provenance rule).
+func (p *Pool) BeginFullTargetWindow() { p.fullTargetOpen.Store(true) }
 
 func (p *Pool) SurgeHistogram() hist.Serialized { return p.surgeHist.Serialize() }
 

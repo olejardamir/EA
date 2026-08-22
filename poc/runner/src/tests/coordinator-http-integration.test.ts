@@ -145,6 +145,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       other_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[40, 1]] },
       late_join: { max_ms: 30_000, total_count: 64, overflow_count: 0, buckets: [[5, 64]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
+      surge_fan_out: { max_ms: 30_000, total_count: 2, overflow_count: 0, buckets: [[12, 1], [18, 1]] },
     },
     correctness_counters: {
       missing_sequences: 0,

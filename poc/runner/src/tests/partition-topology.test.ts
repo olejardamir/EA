@@ -114,6 +114,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       other_fan_out: histogram([20]),
       late_join: histogram(Array(64).fill(100)),
       burst: histogram([15]),
+      surge_fan_out: histogram([12, 18]),
     },
     correctness_counters: {
       missing_sequences: 0,
