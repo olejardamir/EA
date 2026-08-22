@@ -509,6 +509,7 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	}
 	lateResults := r.runLateJoinProbes(ctx)
 	lateScenario := r.lateJoinScenario(lateResults)
+	sleepCtx(ctx, 2*time.Second)
 	if !r.barrier("late-join", "end") {
 		return nil, fmt.Errorf("late-join end barrier")
 	}
@@ -563,10 +564,10 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("reconnect end barrier")
 	}
 
-	// ── slow-consumer (retired in v2.2.0 — dummy barrier for coordinator phase alignment) ──
 	if !r.barrier("slow-consumer", "start") {
 		return nil, fmt.Errorf("slow-consumer start barrier")
 	}
+	sleepCtx(ctx, 2*time.Second)
 	if !r.barrier("slow-consumer", "end") {
 		return nil, fmt.Errorf("slow-consumer end barrier")
 	}
@@ -831,11 +832,12 @@ func (r *shardRun) runSpareProbe(ctx context.Context) coordinator.ScenarioEviden
 		return scenario
 	}
 	spec := pool.ProbeSpec{
-		Key:     "spare_probe",
-		URL:     r.cfg.spareSubURL + "/history/" + restartMatchID(),
-		MatchID: restartMatchID(),
-		First:   1,
-		Target:  uint64(head),
+		Key:      "spare_probe",
+		URL:      r.cfg.spareSubURL + "/history/" + restartMatchID(),
+		MatchID:  restartMatchID(),
+		ResumeID: "history",
+		First:    1,
+		Target:   uint64(head),
 	}
 	res := r.pool.RunProbe(ctx, spec, restartProbeTO)
 	r.logf("spare_probe passed=%v recovery_ms=%d missing=%d target=%d",
@@ -905,11 +907,12 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 		return scenario
 	}
 	spec := pool.ProbeSpec{
-		Key:     "failover_drill",
-		URL:     r.cfg.spareSubURL + "/history/" + restartMatchID(),
-		MatchID: restartMatchID(),
-		First:   1,
-		Target:  uint64(head),
+		Key:      "failover_drill",
+		URL:      r.cfg.spareSubURL + "/history/" + restartMatchID(),
+		MatchID:  restartMatchID(),
+		ResumeID: "history",
+		First:    1,
+		Target:   uint64(head),
 	}
 	res := r.pool.RunProbe(ctx, spec, restartProbeTO)
 	r.logf("failover_drill passed=%v recovery_ms=%d missing=%d target=%d",

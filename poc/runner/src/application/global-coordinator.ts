@@ -472,10 +472,8 @@ export class GlobalExperimentCoordinator {
         ` do not reproduce the merged fan-out population (${mergedFanOut.count})`,
       )
     }
-    // §v2.1.0: one late-join sample per shard — every independent history/fan-out
-    // ownership domain must be probed against the owner-frozen expectation.
-    if (mergedLateJoin.count !== this.shardCount) {
-      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount} (one per partition)`)
+    if (mergedLateJoin.count !== this.shardCount * 8) {
+      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount * 8} (8 per partition for v2.2.0)`)
     }
 
     const correctnessCounters: Record<string, number> = {}
