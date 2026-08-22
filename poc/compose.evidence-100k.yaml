@@ -1,33 +1,23 @@
-# §M3-R: Horizontally partitioned 100k fan-out topology (contract v2.1.0).
+# §M3 v2.2.0: Horizontally partitioned 100k fan-out topology (contract v2.2.0).
 #
-# Architecture (Terminal A executed): four independent Nchan partition nodes,
-# each serving ~25,000 viewers of the 100,000-viewer global target, plus one
-# spare replacement node. All nodes share one canonical Redis store, so an
-# event published exactly once by the publisher-owner via partition p0 is
-# replicated to every node: live delivery, Last-Event-ID exact-range resume,
-# and full-history replay work identically on any node (probe-verified).
+# Architecture: four independent Nchan partition nodes, each serving ~25,000
+# viewers of the 100,000-viewer global target, plus one spare replacement node.
+# All nodes share one canonical Redis store. One independent publisher/control
+# service owns canonical event generation and publishes exactly once via p0.
+# Four Go load-generator shards (25k each) own one partition each.
 #
 # Port allocation (all host networking):
-#   node          pub     sub     control
-#   nchan-p0      8080    8081    18888
-#   nchan-p1      18080   18081   18889
-#   nchan-p2      28080   28081   28888
-#   nchan-p3      38080   38081   38889
-#   nchan-spare   48080   48081   48888
+#   node              pub     sub     control
+#   nchan-p0          8080    8081    18888
+#   nchan-p1          18080   18081   18889
+#   nchan-p2          28080   28081   28888
+#   nchan-p3          38080   38081   38889
+#   nchan-spare       48080   48081   48888
+#   publisher-control 8300    —       —
 #
-# Generator shards: 4 runner shards on a Docker bridge network, each with a
-# distinct source IP. Shard i owns partition i: its viewers connect to that
-# partition's subscriber port and its resource monitor polls that node.
-# Per-shard allocation: 25,000 connections (safe within typical 28,232-port
-# range). Frozen proof: 25,000 viewers + 2,500 reconnect/TIME_WAIT + 64
-# non-viewer sockets + 512 safety = 28,076 required, leaving 156 ports of
-# headroom per shard.
-#
-# Host-reality note (§9): configured CPU quotas intentionally exceed the
-# physical core count (documented oversubscription); quotas cap per-service
-# usage so CFS shares fairly. Real expected peak demand is approximately half
-# the quota sum. Dev probes validate latency gates under this sharing before
-# any qualifying campaign.
+# Generator shards: Go lightweight path (25k each) + bounded deep cohort.
+# Per-shard source-port range: net.ipv4.ip_local_port_range = "1024 65535"
+# (64,512 ports) via namespaced sysctl; headroom proof requires >= 4000 free.
 #
 # Launch with ./run-evidence-100k.sh; it injects the checkout SHA automatically.
 
@@ -51,7 +41,6 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Partition nodes ──────────────────────────────────────────────────
   nchan-p0:
     build:
       context: ./nchan
@@ -164,7 +153,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # ── Spare replacement node (idle standby until failover) ─────────────
   nchan-spare:
     build:
       context: ./nchan
@@ -193,6 +181,30 @@ services:
       timeout: 3s
       retries: 10
 
+  publisher:
+    build:
+      context: ./runner
+      network: host
+    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+      nchan-p0:
+        condition: service_healthy
+    command: ["npm", "run", "start:publisher"]
+    environment:
+      PUBLISHER_PORT: "8300"
+      NCHAN_PUB_URL: "http://host.docker.internal:8080"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      GLOBAL_SEED: "${GLOBAL_SEED:-42}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8300/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
   coordinator:
     build:
       context: ./runner
@@ -219,14 +231,11 @@ services:
       timeout: 2s
       retries: 20
 
-  # ── Generator shards: shard i owns partition i ───────────────────────
-
-  runner-shard-0:
+  loadgen-shard-0:
     build:
-      context: ./runner
+      context: ./loadgen
       network: host
-      args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+
     depends_on:
       nchan-p0:
         condition: service_healthy
@@ -238,70 +247,57 @@ services:
         condition: service_healthy
       nchan-spare:
         condition: service_healthy
+      publisher:
+        condition: service_healthy
       coordinator:
         condition: service_healthy
     networks:
       - shard-net
-    volumes:
-      - redis-cgroup-evidence:/redis-cgroup:ro
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment: &runner-env
+    environment: &loadgen-env
       NCHAN_PUB_URL: "http://host.docker.internal:8080"
       NCHAN_SUB_URL: "http://host.docker.internal:8081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
       NCHAN_SPARE_PUB_URL: "http://host.docker.internal:48080"
       NCHAN_SPARE_SUB_URL: "http://host.docker.internal:48081"
       NCHAN_SPARE_CONTROL_URL: "http://host.docker.internal:48888"
-      REDIS_URL: "redis://host.docker.internal:6379"
+      REDIS_ADDR: "host.docker.internal:6379"
+      PUBLISHER_URL: "http://host.docker.internal:8300"
       TARGET_CONNECTIONS: "25000"
       WARMUP_SECONDS: "30"
       MEASURE_SECONDS: "120"
       BURST_SECONDS: "30"
       SURGE_SECONDS: "120"
       COOLDOWN_SECONDS: "10"
-      SLOW_CONSUMER_FRACTION: "0.05"
       RUN_PROFILE: "evidence"
-      RUN_MODE: "coordinated-shard"
       COORDINATOR_URL: "http://coordinator:3000"
       CAMPAIGN_ID: "${CAMPAIGN_ID:?Use ./run-evidence-100k.sh}"
       GLOBAL_TARGET: "100000"
       GLOBAL_SEED: "${GLOBAL_SEED:-42}"
       GLOBAL_RUN_INDEX: "${GLOBAL_RUN_INDEX:-0}"
-      SEED: "${GLOBAL_SEED:-42}"
       PUBLISHER_OWNER: "true"
       SHARD_ID: "0"
       SHARD_TOTAL: "4"
-      # §v2.1.0: 1-based restart drill target — shard 4 owns partition p3
       RESTART_TARGET_SHARD: "4"
       GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
-      # §BS hang-safety ceiling for the coordinated 100k profile: generous, never
-      # fires in a valid run; prevents valid phase overruns from destroying evidence
-      RUNNER_MAX_RUN_MS: "1800000"
-      NCHAN_CPU_MAX_QUOTA: "300000"
-      NCHAN_CPU_MAX_PERIOD: "100000"
-      REDIS_CPU_MAX_QUOTA: "200000"
-      REDIS_CPU_MAX_PERIOD: "100000"
-      NCHAN_MEMORY_GB: "6"
-      NCHAN_NOFILE_SOFT: "200000"
-      NCHAN_NOFILE_HARD: "200000"
-      REDIS_MEMORY_GB: "2"
     deploy:
       resources:
         limits:
-          cpus: "8"
-          memory: 8G
+          cpus: "4"
+          memory: 4G
     ulimits:
       nofile:
         soft: 120000
         hard: 120000
 
-  runner-shard-1:
+  loadgen-shard-1:
     build:
-      context: ./runner
+      context: ./loadgen
       network: host
-      args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+
     depends_on:
       nchan-p0:
         condition: service_healthy
@@ -313,16 +309,18 @@ services:
         condition: service_healthy
       nchan-spare:
         condition: service_healthy
+      publisher:
+        condition: service_healthy
       coordinator:
         condition: service_healthy
     networks:
       - shard-net
-    volumes:
-      - redis-cgroup-evidence:/redis-cgroup:ro
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *runner-env
+      <<: *loadgen-env
       NCHAN_PUB_URL: "http://host.docker.internal:18080"
       NCHAN_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18889"
@@ -331,19 +329,18 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "8"
-          memory: 8G
+          cpus: "4"
+          memory: 4G
     ulimits:
       nofile:
         soft: 120000
         hard: 120000
 
-  runner-shard-2:
+  loadgen-shard-2:
     build:
-      context: ./runner
+      context: ./loadgen
       network: host
-      args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+
     depends_on:
       nchan-p0:
         condition: service_healthy
@@ -355,16 +352,18 @@ services:
         condition: service_healthy
       nchan-spare:
         condition: service_healthy
+      publisher:
+        condition: service_healthy
       coordinator:
         condition: service_healthy
     networks:
       - shard-net
-    volumes:
-      - redis-cgroup-evidence:/redis-cgroup:ro
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *runner-env
+      <<: *loadgen-env
       NCHAN_PUB_URL: "http://host.docker.internal:28080"
       NCHAN_SUB_URL: "http://host.docker.internal:28081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:28888"
@@ -373,19 +372,18 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "8"
-          memory: 8G
+          cpus: "4"
+          memory: 4G
     ulimits:
       nofile:
         soft: 120000
         hard: 120000
 
-  runner-shard-3:
+  loadgen-shard-3:
     build:
-      context: ./runner
+      context: ./loadgen
       network: host
-      args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-evidence-100k.sh}"
+
     depends_on:
       nchan-p0:
         condition: service_healthy
@@ -397,16 +395,18 @@ services:
         condition: service_healthy
       nchan-spare:
         condition: service_healthy
+      publisher:
+        condition: service_healthy
       coordinator:
         condition: service_healthy
     networks:
       - shard-net
-    volumes:
-      - redis-cgroup-evidence:/redis-cgroup:ro
+    sysctls:
+      net.ipv4.ip_local_port_range: "1024 65535"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *runner-env
+      <<: *loadgen-env
       NCHAN_PUB_URL: "http://host.docker.internal:38080"
       NCHAN_SUB_URL: "http://host.docker.internal:38081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:38889"
@@ -415,8 +415,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "8"
-          memory: 8G
+          cpus: "4"
+          memory: 4G
     ulimits:
       nofile:
         soft: 120000
