@@ -225,6 +225,10 @@ type shardRun struct {
 	// every shard: the target carries its drill window, bystanders their own
 	// phase window). nil = window never measured → validity failure.
 	restartDelta *counterSnapshot
+	// R04/R05: machine-proof surge measurement and the true surge-window
+	// correctness snapshot. nil = surge never measured → validity failure.
+	surgeStats *surgeRunStats
+	surgeDelta *counterSnapshot
 }
 
 func (r *shardRun) reasonf(format string, args ...any) {
@@ -487,17 +491,17 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("steady end barrier")
 	}
 
-	// ── surge (+40k global within 120s; local share ramps evenly) ──
+	// ── surge (+40k global within 120s; exact 24-batch integer schedule) ──
 	if !r.barrier("surge", "start") {
 		return nil, fmt.Errorf("surge start barrier")
 	}
-	r.pool.BeginSurgeWindow()
-	r.rampSurge(ctx, cfg.surgeLocal, time.Duration(cfg.surgeSeconds)*time.Second)
-	r.pool.EndSurgeWindow()
+	surgeScenario := r.runSurge(ctx)
 	if !r.barrier("surge", "end") {
 		return nil, fmt.Errorf("surge end barrier")
 	}
-	r.logf("post-surge active=%d", r.pool.ActiveCurrent())
+	r.logf("post-surge active=%d elapsed_ms=%d established=%d/%d",
+		r.pool.ActiveCurrent(), r.surgeStats.elapsedMs,
+		r.surgeStats.establishedAdds, r.surgeStats.attemptedAdds)
 
 	// ── target-barrier: pure alignment boundary at full population ──
 	if !r.barrier("target-barrier", "start") {
@@ -619,44 +623,198 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	}
 
 	scenarios := []coordinator.ScenarioEvidence{
-		lateScenario, burstScenario, reconnectScenario, restartScenario,
+		surgeScenario, lateScenario, burstScenario, reconnectScenario, restartScenario,
 	}
 	return r.assembleResult(samples, scenarios, lateResults, reconnectResults, headAgreement, startedAt), nil
 }
 
-// rampSurge establishes n additional lightweight connections spread evenly
-// across the surge window.
+// surgeRunStats is the R04 machine-proof measurement for one shard's surge
+// window: population before/after, attempted vs established additions inside
+// the frozen deadline, and the observed peak. All values are measured, never
+// derived from targets — a shortfall must be visible as evidence.
+type surgeRunStats struct {
+	startActive     int64
+	attemptedAdds   int64
+	establishedAdds int64
+	failedAdds      int64
+	elapsedMs       int64
+	finalActive     int64
+	peakActive      int64
+
+	expectedStart int64
+	expectedAdds  int64
+	expectedFinal int64
+	deadlineMs    int64
+}
+
+// passed applies the frozen per-shard surge gates: exact pre-surge start,
+// every planned addition attempted AND established within the deadline, zero
+// failures, final ownership at or above the full post-surge target.
+func (s *surgeRunStats) passed() bool {
+	return s.startActive == s.expectedStart &&
+		s.attemptedAdds == s.expectedAdds &&
+		s.establishedAdds == s.expectedAdds &&
+		s.failedAdds == 0 &&
+		s.elapsedMs <= s.deadlineMs &&
+		s.finalActive >= s.expectedFinal
+}
+
+// runSurge executes the surge window with full R04/R05 measurement: an exact
+// 24-deadline integer schedule, establishment tracked against the hard
+// deadline (establishments after it cannot pass), peak-active sampling, and
+// true window correctness deltas (never lifetime totals).
+func (r *shardRun) runSurge(ctx context.Context) coordinator.ScenarioEvidence {
+	cfg := r.cfg
+	expectedStart := int64(cfg.localTarget)
+	if cfg.globalTarget == 100000 {
+		expectedStart = int64(cfg.localTarget - cfg.surgeLocal)
+	}
+	st := &surgeRunStats{
+		startActive:   r.pool.ActiveCurrent(),
+		expectedStart: expectedStart,
+		expectedAdds:  int64(cfg.surgeLocal),
+		expectedFinal: int64(cfg.localTarget + cfg.surgeLocal),
+		deadlineMs:    int64(cfg.surgeSeconds) * 1000,
+	}
+	before := takeSnapshot(r.pool)
+	att0 := r.pool.AttemptedTotal()
+	est0 := r.pool.EstablishedTotal()
+
+	// peak sampler runs for the whole window so no transient population is missed
+	var peak atomic.Int64
+	peak.Store(st.startActive)
+	stopPeak := make(chan struct{})
+	peakDone := make(chan struct{})
+	go func() {
+		defer close(peakDone)
+		t := time.NewTicker(50 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopPeak:
+				return
+			case <-t.C:
+				cur := r.pool.ActiveCurrent()
+				for {
+					p := peak.Load()
+					if cur <= p || peak.CompareAndSwap(p, cur) {
+						break
+					}
+				}
+			}
+		}
+	}()
+
+	r.pool.BeginSurgeWindow()
+	startWall := time.Now()
+	r.rampSurge(ctx, cfg.surgeLocal, time.Duration(cfg.surgeSeconds)*time.Second)
+
+	// establishment wait: connections established after the hard deadline do
+	// not count toward passing (elapsedMs then exceeds deadlineMs → REJECT).
+	targetEst := est0 + st.expectedAdds
+	deadline := startWall.Add(time.Duration(st.deadlineMs) * time.Millisecond)
+	for r.pool.EstablishedTotal() < targetEst && time.Now().Before(deadline) {
+		if !sleepCtx(ctx, 25*time.Millisecond) {
+			break
+		}
+	}
+	close(stopPeak)
+	<-peakDone
+
+	st.elapsedMs = time.Since(startWall).Milliseconds()
+	r.pool.EndSurgeWindow()
+	delta := takeSnapshot(r.pool).sub(before)
+	r.surgeDelta = &delta
+
+	st.attemptedAdds = r.pool.AttemptedTotal() - att0
+	st.establishedAdds = r.pool.EstablishedTotal() - est0
+	st.failedAdds = st.attemptedAdds - st.establishedAdds
+	if st.failedAdds < 0 {
+		st.failedAdds = 0
+	}
+	st.finalActive = r.pool.ActiveCurrent()
+	st.peakActive = peak.Load()
+	r.surgeStats = st
+
+	passed := st.passed()
+	structured := map[string]any{
+		"surge_start_active":        st.startActive,
+		"surge_attempted_additions": st.attemptedAdds,
+		"surge_established_additions": st.establishedAdds,
+		"surge_failed_additions":    st.failedAdds,
+		"surge_elapsed_ms":          st.elapsedMs,
+		"surge_final_active":        st.finalActive,
+		"surge_peak_active":         st.peakActive,
+
+		"expected_start_active": st.expectedStart,
+		"expected_additions":    st.expectedAdds,
+		"expected_final_active": st.expectedFinal,
+		"deadline_ms":           st.deadlineMs,
+
+		"window_gaps":                   delta.missing,
+		"window_duplicates":             delta.duplicates,
+		"window_out_of_order":           delta.outOfOrder,
+		"window_unexpected_disconnects": delta.unexpected,
+	}
+	detail := fmt.Sprintf("start=%d +att=%d est=%d fail=%d elapsed=%dms final=%d peak=%d",
+		st.startActive, st.attemptedAdds, st.establishedAdds, st.failedAdds,
+		st.elapsedMs, st.finalActive, st.peakActive)
+	if !passed {
+		detail += " (gate violation)"
+	}
+	return coordinator.ScenarioEvidence{
+		Name:         "surge",
+		Participated: true,
+		Passed:       passed,
+		Detail:       detail,
+		Structured:   structured,
+	}
+}
+
+// surgeBatches is the frozen contract §3 schedule: 24 launch deadlines spread
+// evenly across the surge window (t=0,5,...,115s for the 120s assignment
+// window). Each shard adds exactly surgeLocal viewers total.
+const surgeBatches = 24
+
+// surgeBatchSizes returns the exact per-batch viewer counts for n additions:
+// the first n%surgeBatches batches carry one extra viewer so the total is
+// exact (10000 → first 16×417, last 8×416).
+func surgeBatchSizes(n int) []int {
+	sizes := make([]int, surgeBatches)
+	base := n / surgeBatches
+	rem := n % surgeBatches
+	for i := range sizes {
+		if i < rem {
+			sizes[i] = base + 1
+		} else {
+			sizes[i] = base
+		}
+	}
+	return sizes
+}
+
+// rampSurge establishes exactly n additional lightweight connections on the
+// frozen 24-deadline schedule spread evenly across the surge window.
 func (r *shardRun) rampSurge(ctx context.Context, n int, window time.Duration) {
 	if n <= 0 {
 		return
 	}
-	const step = 200 * time.Millisecond
-	steps := int(window / step)
-	if steps < 1 {
-		steps = 1
-	}
-	perStep := (n + steps - 1) / steps
-	ticker := time.NewTicker(step)
-	defer ticker.Stop()
-	added := 0
-	for added < n {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	batchGap := window / surgeBatches
+	sizes := surgeBatchSizes(n)
+	for i, batch := range sizes {
+		if batch <= 0 {
+			continue
 		}
-		batch := perStep
-		if added+batch > n {
-			batch = n - added
+		if i > 0 && !sleepCtx(ctx, batchGap) {
+			return
 		}
 		idx := make([]int, 0, batch)
-		for i := 0; i < batch; i++ {
+		for j := 0; j < batch; j++ {
 			vi, err := r.pool.AppendLightViewer()
 			if err != nil {
 				break
 			}
 			idx = append(idx, vi)
-			added++
 		}
 		r.pool.StartIndices(idx)
 	}
@@ -1058,6 +1216,7 @@ var gatedCorrectnessCounters = []string{
 	"reconnect_missing_raw_id",
 	"restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
 	"restart_failover_connection_failures", "restart_failover_unexpected_disconnects",
+	"surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects",
 	"missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
 	"json_parse_errors", "invalid_timestamp_count", "canonical_payload_state_violations",
 	"schema_validation_errors", "lobby_malformed",
@@ -1147,6 +1306,16 @@ func (r *shardRun) assembleResult(
 		restartConnFail = float64(r.restartDelta.failures)
 		restartUnexp = float64(r.restartDelta.unexpected)
 	}
+	if r.surgeStats == nil || r.surgeDelta == nil {
+		r.reasonf("surge population/correctness window never measured")
+	}
+	var surgeMissing, surgeDups, surgeOOO, surgeUnexp float64
+	if r.surgeDelta != nil {
+		surgeMissing = float64(r.surgeDelta.missing)
+		surgeDups = float64(r.surgeDelta.duplicates)
+		surgeOOO = float64(r.surgeDelta.outOfOrder)
+		surgeUnexp = float64(r.surgeDelta.unexpected)
+	}
 	res.CorrectnessCounters = map[string]float64{
 		"missing_sequences":                       float64(r.pool.Counters.MissingSequences.Load()),
 		"duplicates":                              float64(r.pool.Counters.Duplicates.Load()),
@@ -1160,6 +1329,10 @@ func (r *shardRun) assembleResult(
 		"restart_failover_order_violations":       restartOOO,
 		"restart_failover_connection_failures":    restartConnFail,
 		"restart_failover_unexpected_disconnects": restartUnexp,
+		"surge_missing_sequences":                 surgeMissing,
+		"surge_duplicates":                        surgeDups,
+		"surge_out_of_order":                      surgeOOO,
+		"surge_unexpected_disconnects":            surgeUnexp,
 		"gap_events":                              float64(r.pool.Counters.GapEvents.Load()),
 		"connection_failures":                     float64(r.pool.Counters.ConnectionFailures.Load()),
 		"unexpected_disconnects":                  float64(r.pool.Counters.UnexpectedDisconnects.Load()),

@@ -19,6 +19,7 @@ import {
   validOwnerRestartStructuredEvidence,
   validTargetRestartStructuredEvidence,
 } from "./restart-evidence-fixture.js"
+import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -124,6 +125,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       redis: owner ? { memory_used_bytes: 500 } : {},
     },
     scenarios: [
+      validSurgeScenarioEvidence({ shard_id: shardId, shard_count: 2 }),
       { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },
@@ -251,6 +253,83 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     "rejects a missing mandatory restart delta counter",
     (_owner, target) => { delete target.correctness_counters.restart_failover_unexpected_disconnects },
     "restart evidence missing measured delta restart_failover_unexpected_disconnects",
+  )
+
+  // R04: exact machine-proven surge gates.
+  function surgeInvalidationCase(name: string, mutate: (owner: ShardExperimentResult, target: ShardExperimentResult) => void, expectedReason: string, expectedVerdict = "REJECT"): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const owner = shardResult(0)
+      const target = shardResult(1)
+      mutate(owner, target)
+      coordinator.submitResult(owner)
+      coordinator.submitResult(target)
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, expectedVerdict)
+      if (expectedVerdict === "INCONCLUSIVE") {
+        assert.equal(result.global_direct_accept_eligible, false)
+      }
+      assert.ok(
+        result.validity.reasons.some((reason) => reason.includes(expectedReason)),
+        `expected "${expectedReason}" reason, got: ${JSON.stringify(result.validity.reasons)}`,
+      )
+    })
+  }
+
+  function surgeStructuredOf(result: ShardExperimentResult): Record<string, unknown> {
+    const rec = result.scenarios.find((scenario) => scenario.name === "surge")!
+    return (rec.structured as Record<string, unknown>)
+  }
+
+  surgeInvalidationCase(
+    "rejects 39999 established surge additions (one short)",
+    (_o, t) => { const s = surgeStructuredOf(t); s.surge_established_additions = (s.surge_established_additions as number) - 1; s.surge_failed_additions = 1 },
+    "surge established additions 39999 != 40000",
+  )
+  surgeInvalidationCase(
+    "rejects 40000 established at 120001ms",
+    (_o, t) => { surgeStructuredOf(t).surge_elapsed_ms = 120_001 },
+    "surge elapsed 120001ms > 120000ms",
+  )
+  surgeInvalidationCase(
+    "rejects a pre-surge start population off by one",
+    (_o, t) => { surgeStructuredOf(t).surge_start_active = (surgeStructuredOf(t).surge_start_active as number) - 1 },
+    "surge start active 99 != 100",
+  )
+  surgeInvalidationCase(
+    "rejects final population below the post-surge target",
+    (_o, t) => { surgeStructuredOf(t).surge_final_active = (surgeStructuredOf(t).surge_final_active as number) - 1 },
+    "surge final active",
+  )
+  surgeInvalidationCase(
+    "rejects a shard below its post-surge ownership floor",
+    (_o, t) => { surgeStructuredOf(t).surge_final_active = (surgeStructuredOf(t).surge_final_active as number) - 2; surgeStructuredOf(t).surge_peak_active = (surgeStructuredOf(t).surge_final_active as number) - 3 },
+    "shard 1 surge final active",
+  )
+  surgeInvalidationCase(
+    "rejects nonzero surge failed additions",
+    (_o, t) => {
+      const s = surgeStructuredOf(t)
+      s.surge_failed_additions = 5
+      s.surge_established_additions = (s.surge_attempted_additions as number) - 5
+    },
+    "surge failed additions 5 > 0",
+  )
+  surgeInvalidationCase(
+    "treats missing structured surge measurement as invalidating",
+    (_o, t) => {
+      const rec = t.scenarios.find((scenario) => scenario.name === "surge")!
+      delete rec.structured
+    },
+    "surge evidence has no structured measurement",
+    "INCONCLUSIVE",
+  )
+  surgeInvalidationCase(
+    "treats a mandatory surge field going missing as invalidating",
+    (_o, t) => { delete surgeStructuredOf(t).surge_peak_active },
+    "surge structured fields missing: surge_peak_active",
+    "INCONCLUSIVE",
   )
 
   it("rejects out-of-range and non-integer shard IDs", () => {

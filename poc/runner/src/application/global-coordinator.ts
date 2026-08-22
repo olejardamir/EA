@@ -23,6 +23,15 @@ export const COORDINATED_PHASES = [
 // never to relax any other gate.
 const SLOW_COHORT_FRACTION = 0.05
 
+// R04 (assignment §2, contract §3): frozen surge machine-proof constants.
+// +40k additions within 120s on the exact 24-deadline integer schedule; the
+// pre-surge population is the assignment's 60k at terminal scale and the
+// configured global target at smaller non-qualifying scales.
+export const SURGE_GLOBAL_ADDITIONS = 40_000
+export const SURGE_DEADLINE_MS = 120_000
+export const SURGE_TERMINAL_GLOBAL_TARGET = 100_000
+export const SURGE_TERMINAL_PRE_POPULATION = 60_000
+
 export type CoordinatedPhase = typeof COORDINATED_PHASES[number]
 export type BarrierBoundary = "start" | "end"
 
@@ -73,7 +82,7 @@ export interface ShardResourceEvidence {
 }
 
 export interface ShardScenarioEvidence {
-  name: "late-join" | "burst" | "reconnect" | "restart-replacement"
+  name: "late-join" | "burst" | "reconnect" | "restart-replacement" | "surge"
   participated: boolean
   passed: boolean
   detail: string
@@ -535,6 +544,61 @@ export class GlobalExperimentCoordinator {
           validityReasons.push(`shard ${result.shard_id} restart ${counterKey} mismatch: top-level ${topLevel} != structured pool ${structuredValue}`)
         }
       }
+    }
+
+    // R04: machine-proven surge population/deadline gates. Every shard must
+    // carry structured surge evidence; the global sums must hit the exact
+    // assignment numbers (start population, +40k attempted AND established,
+    // zero failures, hard 120s deadline, full post-surge ownership per shard).
+    const expectedPreGlobal = this.globalTarget === SURGE_TERMINAL_GLOBAL_TARGET
+      ? SURGE_TERMINAL_PRE_POPULATION
+      : this.globalTarget
+    const expectedPostGlobal = expectedPreGlobal + SURGE_GLOBAL_ADDITIONS
+    const perShardFinalFloor = Math.ceil(expectedPostGlobal / this.shardCount)
+    const surgeFields = [
+      "surge_start_active",
+      "surge_attempted_additions",
+      "surge_established_additions",
+      "surge_failed_additions",
+      "surge_elapsed_ms",
+      "surge_final_active",
+      "surge_peak_active",
+    ] as const
+    let surgeStartSum = 0
+    let surgeAttemptedSum = 0
+    let surgeEstablishedSum = 0
+    let surgeFailedSum = 0
+    let surgeFinalSum = 0
+    let surgeMaxElapsedMs = 0
+    for (const result of shardResults) {
+      const rec = result.scenarios.find((s) => s.name === "surge")
+      if (!rec?.structured || typeof rec.structured !== "object") {
+        validityReasons.push(`shard ${result.shard_id} surge evidence has no structured measurement`)
+        continue
+      }
+      const sst = rec.structured as Record<string, unknown>
+      const missingSurge = surgeFields.filter((k) => typeof sst[k] !== "number")
+      if (missingSurge.length > 0) {
+        validityReasons.push(`shard ${result.shard_id} surge structured fields missing: ${missingSurge.join(",")}`)
+        continue
+      }
+      surgeStartSum += sst["surge_start_active"] as number
+      surgeAttemptedSum += sst["surge_attempted_additions"] as number
+      surgeEstablishedSum += sst["surge_established_additions"] as number
+      surgeFailedSum += sst["surge_failed_additions"] as number
+      surgeFinalSum += sst["surge_final_active"] as number
+      surgeMaxElapsedMs = Math.max(surgeMaxElapsedMs, sst["surge_elapsed_ms"] as number)
+      if ((sst["surge_final_active"] as number) < perShardFinalFloor) {
+        rejectReasons.push(`shard ${result.shard_id} surge final active ${sst["surge_final_active"]} < ${perShardFinalFloor}`)
+      }
+    }
+    if (shardResults.length > 0 && shardResults.every((result) => result.scenarios.some((s) => s.name === "surge"))) {
+      if (surgeStartSum !== expectedPreGlobal) rejectReasons.push(`surge start active ${surgeStartSum} != ${expectedPreGlobal}`)
+      if (surgeAttemptedSum !== SURGE_GLOBAL_ADDITIONS) rejectReasons.push(`surge attempted additions ${surgeAttemptedSum} != ${SURGE_GLOBAL_ADDITIONS}`)
+      if (surgeEstablishedSum !== SURGE_GLOBAL_ADDITIONS) rejectReasons.push(`surge established additions ${surgeEstablishedSum} != ${SURGE_GLOBAL_ADDITIONS}`)
+      if (surgeFailedSum > 0) rejectReasons.push(`surge failed additions ${surgeFailedSum} > 0`)
+      if (surgeMaxElapsedMs > SURGE_DEADLINE_MS) rejectReasons.push(`surge elapsed ${surgeMaxElapsedMs}ms > ${SURGE_DEADLINE_MS}ms`)
+      if (surgeFinalSum < expectedPostGlobal) rejectReasons.push(`surge final active ${surgeFinalSum} < ${expectedPostGlobal}`)
     }
 
     const scenarioNames: ShardScenarioEvidence["name"][] = ["late-join", "burst", "reconnect", "restart-replacement"]

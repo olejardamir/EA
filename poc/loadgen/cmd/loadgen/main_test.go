@@ -66,6 +66,8 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 		srcPort:      &dut.SourcePortEvidence{HeadroomValid: true},
 		redisInfo:    &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
 		nchanMetrics: &dut.ControlMetrics{},
+		surgeStats:   &surgeRunStats{},
+		surgeDelta:   &counterSnapshot{},
 	}
 	return r, p
 }
@@ -1028,5 +1030,181 @@ func TestRampSurgeNoopWhenNonpositive(t *testing.T) {
 	r.rampSurge(t.Context(), -5, 100*time.Millisecond)
 	if p.ViewerCount() != before {
 		t.Fatal("non-positive surge must add nothing")
+	}
+}
+
+// ── R04: surge machine-proof ────────────────────────────────────────────────
+
+// The contract §3 exact integer schedule: 24 batches, first n%24 carry one
+// extra viewer. For the assignment's 10k/shard: 16×417 + 8×416 = 10,000.
+func TestSurgeBatchSizesExactSchedule(t *testing.T) {
+	sizes := surgeBatchSizes(10000)
+	if len(sizes) != 24 {
+		t.Fatalf("len(sizes) = %d, want 24", len(sizes))
+	}
+	sum := 0
+	for i, s := range sizes {
+		want := 417
+		if i >= 16 {
+			want = 416
+		}
+		if s != want {
+			t.Fatalf("sizes[%d] = %d, want %d", i, s, want)
+		}
+		sum += s
+	}
+	if sum != 10000 {
+		t.Fatalf("schedule total = %d, want 10000", sum)
+	}
+	if got := surgeBatchSizes(48); got[0] != 2 || got[23] != 2 {
+		t.Fatal("evenly divisible schedule must be uniform")
+	}
+	if total := func(sizes []int) int { s := 0; for _, v := range sizes { s += v }; return s }(surgeBatchSizes(7)); total != 7 {
+		t.Fatalf("remainder schedule total = %d, want 7", total)
+	}
+}
+
+func TestSurgeRunStatsGateBoundaries(t *testing.T) {
+	clean := func() surgeRunStats {
+		return surgeRunStats{
+			startActive:     15000,
+			attemptedAdds:   10000,
+			establishedAdds: 10000,
+			failedAdds:      0,
+			elapsedMs:       120000,
+			finalActive:     25000,
+			expectedStart:   15000,
+			expectedAdds:    10000,
+			expectedFinal:   25000,
+			deadlineMs:      120000,
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*surgeRunStats)
+		pass   bool
+	}{
+		{"clean at exactly 120000ms", func(*surgeRunStats) {}, true},
+		{"one short of establishment", func(s *surgeRunStats) { s.establishedAdds = 9999; s.failedAdds = 1 }, false},
+		{"established after deadline (120001ms)", func(s *surgeRunStats) { s.elapsedMs = 120001 }, false},
+		{"start population off by one", func(s *surgeRunStats) { s.startActive = 14999 }, false},
+		{"final below post-surge target", func(s *surgeRunStats) { s.finalActive = 24999 }, false},
+		{"attempted shortfall counts as failure", func(s *surgeRunStats) { s.attemptedAdds = 9998; s.failedAdds = 2 }, false},
+		{"attempted beyond plan is a violation too", func(s *surgeRunStats) { s.attemptedAdds = 10001; s.failedAdds = 1 }, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := clean()
+			tc.mutate(&s)
+			if got := s.passed(); got != tc.pass {
+				t.Fatalf("passed() = %v, want %v for %+v", got, tc.pass, s)
+			}
+		})
+	}
+}
+
+// The surge window correctness deltas must come from the true window
+// snapshot, not lifetime totals.
+func TestAssembleResultSurgeWindowDeltas(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.surgeStats = &surgeRunStats{startActive: 10, attemptedAdds: 5, establishedAdds: 5, finalActive: 15,
+		expectedStart: 10, expectedAdds: 5, expectedFinal: 15, deadlineMs: 120000}
+	r.surgeDelta = &counterSnapshot{missing: 1, duplicates: 2, outOfOrder: 3, unexpected: 4}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	for name, want := range map[string]float64{
+		"surge_missing_sequences":      1,
+		"surge_duplicates":             2,
+		"surge_out_of_order":           3,
+		"surge_unexpected_disconnects": 4,
+	} {
+		if got := res.CorrectnessCounters[name]; got != want {
+			t.Fatalf("counter %q = %v, want %v", name, got, want)
+		}
+	}
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT (nonzero surge window deltas)", res.Verdict)
+	}
+}
+
+// An unmeasured surge window is a validity failure: INCONCLUSIVE with an
+// explicit reason, never a silent zero.
+func TestSurgeUnmeasuredWindowInconclusive(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.surgeStats, r.surgeDelta = nil, nil // never measured
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	found := false
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "surge population/correctness window never measured") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing unmeasured-surge validity reason: %+v", res.Validity)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("unmeasured surge window must not ACCEPT")
+	}
+}
+
+// A gate-violating measured surge must fail the surge scenario so the shard
+// REJECTs (healthy measurement, real DUT-facing failure).
+func TestSurgeScenarioFailureRejectsShard(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	r.surgeDelta = &counterSnapshot{}
+	r.surgeStats = &surgeRunStats{
+		startActive: 10, attemptedAdds: 5, establishedAdds: 4, failedAdds: 1,
+		elapsedMs: 120000, finalActive: 14,
+		expectedStart: 10, expectedAdds: 5, expectedFinal: 15, deadlineMs: 120000,
+	}
+	scenario := r.runSurgeScenarioForTest()
+	if scenario.Passed {
+		t.Fatal("gate-violating surge stats must fail the scenario")
+	}
+	scenarios := append(passingScenarios(), scenario)
+	res := r.assembleResult(nil, scenarios, map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT", res.Verdict)
+	}
+}
+
+// runSurgeScenarioForTest builds the surge scenario from pre-set stats without
+// touching live connections (the real runSurge drives the pool).
+func (r *shardRun) runSurgeScenarioForTest() coordinator.ScenarioEvidence {
+	st := r.surgeStats
+	delta := counterSnapshot{}
+	if r.surgeDelta != nil {
+		delta = *r.surgeDelta
+	}
+	passed := st.passed()
+	return coordinator.ScenarioEvidence{
+		Name:         "surge",
+		Participated: true,
+		Passed:       passed,
+		Detail:       fmt.Sprintf("start=%d +att=%d est=%d fail=%d elapsed=%dms final=%d",
+			st.startActive, st.attemptedAdds, st.establishedAdds, st.failedAdds, st.elapsedMs, st.finalActive),
+		Structured: map[string]any{
+			"surge_start_active":          st.startActive,
+			"surge_attempted_additions":   st.attemptedAdds,
+			"surge_established_additions": st.establishedAdds,
+			"surge_failed_additions":      st.failedAdds,
+			"surge_elapsed_ms":            st.elapsedMs,
+			"surge_final_active":          st.finalActive,
+			"surge_peak_active":           st.peakActive,
+			"window_gaps":                 delta.missing,
+			"window_duplicates":           delta.duplicates,
+			"window_out_of_order":         delta.outOfOrder,
+		},
 	}
 }

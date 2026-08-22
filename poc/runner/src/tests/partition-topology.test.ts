@@ -16,6 +16,7 @@ import {
   validOwnerRestartStructuredEvidence,
   validTargetRestartStructuredEvidence,
 } from "./restart-evidence-fixture.js"
+import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 
 // §v2.1.0 partition-topology tests: connection ownership, event routing,
 // aggregation, history sampling, failure/replacement roles, and per-partition
@@ -138,6 +139,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       ...(target ? { spare: { memory_peak_run_bytes: 800, oom_kill_events: 0 } } : {}),
     },
     scenarios: [
+      validSurgeScenarioEvidence({ shard_id: shardId, shard_count: SHARDS, global_target: GLOBAL_TARGET }),
       { name: "late-join", participated: true, passed: true, detail: "own partition history" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },

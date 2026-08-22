@@ -18,6 +18,7 @@ import {
   validOwnerRestartStructuredEvidence,
   validTargetRestartStructuredEvidence,
 } from "./restart-evidence-fixture.js"
+import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -126,6 +127,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       redis: owner ? { memory_peak_run_bytes: 500, memory_used_bytes: 500 } : {},
     },
     scenarios: [
+      validSurgeScenarioEvidence({ shard_id: shardId, shard_count: 2 }),
       { name: "late-join", participated: true, passed: true, detail: "exact full history" },
       { name: "burst", participated: owner, passed: true, detail: owner ? "authoritative burst" : "owner-only" },
       { name: "reconnect", participated: true, passed: true, detail: "all clients re-established", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },
