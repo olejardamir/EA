@@ -1,6 +1,5 @@
 import http from "node:http"
 import { NchanHttpPublisher } from "./adapters/nchan-http-publisher.js"
-import type { EventPublisher } from "./ports/event-publisher.js"
 import { MatchEventPublisher } from "./adapters/match-event-publisher.js"
 import { createMatchHeadTracker } from "./domain/match-state.js"
 import { createPRNG } from "./domain/prng.js"
@@ -13,34 +12,6 @@ const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"
 const seed = parseInt(process.env.GLOBAL_SEED ?? "42", 10)
 
 let nchanPublisher = new NchanHttpPublisher(nchanPubUrl)
-// Optional per-partition accept endpoints (R11 capacity): match i publishes
-// via partition (i mod N). History is Redis-interconnected, so canonical
-// expectations are identical; only the accept load spreads.
-const nchanPubUrls = (process.env.NCHAN_PUB_URLS ?? "")
-  .split(",")
-  .map((url) => url.trim().replace(/\/$/, ""))
-  .filter(Boolean)
-let partitionPublishers: NchanHttpPublisher[] = []
-function buildPartitionPublishers(): void {
-  partitionPublishers = nchanPubUrls.map((url) => new NchanHttpPublisher(url))
-}
-buildPartitionPublishers()
-function publisherForMatch(matchIdx: number): EventPublisher {
-  if (partitionPublishers.length === 0) return nchanPublisher
-  return partitionPublishers[matchIdx % partitionPublishers.length]
-}
-function combinedStats() {
-  const all = [nchanPublisher, ...partitionPublishers]
-  return all.reduce(
-    (acc, p) => ({
-      attempts: acc.attempts + p.stats.attempts,
-      successes: acc.successes + p.stats.successes,
-      definiteFailures: acc.definiteFailures + p.stats.definiteFailures,
-      ambiguousFailures: acc.ambiguousFailures + p.stats.ambiguousFailures,
-    }),
-    { attempts: 0, successes: 0, definiteFailures: 0, ambiguousFailures: 0 },
-  )
-}
 let headTracker = createMatchHeadTracker()
 let random = createPRNG(seed)
 let publisher = new MatchEventPublisher({
@@ -121,7 +92,7 @@ const server = http.createServer(async (req, res) => {
           last_event_type: ms?.last_event_type ?? "unknown",
         }
       }
-      const s = combinedStats()
+      const s = nchanPublisher.stats
       const totals = {
         published: publisher.totalPublished,
         attempts: s.attempts,
@@ -162,16 +133,9 @@ const server = http.createServer(async (req, res) => {
       started = false
       pendingPeak = 0
       nchanPublisher = new NchanHttpPublisher(nchanPubUrl)
-      buildPartitionPublishers()
       headTracker = createMatchHeadTracker()
       random = createPRNG(seed)
-      publisher = new MatchEventPublisher({
-        publisher: nchanPublisher,
-        headTracker,
-        burstMode: false,
-        random,
-        publisherForMatch: (matchIdx) => publisherForMatch(matchIdx),
-      })
+      publisher = new MatchEventPublisher({ publisher: nchanPublisher, headTracker, burstMode: false, random })
       send(res, 200, { ok: true })
       return
     }

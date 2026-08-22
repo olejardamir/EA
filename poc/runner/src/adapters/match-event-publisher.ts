@@ -31,12 +31,6 @@ export interface MatchEventPublisherConfig {
   random: () => number
   onPublish?: (channel: string, expectedForChannel: number) => void
   getSubscriberCount?: (channel: string) => number
-  // Optional per-match publisher routing: when the DUT exposes multiple
-  // partition accept endpoints, publications for match i route to partition
-  // (i mod N) so no single node carries every accept plus its own subscriber
-  // storm. History is shared through the Redis interconnect, so canonical
-  // expectations are unchanged. Absent => all matches use `publisher`.
-  publisherForMatch?: (matchIdx: number, matchId: string) => EventPublisher
 }
 
 export class MatchEventPublisher {
@@ -200,8 +194,7 @@ export class MatchEventPublisher {
         // Hold the per-match busy lock across the in-flight publish so the
         // prefill path (spare-probe) waits for chain quiescence (§3.1.G).
         this._matchBusy.set(matchId, true)
-        const target = this.config.publisherForMatch?.(matchIdx, matchId) ?? this.config.publisher
-        target.publish(matchId, body, eventType).then((ok) => {
+        this.config.publisher.publish(matchId, body, eventType).then((ok) => {
           this._pendingPublishes--
           if (ok) {
             // §3.5: Measure scheduler lag (acceptance - transmission), do NOT mutate event timestamp
