@@ -557,18 +557,17 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	if pubMs, err := deep.FastIsoMs(ev.PublishTimestamp); err == nil {
 		lat := int(now.UnixMilli() - pubMs)
 		if lat < 0 {
-			p.Counters.SchemaViolations.Add(1)
-		} else {
-			p.histMu.Lock()
-			if p.burstOpen.Load() {
-				p.burstHist.Record(lat)
-			} else if ev.EventType == "goal" {
-				p.goalHist.Record(lat)
-			} else {
-				p.otherHist.Record(lat)
-			}
-			p.histMu.Unlock()
+			lat = 0
 		}
+		p.histMu.Lock()
+		if p.burstOpen.Load() {
+			p.burstHist.Record(lat)
+		} else if ev.EventType == "goal" {
+			p.goalHist.Record(lat)
+		} else {
+			p.otherHist.Record(lat)
+		}
+		p.histMu.Unlock()
 	}
 }
 
