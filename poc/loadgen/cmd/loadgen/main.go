@@ -1643,8 +1643,8 @@ func (r *shardRun) applyPublisherGates() {
 		if rate < minRate || rate > maxRate {
 			r.reasonf("publisher %s accepted rate %.2f events/s outside frozen [%.1f, %.1f] window",
 				phase, rate, minRate, maxRate)
-			r.logf("publisher diagnostics: %s rate=%.2f/s window=[%.1f,%.1f] loop_lag_p95=%.1fms publish_rtt_p95=%.1fms",
-				phase, rate, minRate, maxRate, finalEv.LoopLagP95Ms, finalEv.SchedulerLagP95Ms)
+			r.logf("publisher diagnostics: %s rate=%.2f/s window=[%.1f,%.1f] loop_lag_p95=%.1fms loop_lag_max=%.1fms publish_rtt_p95=%.1fms publish_rtt_max=%.1fms",
+				phase, rate, minRate, maxRate, finalEv.LoopLagP95Ms, finalEv.LoopLagMaxMs, finalEv.SchedulerLagP95Ms, finalEv.SchedulerLagMaxMs)
 		}
 	}
 }

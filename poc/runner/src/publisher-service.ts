@@ -55,6 +55,10 @@ function loopLagP95(): number {
   return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
 }
 
+function loopLagMax(): number {
+  return loopLagSamples.length > 0 ? Math.max(...loopLagSamples) : 0
+}
+
 function send(res: http.ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json" })
   res.end(JSON.stringify(value))
@@ -104,8 +108,9 @@ const server = http.createServer(async (req, res) => {
         // R11 diagnostics: attribute rate shortfalls precisely. publish RTT
         // p95 = acceptance minus transmission (includes Nchan); loop lag p95
         // isolates publisher CPU starvation from Nchan latency.
-        scheduler_lag_p95_ms: Math.round(publisher.schedulerLagP95 * 100) / 100,
+        scheduler_lag_max_ms: Math.round(publisher.schedulerLagMax * 100) / 100,
         loop_lag_p95_ms: Math.round(loopLagP95() * 100) / 100,
+        loop_lag_max_ms: Math.round(loopLagMax() * 100) / 100,
         fetched_at_ms: Date.now(),
       })
       return

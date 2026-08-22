@@ -40,7 +40,9 @@ type Evidence struct {
 	FetchedAtMs int64 `json:"fetched_at_ms"`
 	// Optional R11 diagnostics (absent in older publishers; never gated).
 	SchedulerLagP95Ms float64 `json:"scheduler_lag_p95_ms,omitempty"`
+	SchedulerLagMaxMs float64 `json:"scheduler_lag_max_ms,omitempty"`
 	LoopLagP95Ms      float64 `json:"loop_lag_p95_ms,omitempty"`
+	LoopLagMaxMs      float64 `json:"loop_lag_max_ms,omitempty"`
 }
 
 type HeadInfo struct {
