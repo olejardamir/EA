@@ -387,7 +387,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 		line, rerr := br.ReadSlice('\n')
 		if rerr != nil {
 			if errors.Is(rerr, bufio.ErrBufferFull) {
-				if v.matchID != "" {
+				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -397,7 +397,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 				continue
 			}
 			if len(line) > 0 {
-				if v.matchID != "" {
+				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -415,7 +415,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 			p.Counters.TransportIDPresent.Add(1)
 		case hasPrefixColon(trimmed, "data"):
 			payload := trimmed[5:]
-			if v.matchID != "" {
+			if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
 				p.appendScratch(v, payload)
 			}
 		default:
@@ -509,6 +509,22 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		v.capMu.Unlock()
 	}
 
+	if v.st.Role == RoleLight {
+		v.st.Received++
+		if haveCanon {
+			v.st.LastSeq = canonSeq
+			v.lastSeq.Store(canonSeq)
+			v.mu.Lock()
+			v.lastCanon = canonSeq
+			v.mu.Unlock()
+			p.Counters.DeepFramesValidated.Add(1)
+			v.sawDeep.Store(true)
+		} else {
+			v.st.LastSeq = seq
+			v.lastSeq.Store(seq)
+		}
+		return
+	}
 	observeSeq := seq
 	if haveCanon {
 		observeSeq = canonSeq
@@ -534,7 +550,7 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		p.Counters.OutOfOrder.Add(1)
 	}
 
-	if v.st.Role == RoleLight || v.st.Role == RoleReconnect {
+	if v.st.Role == RoleReconnect {
 		if haveCanon {
 			p.Counters.DeepFramesValidated.Add(1)
 			v.sawDeep.Store(true)
