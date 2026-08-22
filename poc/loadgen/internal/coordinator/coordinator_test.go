@@ -171,6 +171,7 @@ func TestResultSchemaWireRoundTrip(t *testing.T) {
 			OtherFanOut HistogramWire `json:"other_fan_out"`
 			LateJoin    HistogramWire `json:"late_join"`
 			Burst       HistogramWire `json:"burst"`
+			Surge       HistogramWire `json:"surge_fan_out,omitempty"`
 		}{
 			FanOut: HistogramWire{
 				MaxMs: 30000, TotalCount: 3,

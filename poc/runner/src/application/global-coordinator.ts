@@ -98,7 +98,7 @@ export interface ShardExperimentResult {
   verdict: "ACCEPT" | "REJECT" | "INCONCLUSIVE" | "NOT_APPLICABLE"
   validity: ShardValidity
   samples: AlignedSample[]
-  // §v2.2.0: five-histogram wire shape. fan_out is the merged all-class
+   // §v2.2.0: five-histogram wire shape. fan_out is the merged all-class
   // distribution; goal_fan_out / other_fan_out carry the deep cohort's
   // publish->wire split by event class; late_join holds exactly one catch-up
   // sample per shard; burst is the burst-window class.
@@ -108,6 +108,7 @@ export interface ShardExperimentResult {
     other_fan_out: SerializedHistogram
     late_join: SerializedHistogram
     burst: SerializedHistogram
+    surge_fan_out?: SerializedHistogram
   }
   correctness_counters: Record<string, number>
   workload: {
@@ -156,6 +157,7 @@ export interface GlobalExperimentResult {
     other_fan_out: ReturnType<typeof histogramSummary>
     late_join: ReturnType<typeof histogramSummary>
     burst: ReturnType<typeof histogramSummary>
+    surge_fan_out?: ReturnType<typeof histogramSummary>
   }
   correctness_counters: Record<string, number>
   per_shard_generator_validity: Array<{ shard_id: number; validity: ShardValidity }>
@@ -465,6 +467,7 @@ export class GlobalExperimentCoordinator {
     const mergedOtherFanOut = mergeHistograms(shardResults.map((result) => result.histograms.other_fan_out ?? emptyHistogram()))
     const mergedLateJoin = mergeHistograms(shardResults.map((result) => result.histograms.late_join ?? emptyHistogram()))
     const mergedBurst = mergeHistograms(shardResults.map((result) => result.histograms.burst ?? emptyHistogram()))
+    const mergedSurge = mergeHistograms(shardResults.map((result) => (result.histograms as Record<string, unknown>).surge_fan_out as SerializedHistogram ?? emptyHistogram()))
     if (mergedFanOut.count === 0) validityReasons.push("global fan-out histogram is empty")
     if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
     if (mergedGoalFanOut.count + mergedOtherFanOut.count === 0) {
@@ -482,9 +485,11 @@ export class GlobalExperimentCoordinator {
     const fanOutP95 = histogramSummary(mergedFanOut).p95_ms
     const burstP95 = histogramSummary(mergedBurst).p95_ms
     const lateJoinP95 = histogramSummary(mergedLateJoin).p95_ms
+    const surgeP95 = histogramSummary(mergedSurge).p95_ms
     if (mergedFanOut.count > 0 && fanOutP95 > 500) rejectReasons.push(`fan_out_p95_ms ${fanOutP95} > 500`)
     if (mergedBurst.count > 0 && burstP95 > 1000) rejectReasons.push(`burst_p95_ms ${burstP95} > 1000`)
     if (mergedLateJoin.count > 0 && lateJoinP95 > 2000) rejectReasons.push(`late_join_p95_ms ${lateJoinP95} > 2000`)
+    if (mergedSurge.count > 0 && surgeP95 > 500) rejectReasons.push(`surge_p95_ms ${surgeP95} > 500`)
 
     const correctnessCounters: Record<string, number> = {}
     for (const result of shardResults) {
@@ -617,6 +622,24 @@ export class GlobalExperimentCoordinator {
       const oomKills = partition.evidence.oom_kill_events
       if (typeof oomKills !== "number" || !Number.isFinite(oomKills)) {
         validityReasons.push(`partition ${partition.partition_id} mandatory OOM-kill evidence is missing or invalid`)
+      } else if (oomKills !== 0) {
+        rejectReasons.push(`partition ${partition.partition_id} OOM kill ${oomKills} != 0`)
+      }
+      const memPeak = (partition.evidence.memory_peak_bytes ?? partition.evidence.memory_peak_run_bytes ?? partition.evidence.nchan_memory_peak_bytes) as unknown
+      if (typeof memPeak === "number" && Number.isFinite(memPeak) && memPeak >= 5637144576) {
+        rejectReasons.push(`partition ${partition.partition_id} memory_peak ${memPeak} >= 5637144576`)
+      }
+      const throttled = partition.evidence.cpu_throttled_count
+      if (typeof throttled === "number" && Number.isFinite(throttled) && throttled !== 0) {
+        validityReasons.push(`partition ${partition.partition_id} throttled ${throttled} != 0`)
+      }
+    }
+    if (resources.nchan_spare) {
+      const spareOom = (resources.nchan_spare as Record<string, unknown>).oom_kill_events
+      if (typeof spareOom !== "number" || !Number.isFinite(spareOom)) {
+        validityReasons.push("spare OOM-kill evidence missing or invalid")
+      } else if (spareOom !== 0) {
+        rejectReasons.push(`spare OOM kill ${spareOom} != 0`)
       }
     }
     const redisMemoryUsedBytes = resources.redis.memory_used_bytes
@@ -660,6 +683,7 @@ export class GlobalExperimentCoordinator {
         other_fan_out: histogramSummary(mergedOtherFanOut),
         late_join: histogramSummary(mergedLateJoin),
         burst: histogramSummary(mergedBurst),
+        surge_fan_out: histogramSummary(mergedSurge),
       },
       correctness_counters: correctnessCounters,
       per_shard_generator_validity: shardResults.map((result) => ({ shard_id: result.shard_id, validity: result.validity })),

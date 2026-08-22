@@ -64,6 +64,7 @@ type ShardExperimentResult struct {
 		OtherFanOut HistogramWire `json:"other_fan_out"`
 		LateJoin    HistogramWire `json:"late_join"`
 		Burst       HistogramWire `json:"burst"`
+		Surge       HistogramWire `json:"surge_fan_out,omitempty"`
 	} `json:"histograms"`
 	CorrectnessCounters map[string]float64 `json:"correctness_counters"`
 	Workload            struct {
