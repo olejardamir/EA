@@ -743,16 +743,17 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("restart start barrier")
 	}
 	// Non-target partitions measure their observed failover window as the
-	// wall-clock span of the whole coordinated restart phase (barrier-to-
-	// scenario-return): the real interval during which the failover could
-	// affect them. The restart target measures its literal restart inside
-	// runFailoverDrill.
+	// wall-clock span from phase entry through the END barrier: the real
+	// interval during which the failover could affect them, including the
+	// wait for the restart target to complete its drill. The restart target
+	// measures its literal restart inside runFailoverDrill.
 	restartPhaseStart := time.Now()
 	restartScenario := r.runRestartScenario(ctx)
+	endBarrierOk := r.barrier("restart-replacement", "end")
 	if r.cfg.shardID != r.cfg.restartTarget {
 		r.markRestartWindow(time.Since(restartPhaseStart).Milliseconds())
 	}
-	if !r.barrier("restart-replacement", "end") {
+	if !endBarrierOk {
 		return nil, fmt.Errorf("restart end barrier")
 	}
 
