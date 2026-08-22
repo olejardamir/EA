@@ -387,7 +387,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 		line, rerr := br.ReadSlice('\n')
 		if rerr != nil {
 			if errors.Is(rerr, bufio.ErrBufferFull) {
-				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+				if v.matchID != "" {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -397,7 +397,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 				continue
 			}
 			if len(line) > 0 {
-				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+				if v.matchID != "" {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -415,7 +415,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 			p.Counters.TransportIDPresent.Add(1)
 		case hasPrefixColon(trimmed, "data"):
 			payload := trimmed[5:]
-			if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+			if v.matchID != "" {
 				p.appendScratch(v, payload)
 			}
 		default:
@@ -509,8 +509,19 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		v.capMu.Unlock()
 	}
 
-	kind, missing := observe(&v.st, seq)
-	v.lastSeq.Store(v.st.LastSeq)
+	observeSeq := seq
+	if haveCanon {
+		observeSeq = canonSeq
+	}
+	kind, missing := observe(&v.st, observeSeq)
+	if haveCanon {
+		v.lastSeq.Store(v.st.LastSeq)
+		v.mu.Lock()
+		v.lastCanon = observeSeq
+		v.mu.Unlock()
+	} else {
+		v.lastSeq.Store(v.st.LastSeq)
+	}
 	if missing > 0 {
 		p.Counters.MissingSequences.Add(missing)
 	}
