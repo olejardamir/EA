@@ -9,6 +9,11 @@ import { createInitialMatchStates, advanceMatchState, type MatchState } from "..
 // Non-qualifying development diagnostics (probe-only, never set in qualifying runs).
 const PUB_DEBUG = process.env.PUB_DEBUG === "1"
 
+// Busy-skip retry spin (ms). Short by design: the weighted-hot match is
+// frequently in flight during burst, and a full-interval backoff here would
+// collapse the effective publication rate below the frozen 40..60 window.
+const BUSY_RETRY_MS = 2
+
 export interface MatchEventPublisherConfig {
   publisher: EventPublisher
   headTracker: MatchHeadTracker
@@ -127,11 +132,12 @@ export class MatchEventPublisher {
       const matchId = MATCH_IDS[matchIdx]
 
       // §6.20: If this match already has a publish in-flight, skip this tick
-      // to preserve per-match canonical ordering. The next timer will retry.
+      // to preserve per-match canonical ordering. The retry must be a short
+      // spin (not the full publication interval): backing off by the whole
+      // interval while the weighted-hot match is in flight collapses the
+      // effective burst rate far below the frozen 40..60 events/s window.
       if (this._matchBusy.get(matchId)) {
-        const rate = this.config.burstMode ? 50 : 9
-        const intervalMs = 1000 / rate
-        const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs))
+        const timer = setTimeout(scheduleMatchEvents, BUSY_RETRY_MS)
         this.timers.push(timer)
         return
       }
@@ -156,6 +162,7 @@ export class MatchEventPublisher {
       // §3.5: Freeze T0 at creation time — this is what gets serialized and transmitted.
       // publish_timestamp in the JSON body is the transmitted clock reference.
       // Acceptance time is measured separately for scheduler lag computation.
+      const publishStartMs = Date.now()
       const transmitTimestamp = new Date().toISOString()
       const event = createEventPayload(matchId, candidate.seq, eventType, candidate.score, candidate.clock, transmitTimestamp)
       const body = JSON.stringify(event)
@@ -165,7 +172,13 @@ export class MatchEventPublisher {
         const rate = this.config.burstMode ? 50 : 9
         const intervalMs = 1000 / rate
         const jitter = intervalMs * 0.3 * (random() - 0.5)
-        const timer = setTimeout(scheduleMatchEvents, Math.max(10, intervalMs + jitter))
+        // Pace from the START of the previous publication: the in-flight
+        // round-trip is part of the interval, not additive to it. Waiting the
+        // full interval after completion collapses the effective burst rate
+        // below the frozen 40..60 events/s window.
+        const elapsedMs = Date.now() - publishStartMs
+        const waitMs = Math.max(BUSY_RETRY_MS, intervalMs + jitter - elapsedMs)
+        const timer = setTimeout(scheduleMatchEvents, waitMs)
         this.timers.push(timer)
       }
 

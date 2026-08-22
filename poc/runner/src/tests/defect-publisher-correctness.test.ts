@@ -517,3 +517,37 @@ describe("§6.24: Machine-readable JSON output", () => {
     assert.equal(parsed.contract_version, ACTIVE_CONTRACT_VERSION)
   })
 })
+
+// R11 follow-up: the busy-skip path must spin on a short retry, not back off
+// by the full publication interval. With the weighted-hot match (80%) in
+// flight, a full-interval backoff collapsed the effective burst rate to
+// ~30/s — below the frozen 40..60 events/s window.
+describe("burst throughput under per-match in-flight contention", () => {
+  it("sustains >= 40 published events/s in burst mode while publishes are in flight", async () => {
+    let inFlight = 0
+    const pub = {
+      async publish(_matchId: string, _body: string, _eventType: string): Promise<boolean> {
+        inFlight++
+        // Simulate Nchan round-trip latency overlapping the schedule loop.
+        await new Promise((resolve) => setTimeout(resolve, 8))
+        inFlight--
+        return true
+      },
+      async healthcheck() { return true },
+    }
+    const headTracker = createMatchHeadTracker()
+    const random = createPRNG(42)
+    const publisher = new MatchEventPublisher({
+      publisher: pub,
+      headTracker,
+      burstMode: true,
+      random,
+    })
+    const durationMs = 2000
+    publisher.start(true)
+    await new Promise((resolve) => setTimeout(resolve, durationMs))
+    publisher.stop()
+    const rate = publisher.totalPublished / (durationMs / 1000)
+    assert.ok(rate >= 40, `burst rate ${rate.toFixed(1)}/s below frozen 40/s floor`)
+  })
+})
