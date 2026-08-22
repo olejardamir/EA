@@ -624,6 +624,17 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 			r.pool.ActiveCurrent(), cfg.localTarget)
 	}
 	r.logf("baseline established active=%d (target %d)", r.pool.ActiveCurrent(), baselineTarget2)
+	if cfg.publisherOwner && cfg.publisherURL != "" {
+		// The warmup:end baseline must cover EVERY match: at small scales the
+		// population establishes in well under a second, and low-weight
+		// matches may not yet have received their first event when the
+		// baseline snapshot is captured. Wait (bounded) for full-head
+		// coverage so the baseline proves workload presence rather than RNG
+		// timing; publication runs continuously throughout the wait.
+		if herr := r.waitAllMatchHeads(ctx, 30*time.Second); herr != nil {
+			r.logf("publisher heads incomplete at warmup baseline: %v", herr)
+		}
+	}
 	if !r.barrier("warmup", "end") {
 		return nil, fmt.Errorf("warmup end barrier")
 	}
@@ -1555,6 +1566,26 @@ func (r *shardRun) publicationRate(phase string) (float64, bool) {
 		return 0, false
 	}
 	return float64(endEv.Totals.Published-startEv.Totals.Published) / dt, true
+}
+
+// waitAllMatchHeads polls the publisher until every expected match has at
+// least one canonical head, guaranteeing the warmup:end baseline covers the
+// full match set (bounded; publication continues throughout).
+func (r *shardRun) waitAllMatchHeads(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if ev, err := r.pub.Evidence(ctx); err == nil && len(ev.Heads) >= expectedMatchCount {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("not all %d match heads present within %s", expectedMatchCount, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 // applyPublisherGates applies the frozen R11 publisher health rules on the
