@@ -14,6 +14,13 @@ const PUB_DEBUG = process.env.PUB_DEBUG === "1"
 // collapse the effective publication rate below the frozen 40..60 window.
 const BUSY_RETRY_MS = 2
 
+// Frozen workload rates (contract §workload): steady 9/s nominal inside the
+// frozen [8, 12] accepted window; burst nominal calibrated so the MEASURED
+// accepted rate lands inside the frozen [40, 60] window under realistic
+// event-loop lag (see finalize pacing below).
+const STEADY_RATE_PER_SEC = 9
+const BURST_RATE_PER_SEC = 55
+
 export interface MatchEventPublisherConfig {
   publisher: EventPublisher
   headTracker: MatchHeadTracker
@@ -169,7 +176,11 @@ export class MatchEventPublisher {
 
       const finalize = () => {
         this._matchBusy.set(matchId, false)
-        const rate = this.config.burstMode ? 50 : 9
+        // Nominal 55/s burst target: measured accepted rate must land inside
+        // the frozen [40, 60] events/s window; event-loop lag and in-flight
+        // latency consume ~15-20% of a naive 50/s schedule, so aim above the
+        // window midpoint while staying below its ceiling.
+        const rate = this.config.burstMode ? BURST_RATE_PER_SEC : STEADY_RATE_PER_SEC
         const intervalMs = 1000 / rate
         const jitter = intervalMs * 0.3 * (random() - 0.5)
         // Pace from the START of the previous publication: the in-flight

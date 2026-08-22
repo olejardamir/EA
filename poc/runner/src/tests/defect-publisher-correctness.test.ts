@@ -523,7 +523,7 @@ describe("§6.24: Machine-readable JSON output", () => {
 // flight, a full-interval backoff collapsed the effective burst rate to
 // ~30/s — below the frozen 40..60 events/s window.
 describe("burst throughput under per-match in-flight contention", () => {
-  it("sustains >= 40 published events/s in burst mode while publishes are in flight", async () => {
+  it("burst-mode pacing keeps the effective rate inside the frozen window under in-flight latency", async () => {
     let inFlight = 0
     const pub = {
       async publish(_matchId: string, _body: string, _eventType: string): Promise<boolean> {
