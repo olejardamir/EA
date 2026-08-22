@@ -26,7 +26,10 @@ services:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
     network_mode: host
     entrypoint: ["/bin/sh", "/redis-cgroup-entrypoint.sh"]
-    command: ["redis-server"]
+    # Ephemeral per-run dataset (FLUSHALL between runs; durability carries no
+    # evidence value): disable RDB/AOF so BGSAVE fork stalls on the CPU quota
+    # cannot freeze the publication-accept path mid-run.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
     volumes:
       - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
       - redis-cgroup-evidence:/redis-cgroup
