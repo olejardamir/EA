@@ -171,3 +171,17 @@ func BenchmarkFeed(b *testing.B) {
 		p.Feed(nil)
 	}
 }
+
+// BenchmarkFullEventHotPath exercises the complete per-frame generator hot
+// path: SSE framing plus canonical_seq extraction (R26 requires the benchmark
+// to include canonical_seq extraction, not framing alone).
+func BenchmarkFullEventHotPath(b *testing.B) {
+	p := NewParser()
+	data := []byte("data: {\"match_id\":\"match_001\",\"canonical_seq\":987654,\"event_type\":\"goal\"}")
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		p.Feed([]byte("id: 12345"))
+		p.Feed(data)
+		p.Feed(nil)
+	}
+}
