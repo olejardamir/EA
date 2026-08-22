@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,9 @@ func testConfig(shardID int) *config {
 		localTarget:    25000,
 		surgeLocal:     10000,
 		seed:           42,
+		steadySeconds:  120,
+		surgeSeconds:   120,
+		burstSeconds:   30,
 		sourceCommit:   testCommit,
 		publisherOwner: false,
 		restartTarget:  3,
@@ -66,11 +70,44 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 		srcPort:      &dut.SourcePortEvidence{HeadroomValid: true},
 		redisInfo:    &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
 		nchanMetrics: &dut.ControlMetrics{},
-		surgeStats:   &surgeRunStats{},
+		surgeStats:   &surgeRunStats{elapsedMs: int64(cfg.surgeSeconds) * 1000, deadlineMs: int64(cfg.surgeSeconds) * 1000},
 		surgeDelta:   &counterSnapshot{},
 		genRuntime:   &dut.GeneratorRuntimeEvidence{},
 	}
+	seedTiming(r)
 	return r, p
+}
+
+// seedTiming fills a synthetic shardRun with plausible measured phase-boundary
+// evidence so assembleResult's R10 timing computation can pass; individual
+// tests then corrupt specific fields to prove invalidation.
+func seedTiming(r *shardRun) {
+	now := time.Now()
+	r.timingMu.Lock()
+	defer r.timingMu.Unlock()
+	r.runStartWall = now.Add(-time.Hour)
+	if r.phaseStart == nil {
+		r.phaseStart = map[string]time.Time{}
+		r.phaseEnd = map[string]time.Time{}
+	}
+	cursor := r.runStartWall
+	for _, phase := range coordinator.Phases {
+		dur := 10 * time.Second
+		if phase == "burst" {
+			dur = time.Duration(r.cfg.burstSeconds)*time.Second + time.Second
+		}
+		if phase == "surge" {
+			dur = time.Duration(r.cfg.surgeSeconds) * time.Second
+		}
+		r.phaseStart[phase] = cursor
+		cursor = cursor.Add(dur)
+		r.phaseEnd[phase] = cursor
+		cursor = cursor.Add(2 * time.Second)
+	}
+	r.restartMeasured = true
+	r.restartWindowMs = 5000
+	r.lateJoinProbesRan = 1
+	r.lateJoinMaxRecoveryMs = 500
 }
 
 func passingScenarios() []coordinator.ScenarioEvidence {
@@ -1060,7 +1097,13 @@ func TestSurgeBatchSizesExactSchedule(t *testing.T) {
 	if got := surgeBatchSizes(48); got[0] != 2 || got[23] != 2 {
 		t.Fatal("evenly divisible schedule must be uniform")
 	}
-	if total := func(sizes []int) int { s := 0; for _, v := range sizes { s += v }; return s }(surgeBatchSizes(7)); total != 7 {
+	if total := func(sizes []int) int {
+		s := 0
+		for _, v := range sizes {
+			s += v
+		}
+		return s
+	}(surgeBatchSizes(7)); total != 7 {
 		t.Fatalf("remainder schedule total = %d, want 7", total)
 	}
 }
@@ -1111,7 +1154,7 @@ func TestAssembleResultSurgeWindowDeltas(t *testing.T) {
 	defer p.Stop()
 	r.restartDelta = &counterSnapshot{}
 	r.surgeStats = &surgeRunStats{startActive: 10, attemptedAdds: 5, establishedAdds: 5, finalActive: 15,
-		expectedStart: 10, expectedAdds: 5, expectedFinal: 15, deadlineMs: 120000}
+		expectedStart: 10, expectedAdds: 5, expectedFinal: 15, deadlineMs: 120000, elapsedMs: 120000}
 	r.surgeDelta = &counterSnapshot{missing: 1, duplicates: 2, outOfOrder: 3, unexpected: 4}
 	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
 		map[string]*deep.PathResult{},
@@ -1193,7 +1236,7 @@ func (r *shardRun) runSurgeScenarioForTest() coordinator.ScenarioEvidence {
 		Name:         "surge",
 		Participated: true,
 		Passed:       passed,
-		Detail:       fmt.Sprintf("start=%d +att=%d est=%d fail=%d elapsed=%dms final=%d",
+		Detail: fmt.Sprintf("start=%d +att=%d est=%d fail=%d elapsed=%dms final=%d",
 			st.startActive, st.attemptedAdds, st.establishedAdds, st.failedAdds, st.elapsedMs, st.finalActive),
 		Structured: map[string]any{
 			"surge_start_active":          st.startActive,
@@ -1207,5 +1250,187 @@ func (r *shardRun) runSurgeScenarioForTest() coordinator.ScenarioEvidence {
 			"window_duplicates":           delta.duplicates,
 			"window_out_of_order":         delta.outOfOrder,
 		},
+	}
+}
+
+// ── R10 timing validity ──────────────────────────────────────────────────────
+
+// hasTimingReason reports whether any validity reason mentions the timing gate.
+func hasTimingReason(res *coordinator.ShardExperimentResult, substr string) bool {
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "timing invalid") && strings.Contains(reason, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// The placeholder `TimingValid = true` is gone: a run with no phase-boundary
+// evidence at all must compute TimingValid=false and never ACCEPT.
+func TestTimingPlaceholderTrueRemoved(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(src), "\n") {
+		if strings.Contains(line, "TimingValid = true") {
+			t.Fatalf("hard-coded TimingValid still present: %s", strings.TrimSpace(line))
+		}
+	}
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	r.phaseStart, r.phaseEnd = map[string]time.Time{}, map[string]time.Time{}
+	r.restartMeasured = false
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res.Validity.TimingValid {
+		t.Fatal("empty timing evidence must compute TimingValid=false")
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("missing mandatory timing evidence must not ACCEPT")
+	}
+}
+
+// A phase that ended before it started is invalid evidence.
+func TestTimingNegativeDurationInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	r.phaseEnd["steady"] = r.phaseStart["steady"].Add(-time.Second)
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "ended before it started") {
+		t.Fatalf("missing negative-duration reason: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("negative duration must not ACCEPT")
+	}
+}
+
+// An implausible future timestamp is invalid evidence.
+func TestTimingFutureTimestampInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	future := time.Now().Add(10 * time.Minute)
+	r.phaseStart["warmup"] = future
+	r.phaseEnd["warmup"] = future.Add(time.Minute)
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "implausible future timestamp") {
+		t.Fatalf("missing future-timestamp reason: %+v", res.Validity.Reasons)
+	}
+}
+
+// A surge elapsed beyond its deadline invalidates the run's timing even when
+// the surge scenario itself already failed (both signals must surface).
+// Timing invalidity is an evidence-trust failure, so the frozen verdict rule
+// yields INCONCLUSIVE — never a DUT-facing REJECT.
+func TestTimingSurgeDeadlineViolationClassified(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.surgeDelta = &counterSnapshot{}
+	r.surgeStats.elapsedMs = r.surgeStats.deadlineMs + 1
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "exceeds its") {
+		t.Fatalf("missing deadline-violation reason: %+v", res.Validity.Reasons)
+	}
+	if res.Verdict != coordinator.VerdictInconclusive {
+		t.Fatalf("verdict = %s, want INCONCLUSIVE for timing-evidence failure", res.Verdict)
+	}
+}
+
+// A burst window shorter than its configured duration invalidates timing.
+func TestTimingBurstShorterThanConfigInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	r.phaseEnd["burst"] = r.phaseStart["burst"].Add(time.Duration(r.cfg.burstSeconds-1) * time.Second)
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "shorter than its configured") {
+		t.Fatalf("missing short-burst reason: %+v", res.Validity.Reasons)
+	}
+}
+
+// An unmeasured restart window is mandatory missing timing evidence.
+func TestTimingUnmeasuredRestartInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	r.restartMeasured = false
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "restart window was never measured") {
+		t.Fatalf("missing unmeasured-restart reason: %+v", res.Validity.Reasons)
+	}
+}
+
+// Late-join recovery at the probe timeout is not a valid timing sample.
+func TestTimingLateJoinRecoveryAtTimeoutInvalid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.timingMu.Lock()
+	r.lateJoinMaxRecoveryMs = lateJoinProbeTO.Milliseconds()
+	r.timingMu.Unlock()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "probe timeout") {
+		t.Fatalf("missing late-join timeout reason: %+v", res.Validity.Reasons)
+	}
+}
+
+// Generator scheduler-lag p99 beyond the frozen ceiling invalidates timing.
+func TestTimingSchedulerLagInvalidates(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.genRuntime.SchedulerLag.P99Ms = 250
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !hasTimingReason(res, "scheduler lag p99") {
+		t.Fatalf("missing scheduler-lag reason: %+v", res.Validity.Reasons)
+	}
+}
+
+// Healthy synthetic runs still compute TimingValid=true with full evidence.
+func TestTimingHealthyRunValid(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if !res.Validity.TimingValid {
+		t.Fatalf("healthy timing must be valid: %+v", res.Validity.Reasons)
+	}
+	timing, ok := res.Resources.Generator["timing"].(map[string]any)
+	if !ok {
+		t.Fatal("timing evidence must be exposed on the wire, not only a boolean")
+	}
+	if _, ok := timing["run_start_ms"]; !ok {
+		t.Fatal("timing evidence must include run_start_ms")
+	}
+	for _, phase := range coordinator.Phases {
+		entry, ok := timing[phase].(map[string]any)
+		if !ok {
+			t.Fatalf("phase %s missing from timing evidence", phase)
+		}
+		if _, ok := entry["duration_ms"]; !ok {
+			t.Fatalf("phase %s missing duration_ms in timing evidence", phase)
+		}
 	}
 }

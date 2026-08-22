@@ -20,6 +20,7 @@ import {
   validTargetRestartStructuredEvidence,
 } from "./restart-evidence-fixture.js"
 import { validSurgeScenarioEvidence } from "./surge-evidence-fixture.js"
+import { validTimingEvidence } from "./timing-evidence-fixture.js"
 
 const SHA = "64d0661cb607067f2b1dd59b25229c58a646f549"
 
@@ -121,7 +122,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       phase_rates: owner ? [{ phase: "steady", attempted_per_sec: 10, accepted_per_sec: 10 }] : [],
     },
     resources: {
-      generator: {},
+      generator: { timing: validTimingEvidence() },
       nchan: { memory_peak_run_bytes: 1000, oom_kill_events: 0 },
       redis: owner ? { memory_used_bytes: 500 } : {},
     },
@@ -685,5 +686,87 @@ describe.skip("§v2.1.1 drift item 11: slow-consumer probe-transient allowance �
   it.skip("caps the allowance at the frozen slow-cohort fraction (5%) — slow-consumer retired in v2.3.0", async () => {
     const rejected = await buildWith(4, 50, 4, 50)
     assert.equal(rejected.verdict, "REJECT")
+  })
+})
+
+// R10: TimingValid must be backed by exposed structured timing evidence on
+// every shard — missing, malformed, or contradictory evidence invalidates
+// the aggregate (INCONCLUSIVE), it can never be silently trusted.
+describe("R10 structured timing evidence cross-check", () => {
+  function timingInvalidationCase(name: string, mutate: (result: ShardExperimentResult) => void, expectedReason: string): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const target = shardResult(1)
+      mutate(target)
+      coordinator.submitResult(shardResult(0))
+      coordinator.submitResult(target)
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, "INCONCLUSIVE")
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(result.validity.reasons.some((reason) => reason.includes(expectedReason)), `expected "${expectedReason}" validity reason, got: ${JSON.stringify(result.validity.reasons)}`)
+    })
+  }
+
+  timingInvalidationCase(
+    "rejects a shard with no structured timing evidence at all",
+    (target) => { delete (target.resources.generator as Record<string, unknown>).timing },
+    "missing structured timing evidence",
+  )
+  timingInvalidationCase(
+    "rejects timing evidence missing a coordinated phase",
+    (target) => {
+      const t = (target.resources.generator as Record<string, unknown>).timing as Record<string, unknown>
+      delete t.burst
+    },
+    "timing evidence invalid: phase burst absent",
+  )
+  timingInvalidationCase(
+    "rejects timing evidence whose duration contradicts its boundaries",
+    (target) => {
+      const t = (target.resources.generator as Record<string, unknown>).timing as Record<string, unknown>
+      ;(t.steady as Record<string, unknown>).duration_ms = 99_999
+    },
+    "timing evidence invalid: phase steady duration inconsistent",
+  )
+  timingInvalidationCase(
+    "rejects timing evidence with a non-positive phase duration",
+    (target) => {
+      const t = (target.resources.generator as Record<string, unknown>).timing as Record<string, unknown>
+      ;(t.warmup as Record<string, unknown>).duration_ms = 0
+    },
+    "timing evidence invalid: phase warmup duration inconsistent",
+  )
+  timingInvalidationCase(
+    "rejects timing evidence with an implausible future timestamp",
+    (target) => {
+      const t = (target.resources.generator as Record<string, unknown>).timing as Record<string, unknown>
+      const future = Date.now() + 3_600_000
+      t.surge = { start_ms: future, end_ms: future + 10_000, duration_ms: 10_000 }
+    },
+    "implausible future timestamp",
+  )
+  timingInvalidationCase(
+    "rejects timing evidence missing run boundaries",
+    (target) => {
+      const t = (target.resources.generator as Record<string, unknown>).timing as Record<string, unknown>
+      delete t.run_end_ms
+    },
+    "missing or unordered run boundaries",
+  )
+  timingInvalidationCase(
+    "rejects timing_valid=false despite complete timing evidence",
+    (target) => { target.validity.timing_valid = false },
+    "timing_valid false despite complete timing evidence",
+  )
+
+  it("accepts a fully evidenced healthy run with complete timing proof", async () => {
+    const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+    coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+    coordinator.submitResult(shardResult(0))
+    coordinator.submitResult(shardResult(1))
+    const result = coordinator.buildGlobalResult()
+    assert.ok(!result.validity.reasons.some((reason) => reason.includes("timing")), `no timing reasons expected, got: ${JSON.stringify(result.validity.reasons)}`)
+    assert.equal(result.verdict, "ACCEPT")
   })
 })

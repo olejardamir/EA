@@ -233,6 +233,20 @@ type shardRun struct {
 	// R09: generator's own runtime health measurement for this run.
 	genMon     *dut.GeneratorMonitor
 	genRuntime *dut.GeneratorRuntimeEvidence
+
+	// R10: local wall-clock record of every coordinated phase boundary,
+	// consumed to compute TimingValid from evidence instead of a constant.
+	timingMu     sync.Mutex
+	phaseStart   map[string]time.Time
+	phaseEnd     map[string]time.Time
+	runStartWall time.Time
+	runEndWall   time.Time
+
+	// R10: measured scenario windows backing the timing-validity gates.
+	lateJoinMaxRecoveryMs int64
+	lateJoinProbesRan     int
+	restartWindowMs       int64
+	restartMeasured       bool
 }
 
 func (r *shardRun) reasonf(format string, args ...any) {
@@ -383,6 +397,18 @@ func (r *shardRun) barrier(phase, boundary string) bool {
 	}
 	r.logf("barrier %s:%s released", phase, boundary)
 	_ = receipt
+	now := time.Now()
+	r.timingMu.Lock()
+	if r.phaseStart == nil {
+		r.phaseStart = map[string]time.Time{}
+		r.phaseEnd = map[string]time.Time{}
+	}
+	if boundary == "start" {
+		r.phaseStart[phase] = now
+	} else {
+		r.phaseEnd[phase] = now
+	}
+	r.timingMu.Unlock()
 	return true
 }
 
@@ -402,6 +428,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentResult, error) {
 	cfg := r.cfg
 	startedAt := time.Now()
+	r.runStartWall = startedAt
 
 	// ── preflight ──
 	if !r.barrier("preflight", "start") {
@@ -902,6 +929,12 @@ func (r *shardRun) runLateJoinProbes(ctx context.Context) map[string]*deep.PathR
 				Target:   uint64(head),
 			}
 			res := r.pool.RunProbe(ctx, spec, lateJoinProbeTO)
+			r.timingMu.Lock()
+			if res.RecoveryMs > r.lateJoinMaxRecoveryMs {
+				r.lateJoinMaxRecoveryMs = res.RecoveryMs
+			}
+			r.lateJoinProbesRan++
+			r.timingMu.Unlock()
 			out[spec.Key] = res
 			r.logf("late-join %s round %d passed=%v recovery_ms=%d missing=%d", m, round, res.Passed, res.RecoveryMs, res.MissingRequired)
 			<-sem
@@ -1128,6 +1161,10 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 		return scenario
 	}
 	restartMs := time.Since(restartStart).Milliseconds()
+	r.timingMu.Lock()
+	r.restartWindowMs = restartMs
+	r.restartMeasured = true
+	r.timingMu.Unlock()
 
 	r.pool.SetSpare(r.cfg.spareSubURL)
 	r.pool.ReleaseDrain()
@@ -1194,6 +1231,144 @@ func (r *shardRun) waitActive(baseline int64, timeout time.Duration) bool {
 		time.Sleep(250 * time.Millisecond)
 	}
 	return r.pool.ActiveCurrent() >= floor
+}
+
+// computeTimingValidity derives TimingValid from measured phase-boundary
+// evidence (R10): complete boundary coverage in canonical order, positive
+// durations, monotonic non-overlapping phases, no implausible future
+// timestamps, valid run/campaign timestamp ordering, and phase-specific
+// duration sanity (surge deadline, burst floor, bounded late-join recovery,
+// measured restart window). Missing mandatory timing evidence invalidates
+// the run.
+func (r *shardRun) computeTimingValidity() bool {
+	r.timingMu.Lock()
+	defer r.timingMu.Unlock()
+	ok := true
+	fail := func(format string, args ...any) {
+		r.reasonf("timing invalid: "+format, args...)
+		ok = false
+	}
+	now := time.Now()
+	r.runEndWall = now
+	if r.runStartWall.IsZero() {
+		fail("run start timestamp never recorded")
+	}
+	prevEnd := time.Time{}
+	for _, phase := range coordinator.Phases {
+		start, hasStart := r.phaseStart[phase]
+		end, hasEnd := r.phaseEnd[phase]
+		if !hasStart {
+			fail("phase %s never started", phase)
+			continue
+		}
+		if !hasEnd {
+			fail("phase %s never ended", phase)
+			continue
+		}
+		if end.Before(start) {
+			fail("phase %s ended before it started", phase)
+			continue
+		}
+		if start.After(now.Add(60 * time.Second)) || end.After(now.Add(60 * time.Second)) {
+			fail("phase %s has an implausible future timestamp", phase)
+			continue
+		}
+		if !r.runStartWall.IsZero() && start.Before(r.runStartWall) {
+			fail("phase %s started before its run began", phase)
+			continue
+		}
+		if end.Sub(start) <= 0 {
+			fail("phase %s duration %dms is not a positive measurement",
+				phase, end.Sub(start).Milliseconds())
+			continue
+		}
+		if !prevEnd.IsZero() && start.Before(prevEnd) {
+			fail("phase %s started before its predecessor ended", phase)
+			continue
+		}
+		prevEnd = end
+	}
+	if r.surgeStats != nil {
+		if r.surgeStats.elapsedMs <= 0 {
+			fail("surge elapsed %dms is not a positive measurement", r.surgeStats.elapsedMs)
+		}
+		if r.surgeStats.elapsedMs > r.surgeStats.deadlineMs {
+			fail("surge elapsed %dms exceeds its %dms deadline", r.surgeStats.elapsedMs, r.surgeStats.deadlineMs)
+		}
+	}
+	burstStart, bsOK := r.phaseStart["burst"]
+	burstEnd, beOK := r.phaseEnd["burst"]
+	if bsOK && beOK && burstEnd.Sub(burstStart) < time.Duration(r.cfg.burstSeconds)*time.Second {
+		fail("burst window %dms shorter than its configured %ds duration",
+			burstEnd.Sub(burstStart).Milliseconds(), r.cfg.burstSeconds)
+	}
+	// late-join durations: every probe recovery must be a completed
+	// measurement inside the probe timeout (a recovery at/above the timeout
+	// is a failed catch-up, never a valid timing sample).
+	if r.lateJoinMaxRecoveryMs < 0 {
+		fail("late-join max recovery %dms is negative", r.lateJoinMaxRecoveryMs)
+	}
+	if r.lateJoinProbesRan > 0 &&
+		r.lateJoinMaxRecoveryMs >= lateJoinProbeTO.Milliseconds() {
+		fail("late-join max recovery %dms reached the %dms probe timeout",
+			r.lateJoinMaxRecoveryMs, lateJoinProbeTO.Milliseconds())
+	}
+	// restart duration: the restart window is mandatory measured evidence.
+	if !r.restartMeasured {
+		fail("restart window was never measured")
+	} else if r.restartWindowMs <= 0 {
+		fail("restart window %dms is not a positive measurement", r.restartWindowMs)
+	}
+	// scheduler-lag p99: generator wake-up jitter beyond the frozen R09
+	// ceiling invalidates every wall-clock duration this run reports.
+	if r.genRuntime != nil && r.genRuntime.SchedulerLag.P99Ms >= 100 {
+		fail("generator scheduler lag p99 %.1fms >= 100ms invalidates timing evidence",
+			r.genRuntime.SchedulerLag.P99Ms)
+	}
+	// run timestamp ordering: the run must have started in the plausible
+	// past and finished no later than now.
+	if !r.runStartWall.IsZero() {
+		if r.runStartWall.After(now.Add(60 * time.Second)) {
+			fail("run start %dms is an implausible future timestamp", r.runStartWall.UnixMilli())
+		}
+		for _, phase := range coordinator.Phases {
+			if end, has := r.phaseEnd[phase]; has && end.Before(r.runStartWall) {
+				fail("phase %s ended before the run started", phase)
+				break
+			}
+		}
+	}
+	return ok
+}
+
+// timingEvidence renders the measured phase-boundary record for the wire so
+// the boolean is always auditable against raw timestamps (R10).
+func (r *shardRun) timingEvidence() map[string]any {
+	r.timingMu.Lock()
+	defer r.timingMu.Unlock()
+	out := map[string]any{}
+	if !r.runStartWall.IsZero() {
+		out["run_start_ms"] = r.runStartWall.UnixMilli()
+	}
+	if !r.runEndWall.IsZero() {
+		out["run_end_ms"] = r.runEndWall.UnixMilli()
+	}
+	for _, phase := range coordinator.Phases {
+		start, hasStart := r.phaseStart[phase]
+		end, hasEnd := r.phaseEnd[phase]
+		entry := map[string]any{}
+		if hasStart {
+			entry["start_ms"] = start.UnixMilli()
+		}
+		if hasEnd {
+			entry["end_ms"] = end.UnixMilli()
+		}
+		if hasStart && hasEnd {
+			entry["duration_ms"] = end.Sub(start).Milliseconds()
+		}
+		out[phase] = entry
+	}
+	return out
 }
 
 // applyGeneratorGates applies the frozen R09 generator validity rules: the
@@ -1289,7 +1464,6 @@ func (r *shardRun) assembleResult(
 	r.valid.SourcePortHeadroomValid = r.srcPort != nil && r.srcPort.HeadroomValid
 	r.valid.NginxWorkerCapacityValid = r.nchanMetrics != nil && len(r.valid.Reasons) == 0
 	r.valid.EnvironmentValid = r.redisInfo != nil && r.nchanMetrics != nil
-	r.valid.TimingValid = true
 
 	// histograms: fan_out merges all deep-latency classes; goal/other split
 	// per assignment classes; late_join records catch-up ms per probe;
@@ -1413,6 +1587,7 @@ func (r *shardRun) assembleResult(
 	} else {
 		r.reasonf("generator runtime evidence never collected")
 	}
+	res.Resources.Generator["timing"] = r.timingEvidence()
 	res.Resources.Nchan = controlMetricsMap(r.nchanMetrics)
 	redisMap := map[string]any{}
 	if r.redisInfo != nil {
@@ -1427,6 +1602,7 @@ func (r *shardRun) assembleResult(
 
 	// validity snapshot taken after every reason is recorded so late
 	// evidence failures (e.g. unmeasured restart window) reach the wire.
+	r.valid.TimingValid = r.computeTimingValidity()
 	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)
 	if res.Verdict != coordinator.VerdictAccept {

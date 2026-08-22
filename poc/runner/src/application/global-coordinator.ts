@@ -74,7 +74,9 @@ export interface ShardValidity {
 }
 
 export interface ShardResourceEvidence {
-  generator: Record<string, number | null>
+  // R10: the generator map also carries the structured `timing` evidence
+  // block (phase boundaries + run timestamps) alongside numeric health fields.
+  generator: Record<string, unknown>
   nchan: Record<string, number | null>
   redis: Record<string, number | null>
   // §v2.1.0: spare-node evidence — recorded by the restart-target shard only
@@ -544,6 +546,57 @@ export class GlobalExperimentCoordinator {
         if (structuredValue !== topLevel) {
           validityReasons.push(`shard ${result.shard_id} restart ${counterKey} mismatch: top-level ${topLevel} != structured pool ${structuredValue}`)
         }
+      }
+    }
+
+    // R10 cross-check: TimingValid must be backed by exposed timing evidence,
+    // not merely asserted. Every shard must carry a structured timing record
+    // covering every coordinated phase with internally consistent, positive
+    // durations; a shard whose evidence is missing, malformed, or contradicts
+    // its own timing_valid flag has untrustworthy measurement (INCONCLUSIVE).
+    const nowMs = Date.now()
+    for (const result of shardResults) {
+      const timing = (result.resources.generator as Record<string, unknown>)["timing"]
+      if (!timing || typeof timing !== "object") {
+        validityReasons.push(`shard ${result.shard_id} missing structured timing evidence`)
+        continue
+      }
+      const t = timing as Record<string, unknown>
+      if (typeof t.run_start_ms !== "number" || typeof t.run_end_ms !== "number" ||
+        t.run_end_ms <= t.run_start_ms) {
+        validityReasons.push(`shard ${result.shard_id} timing evidence missing or unordered run boundaries`)
+        continue
+      }
+      let malformed = ""
+      for (const phase of COORDINATED_PHASES) {
+        const entry = t[phase]
+        if (!entry || typeof entry !== "object") {
+          malformed = `phase ${phase} absent`
+          break
+        }
+        const e = entry as Record<string, unknown>
+        const startMs = e.start_ms
+        const endMs = e.end_ms
+        const durationMs = e.duration_ms
+        if (typeof startMs !== "number" || typeof endMs !== "number" || typeof durationMs !== "number") {
+          malformed = `phase ${phase} boundaries missing`
+          break
+        }
+        if (durationMs <= 0 || endMs - startMs !== durationMs) {
+          malformed = `phase ${phase} duration inconsistent`
+          break
+        }
+        if (startMs > nowMs + 60_000 || endMs > nowMs + 60_000) {
+          malformed = `phase ${phase} has implausible future timestamp`
+          break
+        }
+      }
+      if (malformed !== "") {
+        validityReasons.push(`shard ${result.shard_id} timing evidence invalid: ${malformed}`)
+        continue
+      }
+      if (!result.validity.timing_valid) {
+        validityReasons.push(`shard ${result.shard_id} timing_valid false despite complete timing evidence`)
       }
     }
 
