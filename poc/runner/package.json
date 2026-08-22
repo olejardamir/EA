@@ -7,6 +7,7 @@
     "start:coordinator": "npx tsx src/coordinator-server.ts",
     "start:publisher": "npx tsx src/publisher-service.ts",
     "aggregate:global-campaign": "npx tsx src/global-campaign.ts",
+    "audit:independent": "npx tsx src/independent-verdict-audit.ts",
     "typecheck": "npx tsc --noEmit",
     "test": "node --import tsx --test src/tests/*.test.ts"
   },
