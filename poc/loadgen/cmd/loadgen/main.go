@@ -1120,6 +1120,9 @@ func (r *shardRun) assembleResult(
 	}
 
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)
+	if res.Verdict != coordinator.VerdictAccept {
+		r.logf("shard verdict=%s validity_reasons=%v counters=%v scenarios=%v", res.Verdict, r.valid.Reasons, res.CorrectnessCounters, scenarios)
+	}
 	_ = startedAt
 	return res
 }
