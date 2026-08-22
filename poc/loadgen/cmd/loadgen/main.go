@@ -1755,6 +1755,14 @@ func (r *shardRun) applyResourceGates() {
 				*finalPref.NginxActive, *finalPref.WorkerConnectionsTotal)
 		}
 	}
+	// R13: the shard-level control metrics must also be complete — a fetched
+	// snapshot with null mandatory fields is invalidating, never zero-filled.
+	if r.nchanMetrics != nil && !controlMetricsComplete(r.nchanMetrics) {
+		r.reasonf("partition control metrics missing mandatory numeric fields")
+	}
+	if r.cfg.shardID == r.cfg.restartTarget && r.spareMetrics != nil && !controlMetricsComplete(r.spareMetrics) {
+		r.reasonf("spare control metrics missing mandatory numeric fields")
+	}
 	// Spare evidence is mandatory across failover for the restart target.
 	if r.cfg.shardID == r.cfg.restartTarget {
 		if r.cfg.spareControl == "" {
@@ -2055,31 +2063,38 @@ func (r *shardRun) assembleResult(
 	return res
 }
 
-// controlMetricsMap converts control-server metrics into the wire map. The
-// coordinator requires a finite numeric oom_kill_events for EVERY partition;
-// when metrics were fetched the value is always emitted (0 for absent
-// counters). A nil input yields an empty map and the missing evidence is
-// reported through validity reasons instead (INCONCLUSIVE, never silent).
+// controlMetricsMap converts control-server metrics into the wire map. R13:
+// missing/null metrics stay missing — the key is omitted rather than coerced
+// to zero, so absent evidence can never masquerade as clean evidence. The
+// mandatory-metric completeness gate (applyResourceGates) adds validity
+// reasons for any missing field, preventing ACCEPT.
 func controlMetricsMap(m *dut.ControlMetrics) map[string]any {
 	out := map[string]any{}
 	if m == nil {
 		return out
 	}
-	out["memory_current_bytes"] = derefInt64(m.MemoryCurrentBytes)
-	out["memory_peak_bytes"] = derefInt64(m.MemoryPeakBytes)
-	out["cpu_usage_usec"] = derefInt64(m.CpuUsageUsec)
-	out["cpu_throttled_count"] = derefInt64(m.CpuThrottledCount)
-	out["cpu_throttled_usec"] = derefInt64(m.CpuThrottledUsec)
-	out["memory_oom_events"] = derefInt64(m.MemoryOomEvents)
-	out["oom_kill_events"] = derefInt64(m.MemoryOomKillEvents)
-	return out
-}
-
-func derefInt64(p *int64) int64 {
-	if p == nil {
-		return 0
+	if m.MemoryCurrentBytes != nil {
+		out["memory_current_bytes"] = *m.MemoryCurrentBytes
 	}
-	return *p
+	if m.MemoryPeakBytes != nil {
+		out["memory_peak_bytes"] = *m.MemoryPeakBytes
+	}
+	if m.CpuUsageUsec != nil {
+		out["cpu_usage_usec"] = *m.CpuUsageUsec
+	}
+	if m.CpuThrottledCount != nil {
+		out["cpu_throttled_count"] = *m.CpuThrottledCount
+	}
+	if m.CpuThrottledUsec != nil {
+		out["cpu_throttled_usec"] = *m.CpuThrottledUsec
+	}
+	if m.MemoryOomEvents != nil {
+		out["memory_oom_events"] = *m.MemoryOomEvents
+	}
+	if m.MemoryOomKillEvents != nil {
+		out["oom_kill_events"] = *m.MemoryOomKillEvents
+	}
+	return out
 }
 
 // phaseRates derives attempted/accepted rates per phase from aligned samples.

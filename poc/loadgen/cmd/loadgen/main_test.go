@@ -69,7 +69,7 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 		genStart:     time.Now(),
 		srcPort:      &dut.SourcePortEvidence{HeadroomValid: true},
 		redisInfo:    &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
-		nchanMetrics: &dut.ControlMetrics{},
+		nchanMetrics: completeMetrics(),
 		surgeStats:   &surgeRunStats{elapsedMs: int64(cfg.surgeSeconds) * 1000, deadlineMs: int64(cfg.surgeSeconds) * 1000},
 		surgeDelta:   &counterSnapshot{},
 		genRuntime:   &dut.GeneratorRuntimeEvidence{},
@@ -77,6 +77,19 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 	seedTiming(r)
 	seedResources(r)
 	return r, p
+}
+
+// completeMetrics returns a ControlMetrics snapshot with every mandatory R12
+// field present and numeric.
+func completeMetrics() *dut.ControlMetrics {
+	cur, peak := int64(1024), int64(2048)
+	cpu, thrC, thrU := int64(5000), int64(0), int64(0)
+	oom, oomKill := int64(0), int64(0)
+	return &dut.ControlMetrics{
+		MemoryCurrentBytes: &cur, MemoryPeakBytes: &peak,
+		CpuUsageUsec: &cpu, CpuThrottledCount: &thrC, CpuThrottledUsec: &thrU,
+		MemoryOomEvents: &oom, MemoryOomKillEvents: &oomKill,
+	}
 }
 
 // seedResources fills a synthetic shardRun with complete phase-spanning R12
@@ -580,7 +593,7 @@ func TestAssembleResultSpareResourcesOnRestartTargetOnly(t *testing.T) {
 	cfg.spareSubURL = "http://spare:8081/sub"
 	r, p := testShardRun(cfg)
 	defer p.Stop()
-	r.spareMetrics = &dut.ControlMetrics{}
+	r.spareMetrics = completeMetrics()
 	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
 		map[string]*deep.PathResult{},
 		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
@@ -590,7 +603,7 @@ func TestAssembleResultSpareResourcesOnRestartTargetOnly(t *testing.T) {
 
 	r2, p2 := testShardRun(testConfig(1)) // bystander
 	defer p2.Stop()
-	r2.spareMetrics = &dut.ControlMetrics{}
+	r2.spareMetrics = completeMetrics()
 	res2 := r2.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
 		map[string]*deep.PathResult{},
 		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
@@ -843,15 +856,23 @@ func TestControlMetricsMapDerefsAllKeys(t *testing.T) {
 	}
 }
 
-func TestControlMetricsMapNilPointersEmitZero(t *testing.T) {
-	// oom_kill_events is mandatory-finite for EVERY partition even when the
-	// counter is absent upstream.
+// R13: missing/null metrics stay missing — keys are omitted from the wire map
+// rather than fabricated as zeros. Completeness is enforced separately by the
+// mandatory-field gate (INCONCLUSIVE), never by coercion.
+func TestControlMetricsMapNilStaysMissing(t *testing.T) {
 	m := controlMetricsMap(&dut.ControlMetrics{})
-	if m["oom_kill_events"] != int64(0) {
-		t.Fatalf("oom_kill_events = %v, want finite 0", m["oom_kill_events"])
+	if len(m) != 0 {
+		t.Fatalf("nil metrics must be omitted entirely, got %v", m)
 	}
-	if len(m) != 7 {
-		t.Fatalf("expected all 7 keys emitted, got %d", len(m))
+	partial := &dut.ControlMetrics{}
+	v := int64(5)
+	partial.MemoryPeakBytes = &v
+	m = controlMetricsMap(partial)
+	if _, ok := m["memory_peak_bytes"]; !ok {
+		t.Fatal("present field must be emitted")
+	}
+	if len(m) != 1 {
+		t.Fatalf("absent fields must stay absent, got %v", m)
 	}
 }
 
@@ -1850,5 +1871,60 @@ func TestResourceEvidenceOnWire(t *testing.T) {
 	}
 	if _, ok := stages["worker_topology"].(map[string]any)["baseline"]; !ok {
 		t.Fatal("baseline worker topology missing")
+	}
+}
+
+// ── R13 missing metrics stay missing, and always invalidate ──────────────────
+
+// Every mandatory control metric, when null, must add a validity reason and
+// prevent ACCEPT — no zero-coercion anywhere.
+func TestR13EachMissingMandatoryMetricInvalidates(t *testing.T) {
+	fields := []struct {
+		name string
+		nuke func(m *dut.ControlMetrics)
+	}{
+		{"memory_current_bytes", func(m *dut.ControlMetrics) { m.MemoryCurrentBytes = nil }},
+		{"memory_peak_bytes", func(m *dut.ControlMetrics) { m.MemoryPeakBytes = nil }},
+		{"cpu_usage_usec", func(m *dut.ControlMetrics) { m.CpuUsageUsec = nil }},
+		{"cpu_throttled_count", func(m *dut.ControlMetrics) { m.CpuThrottledCount = nil }},
+		{"cpu_throttled_usec", func(m *dut.ControlMetrics) { m.CpuThrottledUsec = nil }},
+		{"memory_oom_events", func(m *dut.ControlMetrics) { m.MemoryOomEvents = nil }},
+		{"oom_kill_events", func(m *dut.ControlMetrics) { m.MemoryOomKillEvents = nil }},
+	}
+	for _, f := range fields {
+		t.Run(f.name, func(t *testing.T) {
+			r, p := testShardRun(testConfig(0))
+			defer p.Stop()
+			f.nuke(r.nchanMetrics)
+			res := assembleOwner(r)
+			if !hasPublisherReason(res, "partition control metrics missing mandatory numeric fields") {
+				t.Fatalf("missing %s did not invalidate: %+v", f.name, res.Validity.Reasons)
+			}
+			if res.Verdict == coordinator.VerdictAccept {
+				t.Fatalf("missing %s must not ACCEPT", f.name)
+			}
+		})
+	}
+}
+
+// The wire map omits absent keys instead of fabricating zeros (audited via a
+// stage snapshot rendered through resourceEvidence).
+func TestR13WireOmitsNullStageFields(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.resMu.Lock()
+	m := completeMetrics()
+	m.MemoryOomKillEvents = nil
+	r.resSnapshots["final"] = m
+	r.resMu.Unlock()
+	res := assembleOwner(r)
+	stages := res.Resources.Generator["resource_stages"].(map[string]any)
+	partition := stages["partition_stages"].(map[string]any)
+	final := partition["final"].(map[string]any)
+	if _, present := final["oom_kill_events"]; present {
+		t.Fatal("null oom_kill_events must be omitted from the wire, not emitted as 0")
+	}
+	if !hasPublisherReason(res, "missing mandatory numeric fields") || res.Verdict == coordinator.VerdictAccept {
+		t.Fatalf("incomplete stage must invalidate: %+v", res.Validity.Reasons)
 	}
 }
