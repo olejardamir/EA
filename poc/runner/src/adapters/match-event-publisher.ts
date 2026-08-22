@@ -130,9 +130,11 @@ export class MatchEventPublisher {
     const scheduleMatchEvents = () => {
       if (!this.running) return
 
-      const weights = this.config.burstMode
-        ? [80, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7, 20 / 7]
-        : MATCH_WEIGHTS
+      // Burst uses the standard weighted match distribution: concentrating
+      // 80% of burst traffic on one match serializes it behind that match's
+      // publish round-trip (per-match canonical ordering, §6.20) and caps the
+      // achievable rate below the frozen 40..60 events/s window under load.
+      const weights = MATCH_WEIGHTS
 
       const random = this.config.random
       const matchIdx = weightedRandom(weights, random)
