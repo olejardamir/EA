@@ -38,6 +38,9 @@ type Evidence struct {
 	} `json:"totals"`
 	BurstActive bool  `json:"burst_active"`
 	FetchedAtMs int64 `json:"fetched_at_ms"`
+	// Optional R11 diagnostics (absent in older publishers; never gated).
+	SchedulerLagP95Ms float64 `json:"scheduler_lag_p95_ms,omitempty"`
+	LoopLagP95Ms      float64 `json:"loop_lag_p95_ms,omitempty"`
 }
 
 type HeadInfo struct {

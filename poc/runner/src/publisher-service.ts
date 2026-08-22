@@ -32,6 +32,29 @@ function trackPendingPeak(): void {
 const pendingInterval = setInterval(trackPendingPeak, 50)
 pendingInterval.unref()
 
+// Diagnostic event-loop-lag monitor: a 50ms periodic timer measures how much
+// extra wall-clock time each tick takes. Sustained high lag attributes
+// burst-rate shortfalls to publisher CPU starvation rather than Nchan latency.
+const LOOP_LAG_SAMPLE_MS = 50
+let loopLagSamples: number[] = []
+let loopLagLast = performance.now()
+const loopLagMonitor = setInterval(() => {
+  const now = performance.now()
+  const lag = now - loopLagLast - LOOP_LAG_SAMPLE_MS
+  loopLagLast = now
+  if (lag > 0) {
+    loopLagSamples.push(lag)
+    if (loopLagSamples.length > 2000) loopLagSamples = loopLagSamples.slice(-1000)
+  }
+}, LOOP_LAG_SAMPLE_MS)
+loopLagMonitor.unref()
+
+function loopLagP95(): number {
+  if (loopLagSamples.length === 0) return 0
+  const sorted = [...loopLagSamples].sort((a, b) => a - b)
+  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]
+}
+
 function send(res: http.ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { "content-type": "application/json" })
   res.end(JSON.stringify(value))
@@ -78,6 +101,11 @@ const server = http.createServer(async (req, res) => {
         heads,
         totals,
         burst_active: burstActive,
+        // R11 diagnostics: attribute rate shortfalls precisely. publish RTT
+        // p95 = acceptance minus transmission (includes Nchan); loop lag p95
+        // isolates publisher CPU starvation from Nchan latency.
+        scheduler_lag_p95_ms: Math.round(publisher.schedulerLagP95 * 100) / 100,
+        loop_lag_p95_ms: Math.round(loopLagP95() * 100) / 100,
         fetched_at_ms: Date.now(),
       })
       return

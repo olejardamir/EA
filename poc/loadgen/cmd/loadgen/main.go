@@ -265,7 +265,6 @@ type shardRun struct {
 	resourceReject bool
 	rejectNotes    []string
 
-
 	// R10: local wall-clock record of every coordinated phase boundary,
 	// consumed to compute TimingValid from evidence instead of a constant.
 	timingMu     sync.Mutex
@@ -926,13 +925,13 @@ func (r *shardRun) runSurge(ctx context.Context) coordinator.ScenarioEvidence {
 
 	passed := st.passed()
 	structured := map[string]any{
-		"surge_start_active":        st.startActive,
-		"surge_attempted_additions": st.attemptedAdds,
+		"surge_start_active":          st.startActive,
+		"surge_attempted_additions":   st.attemptedAdds,
 		"surge_established_additions": st.establishedAdds,
-		"surge_failed_additions":    st.failedAdds,
-		"surge_elapsed_ms":          st.elapsedMs,
-		"surge_final_active":        st.finalActive,
-		"surge_peak_active":         st.peakActive,
+		"surge_failed_additions":      st.failedAdds,
+		"surge_elapsed_ms":            st.elapsedMs,
+		"surge_final_active":          st.finalActive,
+		"surge_peak_active":           st.peakActive,
 
 		"expected_start_active": st.expectedStart,
 		"expected_additions":    st.expectedAdds,
@@ -1426,7 +1425,7 @@ func (r *shardRun) computeTimingValidity() bool {
 			fail("phase %s ended before it started", phase)
 			continue
 		}
-		if start.After(now.Add(60 * time.Second)) || end.After(now.Add(60 * time.Second)) {
+		if start.After(now.Add(60*time.Second)) || end.After(now.Add(60*time.Second)) {
 			fail("phase %s has an implausible future timestamp", phase)
 			continue
 		}
@@ -1668,13 +1667,15 @@ func (r *shardRun) publisherEvidence() map[string]any {
 			heads[id] = h.Seq
 		}
 		out[key] = map[string]any{
-			"attempts":           ev.Totals.Attempts,
-			"published":          ev.Totals.Published,
-			"definite_failures":  ev.Totals.DefiniteFails,
-			"ambiguous_failures": ev.Totals.AmbiguousFails,
-			"pending_peak":       ev.Totals.PendingPeak,
-			"heads":              heads,
-			"fetched_at_ms":      ev.FetchedAtMs,
+			"attempts":             ev.Totals.Attempts,
+			"published":            ev.Totals.Published,
+			"definite_failures":    ev.Totals.DefiniteFails,
+			"ambiguous_failures":   ev.Totals.AmbiguousFails,
+			"pending_peak":         ev.Totals.PendingPeak,
+			"heads":                heads,
+			"fetched_at_ms":        ev.FetchedAtMs,
+			"loop_lag_p95_ms":      ev.LoopLagP95Ms,
+			"scheduler_lag_p95_ms": ev.SchedulerLagP95Ms,
 		}
 	}
 	rates := map[string]float64{}
@@ -2071,19 +2072,19 @@ func (r *shardRun) assembleResult(
 		"canonical_payload_state_violations":      float64(r.pool.Counters.CanonicalStateViolations.Load()),
 		"agreement_violations":                    float64(r.pool.Counters.AgreementViolations.Load()),
 		"state_agreement_violations":              float64(agreement.disagreed),
-		"deep_unmatched":                          func() float64 {
+		"deep_unmatched": func() float64 {
 			if r.deepAgree != nil {
 				return float64(r.deepAgree.unmatched)
 			}
 			return 0
 		}(),
-		"transport_id_present":                    float64(r.pool.Counters.TransportIDPresent.Load()),
-		"missing_transport_id":                    float64(r.pool.Counters.MissingTransportID.Load()),
-		"missing_canonical_seq":                   float64(r.pool.Counters.MissingCanonicalSeq.Load()),
-		"canonical_seq_parse_errors":              float64(r.pool.Counters.CanonicalParseErrors.Load()),
-		"deep_frames_validated":                   float64(r.pool.Counters.DeepFramesValidated.Load()),
-		"frames_received":                         float64(r.pool.Counters.FramesReceived.Load()),
-		"lobby_malformed":                         float64(r.pool.Counters.LobbyMalformed.Load()),
+		"transport_id_present":       float64(r.pool.Counters.TransportIDPresent.Load()),
+		"missing_transport_id":       float64(r.pool.Counters.MissingTransportID.Load()),
+		"missing_canonical_seq":      float64(r.pool.Counters.MissingCanonicalSeq.Load()),
+		"canonical_seq_parse_errors": float64(r.pool.Counters.CanonicalParseErrors.Load()),
+		"deep_frames_validated":      float64(r.pool.Counters.DeepFramesValidated.Load()),
+		"frames_received":            float64(r.pool.Counters.FramesReceived.Load()),
+		"lobby_malformed":            float64(r.pool.Counters.LobbyMalformed.Load()),
 	}
 
 	// workload: only the authoritative publisher reports accepted workload.
