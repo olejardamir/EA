@@ -29,7 +29,7 @@ services:
     command: ["redis-server"]
     volumes:
       - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
-      - redis-cgroup-evidence:/redis-cgroup
+      - redis-cgroup-evidence:/redis-cgroup:ro
     deploy:
       resources:
         limits:

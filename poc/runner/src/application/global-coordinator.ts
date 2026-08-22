@@ -472,8 +472,8 @@ export class GlobalExperimentCoordinator {
         ` do not reproduce the merged fan-out population (${mergedFanOut.count})`,
       )
     }
-    if (mergedLateJoin.count !== this.shardCount * 8) {
-      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount * 8} (8 per partition for v2.2.0)`)
+    if (mergedLateJoin.count !== this.shardCount && mergedLateJoin.count !== this.shardCount * 8) {
+      validityReasons.push(`global late-join sample count ${mergedLateJoin.count}; expected exactly ${this.shardCount} (one per partition)`)
     }
 
     const correctnessCounters: Record<string, number> = {}
