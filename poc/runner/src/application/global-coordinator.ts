@@ -580,16 +580,34 @@ export class GlobalExperimentCoordinator {
 
     for (const result of shardResults) {
       const rec = result.scenarios.find((s) => s.name === "reconnect")
-      if (rec?.structured && typeof rec.structured === "object") {
-        const st = rec.structured as Record<string, unknown>
-        const released = st["released"]
-        const evaluated = st["evaluated"]
-        const passed = st["passed"]
-        if (typeof released === "number" && typeof evaluated === "number" && typeof passed === "number") {
-          if (released !== 64 || evaluated !== 64 || passed !== 64) {
-            validityReasons.push(`shard ${result.shard_id} reconnect exactness ${released}/${evaluated}/${passed} != 64/64/64`)
-          }
-        }
+      if (!rec?.structured || typeof rec.structured !== "object") {
+        // missing structured reconnect evidence can never be interpreted as
+        // success — it invalidates the measurement
+        validityReasons.push(`shard ${result.shard_id} reconnect evidence has no structured denominator`)
+        continue
+      }
+      const st = rec.structured as Record<string, unknown>
+      const required = ["selected", "ready_before_hold", "released", "evaluated", "passed", "failed", "missing_results"] as const
+      const missing = required.filter((k) => typeof st[k] !== "number")
+      if (missing.length > 0) {
+        validityReasons.push(`shard ${result.shard_id} reconnect structured fields missing: ${missing.join(",")}`)
+        continue
+      }
+      const selected = st["selected"] as number
+      const ready = st["ready_before_hold"] as number
+      const released = st["released"] as number
+      const evaluated = st["evaluated"] as number
+      const passed = st["passed"] as number
+      const failed = st["failed"] as number
+      const missingResults = st["missing_results"] as number
+      if (
+        selected !== 64 || ready !== 64 || released !== 64 ||
+        evaluated !== 64 || passed !== 64 || failed !== 0 || missingResults !== 0
+      ) {
+        validityReasons.push(
+          `shard ${result.shard_id} reconnect exactness ` +
+          `${selected}/${ready}/${released}/${evaluated}/${passed} != 64/64/64/64/64 or failed/missing_results != 0/0`,
+        )
       }
     }
 

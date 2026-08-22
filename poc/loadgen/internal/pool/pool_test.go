@@ -27,6 +27,8 @@ type matchServer struct {
 	closed    bool
 	conns     atomic.Int64
 	replayAll bool
+	omitIDs   bool // stream data frames with NO transport id line
+	opaqueIDs bool // stream ids as opaque tokens (never parseable integers)
 }
 
 func newMatchServer(t *testing.T, replayAll bool) *matchServer {
@@ -82,7 +84,16 @@ func (s *matchServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return false
 		default:
 		}
-		if _, err := fmt.Fprintf(w, "id: %d\ndata: {\"n\":%d}\n\n", i, i); err != nil {
+		var err error
+		switch {
+		case s.omitIDs:
+			_, err = fmt.Fprintf(w, "data: {\"n\":%d}\n\n", i)
+		case s.opaqueIDs:
+			_, err = fmt.Fprintf(w, "id: tok-%d-x\ndata: {\"n\":%d}\n\n", i, i)
+		default:
+			_, err = fmt.Fprintf(w, "id: %d\ndata: {\"n\":%d}\n\n", i, i)
+		}
+		if err != nil {
 			return false
 		}
 		fl.Flush()
@@ -260,6 +271,97 @@ func TestReconnectFrozenRangeExactReplay(t *testing.T) {
 	if rs := p.Counters.ReconnectSucceeded.Load(); rs != 1 {
 		t.Fatalf("ReconnectSucceeded = %d, want 1", rs)
 	}
+	p.Stop()
+}
+
+// R01 regression: a client that never observed a real transport id on wire
+// can never be treated as resume-ready. The canonical application sequence
+// must never be synthesized into a Last-Event-ID token.
+func TestMissingRawIDNeverSynthesizedFromCanonical(t *testing.T) {
+	srv := newMatchServer(t, true)
+	srv.mu.Lock()
+	srv.omitIDs = true
+	srv.mu.Unlock()
+	srv.setHead(10)
+	p := New(srv.srv.URL+"/sub/", []string{"m1"}, 4)
+	if err := p.Add(RoleReconnect, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+	// On an id-less stream every frame is a missing_transport_id correctness
+	// violation; the pipeline deliberately refuses to track canonical state
+	// from such frames. Simulate the adversarial state the fallback used to
+	// exploit — canonical sequence known while the raw wire id is absent.
+	waitFor(t, 5*time.Second, "viewer received id-less frames", func() bool {
+		return p.Counters.FramesReceived.Load() > 0 &&
+			p.Counters.MissingTransportID.Load() > 0
+	})
+	if p.viewers[0].lastRawID != "" {
+		t.Fatal("precondition broken: raw id observed on id-less stream")
+	}
+	p.viewers[0].lastCanon = 10
+	p.viewers[0].lastSeq.Store(10)
+
+	p.SetHeadLookup(func(string) (int64, bool) { return 50, true })
+	hold := p.HoldReconnectCohort()
+	if hold.Selected != 1 || hold.ReadyBeforeHold != 0 || hold.MissingRawID != 1 {
+		t.Fatalf("hold evidence = %+v, want selected=1 ready=0 missing_raw_id=1", hold)
+	}
+	if n := p.Counters.ReconnectMissingRawID.Load(); n != 1 {
+		t.Fatalf("ReconnectMissingRawID = %d, want 1", n)
+	}
+	if n := p.ReleaseReconnectCohort(); n != 0 {
+		t.Fatalf("released = %d, want 0 (client without raw id is not resume-ready)", n)
+	}
+	p.viewers[0].mu.Lock()
+	resumeEmpty := p.viewers[0].resumeID == ""
+	p.viewers[0].mu.Unlock()
+	if !resumeEmpty {
+		t.Fatal("resumeID must stay empty — canonical seq must never become the transport token")
+	}
+	waitFor(t, 5*time.Second, "non-resume-ready viewer re-established normally", func() bool {
+		return p.viewers[0].online.Load()
+	})
+	p.Stop()
+}
+
+// R01 regression: an opaque raw transport id survives byte-for-byte into the
+// resume state even though it differs completely from the canonical sequence.
+func TestOpaqueRawIDPreservedByteForByte(t *testing.T) {
+	srv := newMatchServer(t, true)
+	srv.mu.Lock()
+	srv.opaqueIDs = true
+	srv.mu.Unlock()
+	srv.setHead(10)
+	p := New(srv.srv.URL+"/sub/", []string{"m1"}, 4)
+	if err := p.Add(RoleReconnect, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	p.Start()
+	waitFor(t, 5*time.Second, "viewer reached canonical seq 10", func() bool {
+		return p.viewers[0].lastSeq.Load() == 10
+	})
+
+	p.SetHeadLookup(func(string) (int64, bool) { return 50, true })
+	hold := p.HoldReconnectCohort()
+	if hold.ReadyBeforeHold != 1 || hold.MissingRawID != 0 {
+		t.Fatalf("hold evidence = %+v, want ready=1 missing=0", hold)
+	}
+	p.viewers[0].mu.Lock()
+	got := p.viewers[0].resumeID
+	canon := p.viewers[0].capturedCanon
+	p.viewers[0].mu.Unlock()
+	if got != "tok-10-x" {
+		t.Fatalf("resumeID = %q, want exact wire token %q", got, "tok-10-x")
+	}
+	if canon != 10 {
+		t.Fatalf("capturedCanon = %d, want 10 (canonical tracked separately from raw id)", canon)
+	}
+	// unhold: release against unchanged head skips and restores the viewer
+	p.ReleaseReconnectCohort()
+	waitFor(t, 5*time.Second, "viewer re-established after skip-release", func() bool {
+		return p.viewers[0].online.Load()
+	})
 	p.Stop()
 }
 

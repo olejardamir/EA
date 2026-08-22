@@ -563,7 +563,7 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if !r.barrier("reconnect", "start") {
 		return nil, fmt.Errorf("reconnect start barrier")
 	}
-	r.pool.HoldReconnectCohort()
+	reconnectHold := r.pool.HoldReconnectCohort()
 	sleepCtx(ctx, time.Duration(cfg.settleSeconds)*time.Second)
 	if err := r.refreshHeads(ctx); err != nil {
 		r.reasonf("reconnect evidence fetch: %v", err)
@@ -571,9 +571,10 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	released := r.pool.ReleaseReconnectCohort()
 	r.waitReconnectSettled(released, 30*time.Second)
 	reconnectResults := r.pool.CollectReconnectResults()
-	reconnectScenario := r.reconnectScenario(released, reconnectResults)
-	r.logf("reconnect drill released=%d results=%d passed=%d",
-		released, len(reconnectResults), countPassed(reconnectResults))
+	reconnectScenario := r.reconnectScenario(reconnectHold, released, reconnectResults)
+	r.logf("reconnect drill selected=%d ready=%d released=%d results=%d passed=%d",
+		reconnectHold.Selected, reconnectHold.ReadyBeforeHold, released,
+		len(reconnectResults), countPassed(reconnectResults))
 	if !r.barrier("reconnect", "end") {
 		return nil, fmt.Errorf("reconnect end barrier")
 	}
@@ -758,20 +759,46 @@ func (r *shardRun) lateJoinScenario(results map[string]*deep.PathResult) coordin
 	}
 }
 
-func (r *shardRun) reconnectScenario(released int, results map[string]*deep.PathResult) coordinator.ScenarioEvidence {
+// reconnectScenario assembles the exact non-shrinking denominator evidence.
+// Every field is measured: selected (frozen cohort), ready_before_hold (valid
+// raw resume state), released, evaluated (one result per released client),
+// passed, failed, missing_results. The drill passes only on the exact
+// 64/64/64/64/64 with zero failures and zero missing results — a missing
+// structured field or a shrunken denominator can never pass.
+func (r *shardRun) reconnectScenario(hold pool.ReconnectHoldResult, released int, results map[string]*deep.PathResult) coordinator.ScenarioEvidence {
 	passed := countPassed(results)
-	participated := released > 0
+	evaluated := len(results)
+	missingResults := released - evaluated
+	if missingResults < 0 {
+		missingResults = 0
+	}
+	failed := evaluated - passed
+	if failed < 0 {
+		failed = 0
+	}
+	structured := map[string]any{
+		"selected":          hold.Selected,
+		"ready_before_hold": hold.ReadyBeforeHold,
+		"missing_raw_id":    hold.MissingRawID,
+		"released":          released,
+		"evaluated":         evaluated,
+		"passed":            passed,
+		"failed":            failed,
+		"missing_results":   missingResults,
+	}
+	exact := hold.Selected == reconnectPerShard &&
+		hold.ReadyBeforeHold == reconnectPerShard &&
+		released == reconnectPerShard &&
+		evaluated == reconnectPerShard &&
+		passed == reconnectPerShard &&
+		failed == 0 && missingResults == 0
 	return coordinator.ScenarioEvidence{
 		Name:         "reconnect",
-		Participated: participated,
-		Passed:       participated && passed == len(results) && len(results) > 0,
-		Detail: fmt.Sprintf("released=%d evaluated=%d passed=%d",
-			released, len(results), passed),
-		Structured: map[string]any{
-			"released":  released,
-			"evaluated": len(results),
-			"passed":    passed,
-		},
+		Participated: released > 0,
+		Passed:       exact,
+		Detail: fmt.Sprintf("selected=%d ready=%d released=%d evaluated=%d passed=%d failed=%d missing_results=%d",
+			hold.Selected, hold.ReadyBeforeHold, released, evaluated, passed, failed, missingResults),
+		Structured: structured,
 	}
 }
 
@@ -1005,6 +1032,7 @@ func (r *shardRun) classifyShard(scenarios []coordinator.ScenarioEvidence, count
 var gatedCorrectnessCounters = []string{
 	"missing_sequences", "duplicates", "out_of_order",
 	"reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations",
+	"reconnect_missing_raw_id",
 	"restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
 	"missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
 	"json_parse_errors", "invalid_timestamp_count", "canonical_payload_state_violations",
@@ -1092,6 +1120,7 @@ func (r *shardRun) assembleResult(
 		"reconnect_gaps":                    float64(recGaps),
 		"reconnect_duplicates":              float64(recDups),
 		"reconnect_order_violations":        float64(recOOO),
+		"reconnect_missing_raw_id":          float64(r.pool.Counters.ReconnectMissingRawID.Load()),
 		"restart_failover_gaps":             0,
 		"restart_failover_duplicates":       0,
 		"restart_failover_order_violations": 0,

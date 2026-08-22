@@ -165,7 +165,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
     scenarios: [
       { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
-      { name: "reconnect", participated: true, passed: true, detail: "ok" },
+      { name: "reconnect", participated: true, passed: true, detail: "ok", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },
       {
         name: "restart-replacement",
         participated: true,

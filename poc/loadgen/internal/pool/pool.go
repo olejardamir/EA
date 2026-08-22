@@ -67,6 +67,7 @@ type Counters struct {
 	LobbyMalformed             atomic.Int64
 	ReconnectAttempts          atomic.Int64
 	ReconnectSucceeded         atomic.Int64
+	ReconnectMissingRawID      atomic.Int64 // held clients with no observed wire id
 	MissingCanonicalSeq        atomic.Int64
 	CanonicalParseErrors       atomic.Int64
 	JSONParseErrors            atomic.Int64
@@ -757,14 +758,28 @@ func (p *Pool) awaitOffline(pending func(*viewer) bool, timeout time.Duration) {
 	}
 }
 
-func (p *Pool) HoldReconnectCohort() {
+// ReconnectHoldResult carries the exact pre-hold denominator evidence: every
+// frozen reconnect client is selected before the phase, and readiness requires
+// a REAL nonempty raw SSE id observed on wire (never synthesized from the
+// canonical application sequence).
+type ReconnectHoldResult struct {
+	Selected       int // frozen cohort size (= 64/shard)
+	ReadyBeforeHold int // clients with valid raw resume state at hold time
+	MissingRawID   int // clients without an observed wire id — cannot resume
+}
+
+func (p *Pool) HoldReconnectCohort() ReconnectHoldResult {
+	selected := len(p.recIdx)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		allReady := true
 		for _, i := range p.recIdx {
 			v := p.viewers[i]
 			v.mu.Lock()
-			ready := v.lastRawID != "" || v.lastCanon != 0 || v.lastSeq.Load() != 0
+			// Valid raw resume state = real nonempty SSE id observed on wire
+			// AND canonical application state. A missing raw id can never be
+			// replaced by the canonical sequence number.
+			ready := v.lastRawID != "" && (v.lastCanon != 0 || v.lastSeq.Load() != 0)
 			v.mu.Unlock()
 			if !ready {
 				allReady = false
@@ -776,6 +791,7 @@ func (p *Pool) HoldReconnectCohort() {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	readyBeforeHold := 0
 	for _, i := range p.recIdx {
 		v := p.viewers[i]
 		v.mu.Lock()
@@ -786,11 +802,13 @@ func (p *Pool) HoldReconnectCohort() {
 			canon = v.lastSeq.Load()
 		}
 		if raw == "" {
-			raw = strconv.FormatUint(canon, 10)
-		}
-		if raw == "" {
+			// No real transport id observed on wire: this client is NOT
+			// resume-ready. Do not synthesize a token; record explicit
+			// incomplete evidence so the drill cannot pass.
+			p.Counters.ReconnectMissingRawID.Add(1)
 			continue
 		}
+		readyBeforeHold++
 		v.cancelMu.Lock()
 		v.mu.Lock()
 		v.resumeID = raw
@@ -804,6 +822,11 @@ func (p *Pool) HoldReconnectCohort() {
 		p.Counters.PlannedDisconnects.Add(1)
 	}
 	p.awaitOffline(func(v *viewer) bool { return v.reconnectQ.Load() }, 30*time.Second)
+	return ReconnectHoldResult{
+		Selected:        selected,
+		ReadyBeforeHold: readyBeforeHold,
+		MissingRawID:    selected - readyBeforeHold,
+	}
 }
 
 func (p *Pool) ReleaseReconnectCohort() int {

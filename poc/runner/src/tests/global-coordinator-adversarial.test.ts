@@ -121,7 +121,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     scenarios: [
       { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
-      { name: "reconnect", participated: true, passed: true, detail: "ok" },
+      { name: "reconnect", participated: true, passed: true, detail: "ok", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },
       { name: "restart-replacement", participated: true, passed: true, detail: "ok", structured: restartStructured },
     ],
     ...overrides,
@@ -170,6 +170,27 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     assert.equal(result.global_direct_accept_eligible, false)
     assert.ok(result.validity.reasons.some((reason) => reason.includes("restart publisher-owner spare-probe evidence is invalid")))
   })
+
+  function reconnectInvalidationCase(name: string, mutate: (rec: { name: string; participated: boolean; passed: boolean; detail: string; structured?: unknown }) => void): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const owner = shardResult(0)
+      const rec = owner.scenarios.find((scenario) => scenario.name === "reconnect")!
+      mutate(rec as never)
+      coordinator.submitResult(owner)
+      coordinator.submitResult(shardResult(1))
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, "INCONCLUSIVE")
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(result.validity.reasons.some((reason) => reason.toLowerCase().includes("reconnect")), `expected a reconnect validity reason, got: ${JSON.stringify(result.validity.reasons)}`)
+    })
+  }
+
+  reconnectInvalidationCase("treats missing structured reconnect evidence as invalidating", (rec) => { delete rec.structured })
+  reconnectInvalidationCase("treats reconnect structured evidence with a missing required field as invalidating", (rec) => { delete (rec.structured as Record<string, unknown>).selected })
+  reconnectInvalidationCase("rejects ready_before_hold below 64", (rec) => { (rec.structured as Record<string, unknown>).ready_before_hold = 63 })
+  reconnectInvalidationCase("rejects an evaluated denominator shrunken below released", (rec) => { (rec.structured as Record<string, unknown>).evaluated = 63; (rec.structured as Record<string, unknown>).passed = 63 })
 
   it("rejects out-of-range and non-integer shard IDs", () => {
     const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })

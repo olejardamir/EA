@@ -696,15 +696,17 @@ func TestReconnectScenarioParticipationGate(t *testing.T) {
 	r, p := testShardRun(testConfig(0))
 	defer p.Stop()
 
-	results := map[string]*deep.PathResult{
-		"rec:a": passedPath(), "rec:b": passedPath(),
+	full := pool.ReconnectHoldResult{Selected: reconnectPerShard, ReadyBeforeHold: reconnectPerShard}
+	results := map[string]*deep.PathResult{}
+	for i := 0; i < reconnectPerShard; i++ {
+		results[fmt.Sprintf("rec:%d", i)] = passedPath()
 	}
-	sc := r.reconnectScenario(2, results)
+	sc := r.reconnectScenario(full, reconnectPerShard, results)
 	if !sc.Participated || !sc.Passed {
-		t.Fatalf("released cohort all-passing must pass: %+v", sc)
+		t.Fatalf("exact 64 cohort all-passing must pass: %+v", sc.Detail)
 	}
 
-	sc = r.reconnectScenario(0, results)
+	sc = r.reconnectScenario(full, 0, map[string]*deep.PathResult{})
 	if sc.Participated {
 		t.Fatal("zero released must be non-participating")
 	}
@@ -714,16 +716,41 @@ func TestReconnectScenarioParticipationGate(t *testing.T) {
 		t.Fatal("non-participating scenario must not claim pass")
 	}
 
-	failed := map[string]*deep.PathResult{"rec:a": passedPath(), "rec:b": {}}
-	sc = r.reconnectScenario(2, failed)
+	failed := map[string]*deep.PathResult{}
+	for i := 0; i < reconnectPerShard; i++ {
+		if i == 0 {
+			failed["rec:0"] = &deep.PathResult{}
+			continue
+		}
+		failed[fmt.Sprintf("rec:%d", i)] = passedPath()
+	}
+	sc = r.reconnectScenario(full, reconnectPerShard, failed)
 	if sc.Participated && sc.Passed {
 		t.Fatal("failed replay must fail the scenario")
 	}
 
+	// shrunken evaluated denominator must fail
+	shortResults := map[string]*deep.PathResult{}
+	for i := 0; i < reconnectPerShard-1; i++ {
+		shortResults[fmt.Sprintf("rec:%d", i)] = passedPath()
+	}
+	sc = r.reconnectScenario(full, reconnectPerShard, shortResults)
+	if sc.Passed {
+		t.Fatal("evaluated < released must fail the scenario")
+	}
+
 	empty := map[string]*deep.PathResult{}
-	sc = r.reconnectScenario(2, empty)
+	sc = r.reconnectScenario(full, reconnectPerShard, empty)
 	if sc.Passed {
 		t.Fatal("released>0 with zero evaluated results must fail")
+	}
+
+	// missing raw id (ready_before_hold < selected) must fail even if the
+	// remaining clients pass
+	shortReady := pool.ReconnectHoldResult{Selected: reconnectPerShard, ReadyBeforeHold: reconnectPerShard - 1}
+	sc = r.reconnectScenario(shortReady, reconnectPerShard-1, shortResults)
+	if sc.Passed {
+		t.Fatal("missing raw resume state must fail the scenario")
 	}
 }
 

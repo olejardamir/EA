@@ -123,7 +123,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
     scenarios: [
       { name: "late-join", participated: true, passed: true, detail: "exact full history" },
       { name: "burst", participated: owner, passed: true, detail: owner ? "authoritative burst" : "owner-only" },
-      { name: "reconnect", participated: true, passed: true, detail: "all clients re-established" },
+      { name: "reconnect", participated: true, passed: true, detail: "all clients re-established", structured: { selected: 64, ready_before_hold: 64, missing_raw_id: 0, released: 64, evaluated: 64, passed: 64, failed: 0, missing_results: 0 } },
       { name: "restart-replacement", participated: true, passed: true, detail: owner ? "spare-probe exact range" : "failover-drill exact range", structured: restartStructured },
     ],
     ...overrides,
