@@ -69,5 +69,10 @@ set +e
 campaign_status=$?
 set -e
 
+mkdir -p "$POC_DIR/internal_docs/m3_evidence"
+if docker volume ls -q --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME" | grep -q .; then
+  docker run --rm -v "${COMPOSE_PROJECT_NAME}_global-evidence:/evidence" -v "$POC_DIR/internal_docs/m3_evidence:/host" alpine sh -c 'cp /evidence/campaign-result.json /host/campaign-result-100k-'"$SOURCE_COMMIT"'".json 2>/dev/null; cp /evidence/global-result-*.json /host/ 2>/dev/null; echo "evidence preserved to internal_docs/m3_evidence"'
+fi
+
 "${compose[@]}" down
 exit "$campaign_status"
