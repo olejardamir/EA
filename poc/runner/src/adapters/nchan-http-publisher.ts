@@ -48,6 +48,9 @@ export class NchanHttpPublisher implements EventPublisher {
         err.message.includes("abort") ||
         err.message.includes("timeout")
       )
+      // Always-on trace: an ambiguity is a run-level gate failure, so its
+      // channel and timestamp must be attributable in every log.
+      console.log(`PUBAMBIG ${JSON.stringify({ t: Date.now(), channel, kind: isTimeout ? "timeout" : "error", msg: err instanceof Error ? err.message : String(err) })}`)
       if (isTimeout) {
         this._stats.ambiguousFailures++
       } else {
