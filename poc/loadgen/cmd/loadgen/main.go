@@ -229,6 +229,10 @@ type shardRun struct {
 	// correctness snapshot. nil = surge never measured → validity failure.
 	surgeStats *surgeRunStats
 	surgeDelta *counterSnapshot
+
+	// R09: generator's own runtime health measurement for this run.
+	genMon     *dut.GeneratorMonitor
+	genRuntime *dut.GeneratorRuntimeEvidence
 }
 
 func (r *shardRun) reasonf(format string, args ...any) {
@@ -434,6 +438,9 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	} else {
 		r.nchanMetrics = nm
 	}
+	// ── R09: start the generator runtime monitor; it samples the generator
+	// container's own cgroup/runtime health until final-metrics ──
+	r.genMon = dut.StartGeneratorMonitor(ctx)
 	if cfg.publisherOwner && cfg.publisherURL != "" {
 		if werr := r.refreshHeads(ctx); werr != nil {
 			r.reasonf("publisher evidence unreachable: %v", werr)
@@ -612,6 +619,12 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	time.Sleep(2 * time.Second) // in-flight frame drain
 	samples := r.cl.StopSampling()
 	r.pool.Stop()
+
+	// ── R09: freeze generator runtime evidence and apply validity gates ──
+	if r.genMon != nil {
+		r.genRuntime = r.genMon.Stop()
+	}
+	r.applyGeneratorGates()
 	headAgreement := struct{ agreed, disagreed, unmatched int64 }{}
 	if err := r.refreshHeads(ctx); err == nil {
 		headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched =
@@ -1183,6 +1196,22 @@ func (r *shardRun) waitActive(baseline int64, timeout time.Duration) bool {
 	return r.pool.ActiveCurrent() >= floor
 }
 
+// applyGeneratorGates applies the frozen R09 generator validity rules: the
+// generator container's own CPU/throttle/OOM/scheduler-lag health must be
+// proven, or the run's evidence cannot be trusted (INCONCLUSIVE).
+func (r *shardRun) applyGeneratorGates() {
+	if r.genRuntime == nil {
+		r.reasonf("generator runtime evidence never collected")
+		return
+	}
+	r.genRuntime.SrcPortHeadroom = r.srcPort != nil && r.srcPort.HeadroomValid
+	if ok, reasons := r.genRuntime.Gates(); !ok {
+		for _, reason := range reasons {
+			r.reasonf("generator invalid: %s", reason)
+		}
+	}
+}
+
 // classifyShard applies the frozen local verdict rule: validity failures mean
 // the shard's evidence cannot be trusted (INCONCLUSIVE); local correctness,
 // scenario, or establishment failures are genuine DUT-facing rejections;
@@ -1376,6 +1405,13 @@ func (r *shardRun) assembleResult(
 		"sys_bytes":        ms.Sys,
 		"num_gc":           ms.NumGC,
 		"uptime_seconds":   time.Since(r.genStart).Seconds(),
+	}
+	if r.genRuntime != nil {
+		for k, v := range r.genRuntime.EvidenceMap() {
+			res.Resources.Generator[k] = v
+		}
+	} else {
+		r.reasonf("generator runtime evidence never collected")
 	}
 	res.Resources.Nchan = controlMetricsMap(r.nchanMetrics)
 	redisMap := map[string]any{}

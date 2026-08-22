@@ -68,6 +68,7 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 		nchanMetrics: &dut.ControlMetrics{},
 		surgeStats:   &surgeRunStats{},
 		surgeDelta:   &counterSnapshot{},
+		genRuntime:   &dut.GeneratorRuntimeEvidence{},
 	}
 	return r, p
 }
