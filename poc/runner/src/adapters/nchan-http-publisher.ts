@@ -27,7 +27,12 @@ export class NchanHttpPublisher implements EventPublisher {
           "X-Event-Source-Event": eventType,
         },
         body,
-        signal: AbortSignal.timeout(5000),
+        // Generous outcome-certainty window: a publish with no response inside
+      // this bound is AMBIGUOUS (outcome unknown). Observed DUT accept stalls
+      // during subscriber storms reach ~4-5s and DO resolve — aborting at 5s
+      // converted resolvable waits into false ambiguities. The contract
+      // freezes ambiguous_failures=0, not this client-side bound.
+      signal: AbortSignal.timeout(15000),
       })
       if (resp.ok) {
         this._stats.successes++
