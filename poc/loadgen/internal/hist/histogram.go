@@ -101,7 +101,7 @@ func (h *Histogram) Merge(other *Serialized) error {
 // Serialize emits the sparse lossless form (only non-zero buckets), matching
 // StreamingHistogram.serialize(): [[ms,count],...] ascending.
 func (h *Histogram) Serialize() Serialized {
-	out := Serialized{MaxMs: h.maxMs, TotalCount: h.total, OverflowCount: h.overflows}
+	out := Serialized{MaxMs: h.maxMs, TotalCount: h.total, OverflowCount: h.overflows, Buckets: []BucketPair{}}
 	for ms := 0; ms <= h.maxMs; ms++ {
 		if c := h.buckets[ms]; c > 0 {
 			out.Buckets = append(out.Buckets, BucketPair{int64(ms), int64(c)})

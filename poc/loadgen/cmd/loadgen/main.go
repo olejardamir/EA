@@ -563,6 +563,14 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return nil, fmt.Errorf("reconnect end barrier")
 	}
 
+	// ── slow-consumer (retired in v2.2.0 — dummy barrier for coordinator phase alignment) ──
+	if !r.barrier("slow-consumer", "start") {
+		return nil, fmt.Errorf("slow-consumer start barrier")
+	}
+	if !r.barrier("slow-consumer", "end") {
+		return nil, fmt.Errorf("slow-consumer end barrier")
+	}
+
 	// ── restart-replacement (partition-targeted drill) ──
 	if !r.barrier("restart-replacement", "start") {
 		return nil, fmt.Errorf("restart start barrier")
