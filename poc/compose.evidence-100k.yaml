@@ -257,7 +257,7 @@ services:
       net.ipv4.ip_local_port_range: "1024 65535"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    environment: &loadgen-env
+    environment: &runner-env
       NCHAN_PUB_URL: "http://host.docker.internal:8080"
       NCHAN_SUB_URL: "http://host.docker.internal:8081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18888"
@@ -320,7 +320,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *loadgen-env
+      <<: *runner-env
       NCHAN_PUB_URL: "http://host.docker.internal:18080"
       NCHAN_SUB_URL: "http://host.docker.internal:18081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:18889"
@@ -363,7 +363,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *loadgen-env
+      <<: *runner-env
       NCHAN_PUB_URL: "http://host.docker.internal:28080"
       NCHAN_SUB_URL: "http://host.docker.internal:28081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:28888"
@@ -406,7 +406,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      <<: *loadgen-env
+      <<: *runner-env
       NCHAN_PUB_URL: "http://host.docker.internal:38080"
       NCHAN_SUB_URL: "http://host.docker.internal:38081"
       NCHAN_CONTROL_URL: "http://host.docker.internal:38889"
