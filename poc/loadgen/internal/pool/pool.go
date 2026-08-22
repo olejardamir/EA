@@ -614,12 +614,14 @@ func observe(st *ClientState, seq uint64) (tracker.Kind, int64) {
 	}
 }
 
-// parseUint parses leading decimal digits (SSE id field) without allocation.
+// parseUint parses Nchan SSE id field without allocation. Nchan 1.3.8 ids
+// are "msec:counter" (e.g. "1787373030:0"); plain integers are also accepted
+// for test harnesses. For msec:counter we combine as msec*100000+counter so
+// sequential messages are strictly +1 even within the same millisecond.
 func parseUint(b []byte) (uint64, bool) {
 	if len(b) == 0 {
 		return 0, false
 	}
-	var v uint64
 	i := 0
 	for i < len(b) && b[i] == ' ' {
 		i++
@@ -627,18 +629,50 @@ func parseUint(b []byte) (uint64, bool) {
 	if i >= len(b) {
 		return 0, false
 	}
-	for ; i < len(b); i++ {
-		c := b[i]
-		if c < '0' || c > '9' {
-			return 0, false // Nchan msgids are plain integers; reject anything else
-		}
-		nv := v*10 + uint64(c-'0')
-		if nv < v {
+	var first uint64
+	var haveFirst bool
+	for ; i < len(b) && b[i] >= '0' && b[i] <= '9'; i++ {
+		nv := first*10 + uint64(b[i]-'0')
+		if nv < first {
 			return 0, false
 		}
-		v = nv
+		first = nv
+		haveFirst = true
 	}
-	return v, true
+	if !haveFirst {
+		return 0, false
+	}
+	if i == len(b) {
+		return first, true
+	}
+	if b[i] == ':' {
+		i++
+		var second uint64
+		var haveSecond bool
+		for ; i < len(b) && b[i] >= '0' && b[i] <= '9'; i++ {
+			nv := second*10 + uint64(b[i]-'0')
+			if nv < second {
+				return 0, false
+			}
+			second = nv
+			haveSecond = true
+		}
+		if !haveSecond {
+			return 0, false
+		}
+		for ; i < len(b) && b[i] == ' '; i++ {
+		}
+		if i != len(b) {
+			return 0, false
+		}
+		return first*100000 + second, true
+	}
+	for ; i < len(b) && b[i] == ' '; i++ {
+	}
+	if i == len(b) {
+		return first, true
+	}
+	return 0, false
 }
 
 // ── coordinated cohort operations ───────────────────────────────────────
@@ -823,8 +857,18 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 		if !ok {
 			return nil
 		}
-		received = append(received, seq)
-		if spec.ResumeID != "" && scratchLen > 0 {
+		collectSeq := seq
+		isHistoryProbe := strings.HasPrefix(spec.Key, "late_join:") || spec.Key == "spare_probe" || spec.Key == "failover_drill"
+		if isHistoryProbe && scratchLen > 0 {
+			if ev, err := deep.ValidateSchema(scratch[:scratchLen], spec.MatchID); err == nil {
+				collectSeq = uint64(ev.CanonicalSeq)
+				if collectSeq != seq && spec.ResumeID != "" {
+					p.Counters.AgreementViolations.Add(1)
+				}
+			} else {
+				p.Counters.SchemaViolations.Add(1)
+			}
+		} else if spec.ResumeID != "" && scratchLen > 0 {
 			if ev, err := deep.ValidateSchema(scratch[:scratchLen], spec.MatchID); err == nil {
 				if uint64(ev.CanonicalSeq) != seq {
 					p.Counters.AgreementViolations.Add(1)
@@ -833,9 +877,13 @@ func (p *Pool) RunProbe(ctx context.Context, spec ProbeSpec, timeout time.Durati
 				p.Counters.SchemaViolations.Add(1)
 			}
 		}
+		received = append(received, collectSeq)
 		scratch = scratch[:0]
 		scratchLen = 0
-		if seq >= spec.Target {
+		if collectSeq >= spec.Target {
+			return deep.EvaluateRequiredRange(spec.ResumeID, int64(spec.First), int64(spec.Target), received, time.Since(start).Milliseconds())
+		}
+		if !isHistoryProbe && seq >= spec.Target {
 			return deep.EvaluateRequiredRange(spec.ResumeID, int64(spec.First), int64(spec.Target), received, time.Since(start).Milliseconds())
 		}
 		return nil
