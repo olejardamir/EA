@@ -197,7 +197,7 @@ func (p *Pool) currentBase() string {
 	return p.subBase
 }
 
-func matchChannel(matchID string) string { return "match:" + matchID }
+func matchChannel(matchID string) string { return matchID }
 
 // Add registers one viewer. idx must be unique within the pool.
 func (p *Pool) Add(role Role, matchID string) error {
@@ -249,9 +249,9 @@ func (p *Pool) Stop() {
 
 func (v *viewer) urlFor(base string) string {
 	if v.st.Role == RoleLobby {
-		return strings.TrimSuffix(base, "/") + "/lobby"
+		return strings.TrimSuffix(base, "/") + "/sub/lobby"
 	}
-	return base + matchChannel(v.matchID)
+	return strings.TrimSuffix(base, "/") + "/sub/" + matchChannel(v.matchID)
 }
 
 // runLoop maintains one viewer connection until pool shutdown. Coordinated
