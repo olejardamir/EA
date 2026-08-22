@@ -742,7 +742,16 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if !r.barrier("restart-replacement", "start") {
 		return nil, fmt.Errorf("restart start barrier")
 	}
+	// Non-target partitions measure their observed failover window as the
+	// wall-clock span of the whole coordinated restart phase (barrier-to-
+	// scenario-return): the real interval during which the failover could
+	// affect them. The restart target measures its literal restart inside
+	// runFailoverDrill.
+	restartPhaseStart := time.Now()
 	restartScenario := r.runRestartScenario(ctx)
+	if r.cfg.shardID != r.cfg.restartTarget {
+		r.markRestartWindow(time.Since(restartPhaseStart).Milliseconds())
+	}
 	if !r.barrier("restart-replacement", "end") {
 		return nil, fmt.Errorf("restart end barrier")
 	}
@@ -1146,10 +1155,8 @@ func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioE
 	// Owner/bystander partitions measure their own restart-phase correctness
 	// window: any gap/duplicate/order violation observed while the target
 	// shard fails over is real evidence and must reach the top-level counters.
-	// The wall-clock duration of this window is mandatory measured timing
-	// evidence on EVERY shard (R10): the failover window is exactly what each
-	// non-target partition observes between entering and leaving the drill.
-	windowStart := time.Now()
+	// The wall-clock window itself is captured at the coordinated-phase level
+	// (see execute) so it spans the full observable failover interval.
 	before := takeSnapshot(r.pool)
 	var scenario coordinator.ScenarioEvidence
 	if r.cfg.publisherOwner {
@@ -1164,7 +1171,6 @@ func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioE
 		}
 	}
 	delta := takeSnapshot(r.pool).sub(before)
-	r.markRestartWindow(time.Since(windowStart).Milliseconds())
 	r.restartDelta = &delta
 	if scenario.Structured == nil {
 		scenario.Structured = map[string]any{}
