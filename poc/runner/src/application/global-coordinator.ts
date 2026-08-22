@@ -497,8 +497,44 @@ export class GlobalExperimentCoordinator {
         correctnessCounters[name] = (correctnessCounters[name] ?? 0) + value
       }
     }
-    for (const name of ["missing_sequences", "duplicates", "out_of_order", "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors", "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count", "state_violations", "canonical_payload_state_violations", "lobby_malformed", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations", "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects"]) {
+    for (const name of ["missing_sequences", "duplicates", "out_of_order", "missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors", "schema_validation_errors", "json_parse_errors", "invalid_timestamp_count", "state_violations", "canonical_payload_state_violations", "lobby_malformed", "reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations", "restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations", "restart_failover_connection_failures", "restart_failover_unexpected_disconnects", "surge_missing_sequences", "surge_duplicates", "surge_out_of_order", "surge_unexpected_disconnects"]) {
       if ((correctnessCounters[name] ?? 0) > 0) rejectReasons.push(`${name}=${correctnessCounters[name]}`)
+    }
+
+    // R03 cross-check: the measured restart window deltas in each shard's
+    // structured restart evidence must agree with that shard's top-level
+    // counters. Any disagreement means one of the two surfaces was
+    // fabricated — the measurement is invalid, not merely failing.
+    const restartCounterMap: Array<[string, string]> = [
+      ["gaps", "restart_failover_gaps"],
+      ["duplicates", "restart_failover_duplicates"],
+      ["order_violations", "restart_failover_order_violations"],
+      ["failed", "restart_failover_connection_failures"],
+      ["unexpected_disconnects", "restart_failover_unexpected_disconnects"],
+    ]
+    for (const result of shardResults) {
+      const rec = result.scenarios.find((s) => s.name === "restart-replacement")
+      if (!rec || !rec.structured || typeof rec.structured !== "object") {
+        validityReasons.push(`shard ${result.shard_id} restart evidence missing structured pool deltas`)
+        continue
+      }
+      const poolEvidence = (rec.structured as Record<string, unknown>)["pool"]
+      if (!poolEvidence || typeof poolEvidence !== "object") {
+        validityReasons.push(`shard ${result.shard_id} restart evidence missing structured pool deltas`)
+        continue
+      }
+      const poolRec = poolEvidence as Record<string, unknown>
+      for (const [structuredKey, counterKey] of restartCounterMap) {
+        const structuredValue = poolRec[structuredKey]
+        const topLevel = result.correctness_counters[counterKey]
+        if (typeof structuredValue !== "number" || typeof topLevel !== "number") {
+          validityReasons.push(`shard ${result.shard_id} restart evidence missing measured delta ${counterKey}`)
+          continue
+        }
+        if (structuredValue !== topLevel) {
+          validityReasons.push(`shard ${result.shard_id} restart ${counterKey} mismatch: top-level ${topLevel} != structured pool ${structuredValue}`)
+        }
+      }
     }
 
     const scenarioNames: ShardScenarioEvidence["name"][] = ["late-join", "burst", "reconnect", "restart-replacement"]

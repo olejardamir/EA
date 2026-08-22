@@ -221,6 +221,10 @@ type shardRun struct {
 	baselineShortfall bool
 	pubPublished      int64
 	genStart          time.Time
+	// measured correctness deltas across the restart/failover window (set by
+	// every shard: the target carries its drill window, bystanders their own
+	// phase window). nil = window never measured → validity failure.
+	restartDelta *counterSnapshot
 }
 
 func (r *shardRun) reasonf(format string, args ...any) {
@@ -716,12 +720,12 @@ func (r *shardRun) runLateJoinProbes(ctx context.Context) map[string]*deep.PathR
 				continue
 			}
 			spec := pool.ProbeSpec{
-				Key:     fmt.Sprintf("late_join:%s:round-%d", m, round),
-				URL:     r.cfg.subURL + "/history/" + m,
-				MatchID: m,
+				Key:      fmt.Sprintf("late_join:%s:round-%d", m, round),
+				URL:      r.cfg.subURL + "/history/" + m,
+				MatchID:  m,
 				ResumeID: "history",
-				First:   1,
-				Target:  uint64(head),
+				First:    1,
+				Target:   uint64(head),
 			}
 			res := r.pool.RunProbe(ctx, spec, lateJoinProbeTO)
 			out[spec.Key] = res
@@ -809,13 +813,18 @@ func (r *shardRun) reconnectScenario(hold pool.ReconnectHoldResult, released int
 // Last-Event-ID resume, and proves the post-restart history exact; bystanders
 // emit clean no-participation evidence.
 func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioEvidence {
-	switch {
-	case r.cfg.shardID == r.cfg.restartTarget:
+	if r.cfg.shardID == r.cfg.restartTarget {
 		return r.runFailoverDrill(ctx)
-	case r.cfg.publisherOwner:
-		return r.runSpareProbe(ctx)
-	default:
-		return coordinator.ScenarioEvidence{
+	}
+	// Owner/bystander partitions measure their own restart-phase correctness
+	// window: any gap/duplicate/order violation observed while the target
+	// shard fails over is real evidence and must reach the top-level counters.
+	before := takeSnapshot(r.pool)
+	var scenario coordinator.ScenarioEvidence
+	if r.cfg.publisherOwner {
+		scenario = r.runSpareProbe(ctx)
+	} else {
+		scenario = coordinator.ScenarioEvidence{
 			Name:         "restart-replacement",
 			Participated: false,
 			Passed:       true,
@@ -823,6 +832,19 @@ func (r *shardRun) runRestartScenario(ctx context.Context) coordinator.ScenarioE
 			Structured:   map[string]any{"paths": map[string]any{}},
 		}
 	}
+	delta := takeSnapshot(r.pool).sub(before)
+	r.restartDelta = &delta
+	if scenario.Structured == nil {
+		scenario.Structured = map[string]any{}
+	}
+	scenario.Structured["pool"] = map[string]any{
+		"failed":                 delta.failures,
+		"gaps":                   delta.missing,
+		"duplicates":             delta.duplicates,
+		"order_violations":       delta.outOfOrder,
+		"unexpected_disconnects": delta.unexpected,
+	}
+	return scenario
 }
 
 // restartIdentity binds restart-path evidence to the exact run (the
@@ -960,6 +982,7 @@ func (r *shardRun) runFailoverDrill(ctx context.Context) coordinator.ScenarioEvi
 		res.Passed, res.RecoveryMs, res.MissingRequired, head)
 
 	delta := takeSnapshot(r.pool).sub(before)
+	r.restartDelta = &delta
 	reestablished := r.pool.ActiveCurrent()
 	structured["paths"] = map[string]any{"failover_drill": res}
 	structured["restart_ms"] = restartMs
@@ -1034,6 +1057,7 @@ var gatedCorrectnessCounters = []string{
 	"reconnect_gaps", "reconnect_duplicates", "reconnect_order_violations",
 	"reconnect_missing_raw_id",
 	"restart_failover_gaps", "restart_failover_duplicates", "restart_failover_order_violations",
+	"restart_failover_connection_failures", "restart_failover_unexpected_disconnects",
 	"missing_transport_id", "missing_canonical_seq", "canonical_seq_parse_errors",
 	"json_parse_errors", "invalid_timestamp_count", "canonical_payload_state_violations",
 	"schema_validation_errors", "lobby_malformed",
@@ -1075,7 +1099,6 @@ func (r *shardRun) assembleResult(
 	r.valid.NginxWorkerCapacityValid = r.nchanMetrics != nil && len(r.valid.Reasons) == 0
 	r.valid.EnvironmentValid = r.redisInfo != nil && r.nchanMetrics != nil
 	r.valid.TimingValid = true
-	res.Validity = r.valid
 
 	// histograms: fan_out merges all deep-latency classes; goal/other split
 	// per assignment classes; late_join records catch-up ms per probe;
@@ -1113,36 +1136,49 @@ func (r *shardRun) assembleResult(
 		recDups += pr.Duplicates
 		recOOO += pr.OutOfOrder
 	}
+	if r.restartDelta == nil {
+		r.reasonf("restart correctness window never measured")
+	}
+	var restartGaps, restartDups, restartOOO, restartConnFail, restartUnexp float64
+	if r.restartDelta != nil {
+		restartGaps = float64(r.restartDelta.missing)
+		restartDups = float64(r.restartDelta.duplicates)
+		restartOOO = float64(r.restartDelta.outOfOrder)
+		restartConnFail = float64(r.restartDelta.failures)
+		restartUnexp = float64(r.restartDelta.unexpected)
+	}
 	res.CorrectnessCounters = map[string]float64{
-		"missing_sequences":                 float64(r.pool.Counters.MissingSequences.Load()),
-		"duplicates":                        float64(r.pool.Counters.Duplicates.Load()),
-		"out_of_order":                      float64(r.pool.Counters.OutOfOrder.Load()),
-		"reconnect_gaps":                    float64(recGaps),
-		"reconnect_duplicates":              float64(recDups),
-		"reconnect_order_violations":        float64(recOOO),
-		"reconnect_missing_raw_id":          float64(r.pool.Counters.ReconnectMissingRawID.Load()),
-		"restart_failover_gaps":             0,
-		"restart_failover_duplicates":       0,
-		"restart_failover_order_violations": 0,
-		"gap_events":                        float64(r.pool.Counters.GapEvents.Load()),
-		"connection_failures":               float64(r.pool.Counters.ConnectionFailures.Load()),
-		"unexpected_disconnects":            float64(r.pool.Counters.UnexpectedDisconnects.Load()),
-		"planned_disconnects":               float64(r.pool.Counters.PlannedDisconnects.Load()),
-		"schema_violations":                 float64(r.pool.Counters.SchemaViolations.Load()),
-		"schema_validation_errors":          float64(r.pool.Counters.SchemaViolations.Load()),
-		"json_parse_errors":                 float64(r.pool.Counters.JSONParseErrors.Load()),
-		"invalid_timestamp_count":           float64(r.pool.Counters.InvalidTimestampCount.Load()),
-		"state_violations":                  float64(r.pool.Counters.StateViolations.Load()),
-		"canonical_payload_state_violations": float64(r.pool.Counters.CanonicalStateViolations.Load()),
-		"agreement_violations":              float64(r.pool.Counters.AgreementViolations.Load()),
-		"state_agreement_violations":        float64(agreement.disagreed),
-		"transport_id_present":              float64(r.pool.Counters.TransportIDPresent.Load()),
-		"missing_transport_id":              float64(r.pool.Counters.MissingTransportID.Load()),
-		"missing_canonical_seq":             float64(r.pool.Counters.MissingCanonicalSeq.Load()),
-		"canonical_seq_parse_errors":        float64(r.pool.Counters.CanonicalParseErrors.Load()),
-		"deep_frames_validated":             float64(r.pool.Counters.DeepFramesValidated.Load()),
-		"frames_received":                   float64(r.pool.Counters.FramesReceived.Load()),
-		"lobby_malformed":                   float64(r.pool.Counters.LobbyMalformed.Load()),
+		"missing_sequences":                       float64(r.pool.Counters.MissingSequences.Load()),
+		"duplicates":                              float64(r.pool.Counters.Duplicates.Load()),
+		"out_of_order":                            float64(r.pool.Counters.OutOfOrder.Load()),
+		"reconnect_gaps":                          float64(recGaps),
+		"reconnect_duplicates":                    float64(recDups),
+		"reconnect_order_violations":              float64(recOOO),
+		"reconnect_missing_raw_id":                float64(r.pool.Counters.ReconnectMissingRawID.Load()),
+		"restart_failover_gaps":                   restartGaps,
+		"restart_failover_duplicates":             restartDups,
+		"restart_failover_order_violations":       restartOOO,
+		"restart_failover_connection_failures":    restartConnFail,
+		"restart_failover_unexpected_disconnects": restartUnexp,
+		"gap_events":                              float64(r.pool.Counters.GapEvents.Load()),
+		"connection_failures":                     float64(r.pool.Counters.ConnectionFailures.Load()),
+		"unexpected_disconnects":                  float64(r.pool.Counters.UnexpectedDisconnects.Load()),
+		"planned_disconnects":                     float64(r.pool.Counters.PlannedDisconnects.Load()),
+		"schema_violations":                       float64(r.pool.Counters.SchemaViolations.Load()),
+		"schema_validation_errors":                float64(r.pool.Counters.SchemaViolations.Load()),
+		"json_parse_errors":                       float64(r.pool.Counters.JSONParseErrors.Load()),
+		"invalid_timestamp_count":                 float64(r.pool.Counters.InvalidTimestampCount.Load()),
+		"state_violations":                        float64(r.pool.Counters.StateViolations.Load()),
+		"canonical_payload_state_violations":      float64(r.pool.Counters.CanonicalStateViolations.Load()),
+		"agreement_violations":                    float64(r.pool.Counters.AgreementViolations.Load()),
+		"state_agreement_violations":              float64(agreement.disagreed),
+		"transport_id_present":                    float64(r.pool.Counters.TransportIDPresent.Load()),
+		"missing_transport_id":                    float64(r.pool.Counters.MissingTransportID.Load()),
+		"missing_canonical_seq":                   float64(r.pool.Counters.MissingCanonicalSeq.Load()),
+		"canonical_seq_parse_errors":              float64(r.pool.Counters.CanonicalParseErrors.Load()),
+		"deep_frames_validated":                   float64(r.pool.Counters.DeepFramesValidated.Load()),
+		"frames_received":                         float64(r.pool.Counters.FramesReceived.Load()),
+		"lobby_malformed":                         float64(r.pool.Counters.LobbyMalformed.Load()),
 	}
 
 	// workload: only the authoritative publisher reports accepted workload.
@@ -1177,6 +1213,9 @@ func (r *shardRun) assembleResult(
 		res.Resources.Spare = controlMetricsMap(r.spareMetrics)
 	}
 
+	// validity snapshot taken after every reason is recorded so late
+	// evidence failures (e.g. unmeasured restart window) reach the wire.
+	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)
 	if res.Verdict != coordinator.VerdictAccept {
 		r.logf("shard verdict=%s validity_reasons=%v counters=%v scenarios=%v", res.Verdict, r.valid.Reasons, res.CorrectnessCounters, scenarios)

@@ -50,29 +50,29 @@ const (
 // Counters is the shard-global atomic aggregate (design doc §4: no locks on
 // the hot path — one atomic add per frame counter at most).
 type Counters struct {
-	FramesReceived             atomic.Int64
-	TransportIDPresent         atomic.Int64
-	MissingTransportID         atomic.Int64
-	MissingSequences           atomic.Int64
-	Duplicates                 atomic.Int64
-	OutOfOrder                 atomic.Int64
-	GapEvents                  atomic.Int64
-	ConnectionFailures         atomic.Int64
-	UnexpectedDisconnects      atomic.Int64
-	PlannedDisconnects         atomic.Int64
-	SchemaViolations           atomic.Int64
-	StateViolations            atomic.Int64
-	AgreementViolations        atomic.Int64 // deep: payload canonical_seq != sse id (deprecated, transport vs canonical separate)
-	DeepFramesValidated        atomic.Int64 // frames fully validated by the deep cohort
-	LobbyMalformed             atomic.Int64
-	ReconnectAttempts          atomic.Int64
-	ReconnectSucceeded         atomic.Int64
-	ReconnectMissingRawID      atomic.Int64 // held clients with no observed wire id
-	MissingCanonicalSeq        atomic.Int64
-	CanonicalParseErrors       atomic.Int64
-	JSONParseErrors            atomic.Int64
-	InvalidTimestampCount      atomic.Int64
-	CanonicalStateViolations   atomic.Int64
+	FramesReceived           atomic.Int64
+	TransportIDPresent       atomic.Int64
+	MissingTransportID       atomic.Int64
+	MissingSequences         atomic.Int64
+	Duplicates               atomic.Int64
+	OutOfOrder               atomic.Int64
+	GapEvents                atomic.Int64
+	ConnectionFailures       atomic.Int64
+	UnexpectedDisconnects    atomic.Int64
+	PlannedDisconnects       atomic.Int64
+	SchemaViolations         atomic.Int64
+	StateViolations          atomic.Int64
+	AgreementViolations      atomic.Int64 // deep: payload canonical_seq != sse id (deprecated, transport vs canonical separate)
+	DeepFramesValidated      atomic.Int64 // frames fully validated by the deep cohort
+	LobbyMalformed           atomic.Int64
+	ReconnectAttempts        atomic.Int64
+	ReconnectSucceeded       atomic.Int64
+	ReconnectMissingRawID    atomic.Int64 // held clients with no observed wire id
+	MissingCanonicalSeq      atomic.Int64
+	CanonicalParseErrors     atomic.Int64
+	JSONParseErrors          atomic.Int64
+	InvalidTimestampCount    atomic.Int64
+	CanonicalStateViolations atomic.Int64
 }
 
 // ClientState mirrors design doc §3.1 (~64 B, fixed, no arrays). Owned by the
@@ -117,16 +117,16 @@ type viewer struct {
 	cancelMu  sync.Mutex          // guards curCancel; makes hold-vs-connect race-free
 	curCancel *context.CancelFunc // cancels the in-flight connection attempt
 
-	mu             sync.Mutex // guards the orchestrator-side fields below
-	resumeID       string     // captured Last-Event-ID pending transport use ("": none)
-	recFirst       uint64     // frozen required-range lower bound (captured+1); 0 = none
-	recTarget      uint64     // frozen required-range upper bound (independent head)
-	capturedCanon  uint64     // canonical seq captured at hold time for range freeze
+	mu            sync.Mutex // guards the orchestrator-side fields below
+	resumeID      string     // captured Last-Event-ID pending transport use ("": none)
+	recFirst      uint64     // frozen required-range lower bound (captured+1); 0 = none
+	recTarget     uint64     // frozen required-range upper bound (independent head)
+	capturedCanon uint64     // canonical seq captured at hold time for range freeze
 
-	capMu   sync.Mutex // guards capture (viewer-goroutine writer, collector reader)
-	capture []uint64   // received sequences while capture window open
-	lastRawID string   // last SSE id string for Last-Event-ID resume
-	lastCanon uint64   // last canonical_seq extracted from payload (0 = none)
+	capMu     sync.Mutex // guards capture (viewer-goroutine writer, collector reader)
+	capture   []uint64   // received sequences while capture window open
+	lastRawID string     // last SSE id string for Last-Event-ID resume
+	lastCanon uint64     // last canonical_seq extracted from payload (0 = none)
 }
 
 // Pool owns every simulated viewer for one shard.
@@ -763,9 +763,9 @@ func (p *Pool) awaitOffline(pending func(*viewer) bool, timeout time.Duration) {
 // a REAL nonempty raw SSE id observed on wire (never synthesized from the
 // canonical application sequence).
 type ReconnectHoldResult struct {
-	Selected       int // frozen cohort size (= 64/shard)
+	Selected        int // frozen cohort size (= 64/shard)
 	ReadyBeforeHold int // clients with valid raw resume state at hold time
-	MissingRawID   int // clients without an observed wire id — cannot resume
+	MissingRawID    int // clients without an observed wire id — cannot resume
 }
 
 func (p *Pool) HoldReconnectCohort() ReconnectHoldResult {

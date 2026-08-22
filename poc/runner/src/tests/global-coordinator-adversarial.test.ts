@@ -108,6 +108,11 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       reconnect_gaps: 0,
       reconnect_duplicates: 0,
       reconnect_order_violations: 0,
+      restart_failover_gaps: 0,
+      restart_failover_duplicates: 0,
+      restart_failover_order_violations: 0,
+      restart_failover_connection_failures: 0,
+      restart_failover_unexpected_disconnects: 0,
     },
     workload: {
       events_published: owner ? 100 : 0,
@@ -191,6 +196,62 @@ describe("GlobalExperimentCoordinator adversarial", () => {
   reconnectInvalidationCase("treats reconnect structured evidence with a missing required field as invalidating", (rec) => { delete (rec.structured as Record<string, unknown>).selected })
   reconnectInvalidationCase("rejects ready_before_hold below 64", (rec) => { (rec.structured as Record<string, unknown>).ready_before_hold = 63 })
   reconnectInvalidationCase("rejects an evaluated denominator shrunken below released", (rec) => { (rec.structured as Record<string, unknown>).evaluated = 63; (rec.structured as Record<string, unknown>).passed = 63 })
+
+  // R03: measured restart-window deltas must agree between the top-level
+  // counters and the structured pool evidence on every shard.
+  function restartInvalidationCase(name: string, mutate: (owner: ShardExperimentResult, target: ShardExperimentResult) => void, expectedReason: string): void {
+    it(name, async () => {
+      const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
+      coordinator.register(registration(0)); coordinator.register(registration(1)); await completeBarriers(coordinator)
+      const owner = shardResult(0)
+      const target = shardResult(1)
+      mutate(owner, target)
+      coordinator.submitResult(owner)
+      coordinator.submitResult(target)
+      const result = coordinator.buildGlobalResult()
+      assert.equal(result.verdict, "INCONCLUSIVE")
+      assert.equal(result.global_direct_accept_eligible, false)
+      assert.ok(result.validity.reasons.some((reason) => reason.includes(expectedReason)), `expected "${expectedReason}" validity reason, got: ${JSON.stringify(result.validity.reasons)}`)
+    })
+  }
+
+  restartInvalidationCase(
+    "rejects a restart counter that disagrees with its structured pool delta",
+    (_owner, target) => {
+      const rec = target.scenarios.find((scenario) => scenario.name === "restart-replacement")!
+      ;((rec.structured as Record<string, any>).pool as Record<string, unknown>).gaps = 1
+    },
+    "restart restart_failover_gaps mismatch",
+  )
+  restartInvalidationCase(
+    "rejects a structured pool delta that disagrees with the top-level restart counter",
+    (_owner, target) => {
+      const rec = target.scenarios.find((scenario) => scenario.name === "restart-replacement")!
+      ;((rec.structured as Record<string, any>).pool as Record<string, unknown>).duplicates = 2
+    },
+    "restart restart_failover_duplicates mismatch",
+  )
+  restartInvalidationCase(
+    "rejects restart evidence without a structured pool block",
+    (_owner, target) => {
+      const rec = target.scenarios.find((scenario) => scenario.name === "restart-replacement")!
+      delete (rec.structured as Record<string, unknown>).pool
+    },
+    "restart evidence missing structured pool deltas",
+  )
+  restartInvalidationCase(
+    "rejects a restart-replacement scenario without structured evidence at all",
+    (_owner, target) => {
+      const rec = target.scenarios.find((scenario) => scenario.name === "restart-replacement")!
+      delete rec.structured
+    },
+    "restart evidence missing structured pool deltas",
+  )
+  restartInvalidationCase(
+    "rejects a missing mandatory restart delta counter",
+    (_owner, target) => { delete target.correctness_counters.restart_failover_unexpected_disconnects },
+    "restart evidence missing measured delta restart_failover_unexpected_disconnects",
+  )
 
   it("rejects out-of-range and non-integer shard IDs", () => {
     const coordinator = new GlobalExperimentCoordinator({ experimentRunId: "run-1", campaignId: "campaign-1", shardCount: 2, globalTarget: 100, seed: 42 })
@@ -357,7 +418,7 @@ describe("GlobalExperimentCoordinator adversarial", () => {
     await completeBarriers(coordinator)
     coordinator.submitResult(shardResult(0))
     coordinator.submitResult(shardResult(1, {
-      correctness_counters: { missing_sequences: 0, duplicates: 3, out_of_order: 0, reconnect_gaps: 0, reconnect_duplicates: 0, reconnect_order_violations: 0 },
+      correctness_counters: { missing_sequences: 0, duplicates: 3, out_of_order: 0, reconnect_gaps: 0, reconnect_duplicates: 0, reconnect_order_violations: 0, restart_failover_gaps: 0, restart_failover_duplicates: 0, restart_failover_order_violations: 0, restart_failover_connection_failures: 0, restart_failover_unexpected_disconnects: 0 },
     }))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "REJECT")

@@ -44,11 +44,22 @@ function identityFields(identity: RestartIdentity) {
   }
 }
 
+function cleanPool() {
+  return {
+    failed: 0,
+    gaps: 0,
+    duplicates: 0,
+    order_violations: 0,
+    unexpected_disconnects: 0,
+  }
+}
+
 // Publisher-owner role: spare-node probe is the owner's replacement evidence.
 export function validOwnerRestartStructuredEvidence(identity: RestartIdentity = {}) {
   return {
     ...identityFields(identity),
     paths: { spare_probe: exactPath("spare-9") },
+    pool: cleanPool(),
   }
 }
 
@@ -66,13 +77,14 @@ export function validTargetRestartStructuredEvidence(identity: RestartIdentity =
       order_violations: 0,
       planned_disconnects: 25_000,
       restart_ms: 4_200,
+      unexpected_disconnects: 0,
     },
   }
 }
 
 // Bystander role: explicit non-participation with no fabricated paths.
 export function bystanderRestartStructuredEvidence() {
-  return { paths: {} }
+  return { paths: {}, pool: cleanPool() }
 }
 
 // Back-compat alias: historical call sites mean the publisher-owner shape.

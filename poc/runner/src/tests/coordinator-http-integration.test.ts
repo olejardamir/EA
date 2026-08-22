@@ -152,6 +152,11 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       reconnect_gaps: 0,
       reconnect_duplicates: 0,
       reconnect_order_violations: 0,
+      restart_failover_gaps: 0,
+      restart_failover_duplicates: 0,
+      restart_failover_order_violations: 0,
+      restart_failover_connection_failures: 0,
+      restart_failover_unexpected_disconnects: 0,
     },
     workload: {
       events_published: owner ? 40 : 0,

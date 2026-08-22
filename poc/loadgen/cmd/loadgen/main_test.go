@@ -57,14 +57,14 @@ func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 	})
 	cl.ExperimentRunID = "run-test-0001"
 	r := &shardRun{
-		cfg:      cfg,
-		pool:     p,
-		pub:      publisher.New(""),
-		cl:       cl,
-		valid:    validValidity(),
-		genStart: time.Now(),
-		srcPort:  &dut.SourcePortEvidence{HeadroomValid: true},
-		redisInfo: &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
+		cfg:          cfg,
+		pool:         p,
+		pub:          publisher.New(""),
+		cl:           cl,
+		valid:        validValidity(),
+		genStart:     time.Now(),
+		srcPort:      &dut.SourcePortEvidence{HeadroomValid: true},
+		redisInfo:    &dut.RedisInfo{UsedBytes: 1024, PeakBytes: 2048, ConnectedClients: 8},
 		nchanMetrics: &dut.ControlMetrics{},
 	}
 	return r, p
@@ -278,9 +278,9 @@ func TestTakeSnapshotReadsPoolCounters(t *testing.T) {
 
 func TestClassifyShardRules(t *testing.T) {
 	tests := []struct {
-		name       string
-		mutate     func(*shardRun, map[string]float64, *[]coordinator.ScenarioEvidence)
-		want       coordinator.Verdict
+		name   string
+		mutate func(*shardRun, map[string]float64, *[]coordinator.ScenarioEvidence)
+		want   coordinator.Verdict
 	}{
 		{
 			name:   "all clean accepts",
@@ -396,6 +396,7 @@ func TestAssembleResultWireConformance(t *testing.T) {
 	r, p := testShardRun(testConfig(2))
 	defer p.Stop()
 	r.pubPublished = 12345
+	r.restartDelta = &counterSnapshot{}
 
 	res := r.assembleResult(nil, passingScenarios(),
 		map[string]*deep.PathResult{}, map[string]*deep.PathResult{},
@@ -505,6 +506,121 @@ func TestAssembleResultSpareResourcesOnRestartTargetOnly(t *testing.T) {
 		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
 	if res2.Resources.Spare != nil {
 		t.Fatal("bystander must not emit spare resources")
+	}
+}
+
+// ── R03: measured restart correctness windows ────────────────────────────────
+
+// A clean measured window must keep the shard ACCEPT and must surface all
+// five restart_failover_* counters as literal zero values.
+func TestRestartMeasuredZeroWindowAccepts(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if res.Verdict != coordinator.VerdictAccept {
+		t.Fatalf("clean measured restart window verdict = %s, want ACCEPT", res.Verdict)
+	}
+	for _, name := range []string{
+		"restart_failover_gaps", "restart_failover_duplicates",
+		"restart_failover_order_violations", "restart_failover_connection_failures",
+		"restart_failover_unexpected_disconnects",
+	} {
+		if v := res.CorrectnessCounters[name]; v != 0 {
+			t.Fatalf("counter %q = %v on clean window, want 0", name, v)
+		}
+	}
+}
+
+// One observed gap inside the restart window must reach the top-level
+// counter and force REJECT (valid measurement, real correctness failure).
+func TestRestartOneGapRejects(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{missing: 1}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if got := res.CorrectnessCounters["restart_failover_gaps"]; got != 1 {
+		t.Fatalf("restart_failover_gaps = %v, want 1", got)
+	}
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT", res.Verdict)
+	}
+}
+
+func TestRestartOneDuplicateRejects(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{duplicates: 1}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if got := res.CorrectnessCounters["restart_failover_duplicates"]; got != 1 {
+		t.Fatalf("restart_failover_duplicates = %v, want 1", got)
+	}
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT", res.Verdict)
+	}
+}
+
+func TestRestartOneOrderViolationRejects(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{outOfOrder: 1}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if got := res.CorrectnessCounters["restart_failover_order_violations"]; got != 1 {
+		t.Fatalf("restart_failover_order_violations = %v, want 1", got)
+	}
+	if res.Verdict != coordinator.VerdictReject {
+		t.Fatalf("verdict = %s, want REJECT", res.Verdict)
+	}
+}
+
+// An unmeasured window is a validity failure: INCONCLUSIVE with an explicit
+// reason, never a silent zero.
+func TestRestartUnmeasuredWindowInconclusive(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = nil // never measured
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	found := false
+	for _, reason := range res.Validity.Reasons {
+		if strings.Contains(reason, "restart correctness window never measured") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing unmeasured-window validity reason: %+v", res.Validity)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("unmeasured restart window must not ACCEPT")
+	}
+}
+
+// Connection failures / unexpected disconnects observed during the window
+// must be reported as their own counters, not folded into generic totals.
+func TestRestartConnectionFailuresAndDisconnectsSurfaced(t *testing.T) {
+	r, p := testShardRun(testConfig(0))
+	defer p.Stop()
+	r.restartDelta = &counterSnapshot{failures: 2, unexpected: 3}
+	res := r.assembleResult(nil, passingScenarios(), map[string]*deep.PathResult{},
+		map[string]*deep.PathResult{},
+		struct{ agreed, disagreed, unmatched int64 }{}, time.Now())
+	if got := res.CorrectnessCounters["restart_failover_connection_failures"]; got != 2 {
+		t.Fatalf("restart_failover_connection_failures = %v, want 2", got)
+	}
+	if got := res.CorrectnessCounters["restart_failover_unexpected_disconnects"]; got != 3 {
+		t.Fatalf("restart_failover_unexpected_disconnects = %v, want 3", got)
+	}
+	if res.Verdict == coordinator.VerdictAccept {
+		t.Fatal("connection failures in restart window must not ACCEPT")
 	}
 }
 
@@ -849,7 +965,7 @@ func TestWireConversionPreservesHistogramLayout(t *testing.T) {
 	h := hist.New(hist.DefaultMaxMs)
 	h.Record(10)
 	h.Record(20)
-	h.Record(-1) // negative → overflow
+	h.Record(-1)                    // negative → overflow
 	h.Record(hist.DefaultMaxMs + 1) // clamps into the max bucket
 	s := h.Serialize()
 	w := wire(s)
