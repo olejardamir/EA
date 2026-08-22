@@ -21,6 +21,9 @@ const BUSY_RETRY_MS = 2
 const STEADY_RATE_PER_SEC = 9
 const BURST_RATE_PER_SEC = 55
 
+// Publish round-trips at/above this many milliseconds are traced unconditionally.
+const SLOW_PUBLISH_LOG_MS = 500
+
 export interface MatchEventPublisherConfig {
   publisher: EventPublisher
   headTracker: MatchHeadTracker
@@ -200,6 +203,11 @@ export class MatchEventPublisher {
             const acceptMs = new Date(acceptanceTime).getTime()
             const schedulerLagMs = acceptMs - transmitMs
             this._schedulerLagSamples.push(schedulerLagMs)
+            if (schedulerLagMs >= SLOW_PUBLISH_LOG_MS) {
+              // Always-on slow-accept trace: correlates DUT-side publication
+              // stalls with the coordinated phase timeline in the run log.
+              console.log(`PUBSLOW ${JSON.stringify({ t: acceptMs, match: matchId, seq: candidate.seq, lag_ms: schedulerLagMs })}`)
+            }
             // §AS: Atomically commit candidate state only after Nchan acceptance
             state.seq = candidate.seq
             state.score = candidate.score
