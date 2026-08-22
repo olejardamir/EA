@@ -1607,6 +1607,8 @@ func (r *shardRun) applyPublisherGates() {
 	}
 	if totals.AmbiguousFails != 0 {
 		r.reasonf("publisher ambiguous failures %d != 0", totals.AmbiguousFails)
+		r.logf("publisher diagnostics: ambiguous=%d loop_lag_p95=%.1fms loop_lag_max=%.1fms publish_rtt_p95=%.1fms publish_rtt_max=%.1fms",
+			totals.AmbiguousFails, finalEv.LoopLagP95Ms, finalEv.LoopLagMaxMs, finalEv.SchedulerLagP95Ms, finalEv.SchedulerLagMaxMs)
 	}
 	if totals.PendingPeak > publisherPendingPeakMax {
 		r.reasonf("publisher pending peak %d > %d", totals.PendingPeak, publisherPendingPeakMax)
