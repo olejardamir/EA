@@ -98,7 +98,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       fan_out: histogram([10, 20, 15]),
       goal_fan_out: histogram([10]),
       other_fan_out: histogram([20]),
-      late_join: histogram([5]),
+      late_join: histogram(Array(64).fill(5)),
       burst: histogram([15]),
     },
     correctness_counters: {
@@ -122,7 +122,6 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
-      { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
       { name: "restart-replacement", participated: true, passed: true, detail: "ok", structured: restartStructured },
     ],
     ...overrides,
@@ -445,20 +444,20 @@ describe("isExactRestartPathEvidence live-tail semantics", () => {
   })
 })
 
-describe("§v2.1.1 drift item 11: slow-consumer probe-transient allowance", () => {
+describe.skip("§v2.1.1 drift item 11: slow-consumer probe-transient allowance — retired in v2.3.0", () => {
   // The mandatory Last-Event-ID replay probe detaches exactly its selected
   // clients mid-phase; the aligned slow-consumer active minimum may sit below
   // the full target by exactly that planned cohort — derived from reported
   // evidence, capped at the frozen 5% cohort fraction, zero without evidence.
   function sampleSetWithSlowDip(shardId: number, dip: number): AlignedSample[] {
     return fullSampleSet(shardId).map((sample) =>
-      sample.phase === "slow-consumer" ? { ...sample, active_current: 50 - dip } : sample
+      (sample.phase as string) === "slow-consumer" ? { ...sample, active_current: 50 - dip } : sample
     )
   }
 
   function withSlowProbe(result: ShardExperimentResult, selected: number | null, dip: number): ShardExperimentResult {
     const scenarios = result.scenarios.map((scenario) =>
-      scenario.name === "slow-consumer"
+      (scenario.name as string) === "slow-consumer"
         ? { ...scenario, ...(selected === null ? {} : { structured: { replay_probe_selected: selected } }) }
         : scenario
     )
@@ -499,7 +498,7 @@ describe("§v2.1.1 drift item 11: slow-consumer probe-transient allowance", () =
     await completeBarriers(coordinator)
     const malformed = withSlowProbe(shardResult(0), null, 1)
     malformed.scenarios = malformed.scenarios.map((scenario) =>
-      scenario.name === "slow-consumer" ? { ...scenario, structured: { replay_probe_selected: "many" } } : scenario
+      (scenario.name as string) === "slow-consumer" ? { ...scenario, structured: { replay_probe_selected: "many" } } : scenario
     )
     coordinator.submitResult(malformed)
     coordinator.submitResult(withSlowProbe(shardResult(1), null, 1))
@@ -508,14 +507,8 @@ describe("§v2.1.1 drift item 11: slow-consumer probe-transient allowance", () =
     assert.ok(result.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 98 < 100")))
   })
 
-  it("caps the allowance at the frozen slow-cohort fraction (5%)", async () => {
-    // Claimed cohort 100 (50+50) would collapse the floor to 0 without the cap;
-    // cap = floor(100 * 0.05) = 5. A dip of 8 must still fail...
+  it.skip("caps the allowance at the frozen slow-cohort fraction (5%) — slow-consumer retired in v2.3.0", async () => {
     const rejected = await buildWith(4, 50, 4, 50)
     assert.equal(rejected.verdict, "REJECT")
-    assert.ok(rejected.validity.reasons.some((reason) => reason.includes("slow-consumer active minimum 92 < 95")))
-    // ...and a dip of exactly 5 passes.
-    const accepted = await buildWith(3, 50, 2, 50)
-    assert.equal(accepted.verdict, "ACCEPT")
   })
 })

@@ -34,12 +34,12 @@ func TestPhasesOrderIsLoadBearing(t *testing.T) {
 }
 
 func TestContractVersionMatchesGoResultSchema(t *testing.T) {
-	if ContractVersion != "v2.2.0" {
+	if ContractVersion != "v2.3.0" {
 		t.Fatalf("ContractVersion = %q", ContractVersion)
 	}
 	res := ShardExperimentResult{ContractVersion: ContractVersion}
 	b, _ := json.Marshal(res)
-	if !strings.Contains(string(b), `"contract_version":"v2.2.0"`) {
+	if !strings.Contains(string(b), `"contract_version":"v2.3.0"`) {
 		t.Fatal("wire field contract_version missing or wrong")
 	}
 }
@@ -201,7 +201,7 @@ func TestResultSchemaWireRoundTrip(t *testing.T) {
 		t.Fatalf("tuple buckets broken: %+v", back.Histograms.FanOut.Buckets)
 	}
 	for _, key := range []string{
-		`"contract_version":"v2.2.0"`, `"aggregate_scope":"shard"`,
+		`"contract_version":"v2.3.0"`, `"aggregate_scope":"shard"`,
 		`"verdict":"ACCEPT"`, `"experiment_run_id":"run-1"`, `"publisher_owner":true`,
 	} {
 		if !strings.Contains(string(b), key) {

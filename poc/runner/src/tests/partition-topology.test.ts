@@ -111,7 +111,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       fan_out: histogram([10, 20, 15]),
       goal_fan_out: histogram([10]),
       other_fan_out: histogram([20]),
-      late_join: histogram([100]),
+      late_join: histogram(Array(64).fill(100)),
       burst: histogram([15]),
     },
     correctness_counters: {
@@ -136,7 +136,6 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       { name: "late-join", participated: true, passed: true, detail: "own partition history" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
-      { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
       {
         name: "restart-replacement",
         participated: !((shardId !== 0) && !target),
@@ -199,7 +198,7 @@ describe("partition topology (§v2.1.0)", () => {
     assert.equal(result.publisher_owner_shard_id, 0)
     assert.equal(result.resources.nchan_partitions.length, SHARDS)
     assert.deepEqual(result.resources.nchan_partitions.map((partition) => partition.partition_id), [0, 1, 2])
-    assert.equal(result.histograms.late_join.count, SHARDS)
+    assert.equal(result.histograms.late_join.count, SHARDS * 64)
     assert.deepEqual(result.resources.nchan_spare, { memory_peak_run_bytes: 800, oom_kill_events: 0 })
   })
 
@@ -211,18 +210,18 @@ describe("partition topology (§v2.1.0)", () => {
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "INCONCLUSIVE")
-    assert.ok(result.validity.reasons.some((reason) => reason.includes("global late-join sample count 2; expected exactly 3")))
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("global late-join sample count 128; expected exactly 192")))
   })
 
   it("invalidates over-sampled late-join history beyond one sample per partition", async () => {
     const coordinator = setupCoordinator()
     await completeBarriers(coordinator)
-    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([10]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram([100, 100]), burst: histogram([15]) } }))
+    coordinator.submitResult(shardResult(0, { histograms: { fan_out: histogram([10]), goal_fan_out: histogram([]), other_fan_out: histogram([]), late_join: histogram(Array(65).fill(100)), burst: histogram([15]) } }))
     coordinator.submitResult(shardResult(1))
     coordinator.submitResult(shardResult(2))
     const result = coordinator.buildGlobalResult()
     assert.equal(result.verdict, "INCONCLUSIVE")
-    assert.ok(result.validity.reasons.some((reason) => reason.includes("global late-join sample count 4; expected exactly 3")))
+    assert.ok(result.validity.reasons.some((reason) => reason.includes("global late-join sample count 193; expected exactly 192")))
   })
 
   it("invalidates when any partition lacks numeric OOM-kill evidence", async () => {
@@ -265,7 +264,6 @@ describe("partition topology (§v2.1.0)", () => {
         { name: "late-join", participated: true, passed: true, detail: "ok" },
         { name: "burst", participated: true, passed: true, detail: "ok" },
         { name: "reconnect", participated: true, passed: true, detail: "ok" },
-        { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
         { name: "restart-replacement", participated: true, passed: true, detail: "claimed", structured: { paths: {} } },
       ],
     }))

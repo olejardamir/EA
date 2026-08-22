@@ -44,7 +44,7 @@ function campaignShard(index: number, shardId: number): ShardExperimentResult {
       fan_out: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[10, 1], [15, 1], [30, 1]] },
       goal_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] },
       other_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[15, 1]] },
-      late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] },
+      late_join: { max_ms: 30_000, total_count: 64, overflow_count: 0, buckets: [[20, 64]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[30, 1]] },
     },
     correctness_counters: {},
@@ -88,7 +88,7 @@ function globalRun(index: number, overrides: Partial<GlobalExperimentResult> = {
       fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 3, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[10, 3]] } },
       goal_fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
       other_fan_out: { p50_ms: 10, p95_ms: 10, p99_ms: 10, max_ms: 10, count: 1, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[10, 1]] } },
-      late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[20, 4]] } },
+      late_join: { p50_ms: 20, p95_ms: 20, p99_ms: 20, max_ms: 20, count: 256, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 256, overflow_count: 0, buckets: [[20, 256]] } },
       burst: { p50_ms: 30, p95_ms: 30, p99_ms: 30, max_ms: 30, count: 4, overflow_count: 0, distribution: { max_ms: 30_000, total_count: 4, overflow_count: 0, buckets: [[30, 4]] } },
     },
     correctness_counters: { missing_sequences: 0 },
@@ -164,7 +164,7 @@ describe("repeated simultaneous-global campaign aggregation", () => {
     const result = aggregateGlobalCampaign([globalRun(0), globalRun(1)])
     assert.equal(result.validity.valid, false)
     assert.equal(result.verdict, "INCONCLUSIVE")
-    assert.match(result.validity.reasons.join(" "), /outside frozen 3\.\.8 range/)
+    assert.match(result.validity.reasons.join(" "), /outside frozen exactly 3/)
   })
 
   it("rejects a global run governed by a stale contract", () => {

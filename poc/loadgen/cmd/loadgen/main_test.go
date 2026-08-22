@@ -660,28 +660,32 @@ func TestLateJoinScenarioAccounting(t *testing.T) {
 	defer p.Stop()
 
 	allPass := map[string]*deep.PathResult{}
-	for _, m := range matchIDs() {
-		allPass["late_join:"+m] = &deep.PathResult{Passed: true}
+	for round := 0; round < 8; round++ {
+		for _, m := range matchIDs() {
+			allPass[fmt.Sprintf("late_join:%s:round-%d", m, round)] = &deep.PathResult{Passed: true}
+		}
 	}
 	sc := r.lateJoinScenario(allPass)
 	if !sc.Participated || !sc.Passed {
 		t.Fatalf("full-pass late-join must pass: %+v", sc)
 	}
-	if sc.Structured["probes_run"] != matchCount {
+	if sc.Structured["probes_run"] != matchCount*8 {
 		t.Fatalf("probes_run = %v", sc.Structured["probes_run"])
 	}
 
 	oneFails := map[string]*deep.PathResult{}
-	for _, m := range matchIDs() {
-		oneFails["late_join:"+m] = &deep.PathResult{Passed: true}
+	for round := 0; round < 8; round++ {
+		for _, m := range matchIDs() {
+			oneFails[fmt.Sprintf("late_join:%s:round-%d", m, round)] = &deep.PathResult{Passed: true}
+		}
 	}
-	oneFails["late_join:match-003"].Passed = false
+	oneFails["late_join:match-003:round-0"].Passed = false
 	sc = r.lateJoinScenario(oneFails)
 	if sc.Passed {
 		t.Fatal("any failing probe must fail the scenario")
 	}
 
-	tooFew := map[string]*deep.PathResult{"late_join:match-001": passedPath()}
+	tooFew := map[string]*deep.PathResult{"late_join:match-001:round-0": passedPath()}
 	sc = r.lateJoinScenario(tooFew)
 	if sc.Passed {
 		t.Fatal("incomplete probe set must fail the scenario")

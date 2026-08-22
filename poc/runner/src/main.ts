@@ -15,7 +15,6 @@ import { SteadyScenario } from "./scenarios/steady.js"
 import { LateJoinScenario } from "./scenarios/late-join.js"
 import { BurstScenario } from "./scenarios/burst.js"
 import { ReconnectScenario } from "./scenarios/reconnect.js"
-import { SlowConsumerScenario } from "./scenarios/slow-consumer.js"
 import { ConnectionSurgeScenario } from "./scenarios/connection-surge.js"
 import { NchanRestartScenario, type RestartScenarioRole } from "./scenarios/nchan-restart.js"
 import { aggregateWorkerMetrics, classifyResult } from "./application/result-classifier.js"
@@ -501,22 +500,7 @@ async function main(): Promise<void> {
     ctx.phaseSnapshots.push({ phase: "reconnect", eventsPublished: reconnectSnap.eventsPublished, byMatch: reconnectSnap.byMatch, durationMs: reconnectDuration, matchPublished: reconnectSnap.matchPublished, lobbyPublished: reconnectSnap.lobbyPublished, matchAttempts: reconnectSnap.matchAttempts, lobbyAttempts: reconnectSnap.lobbyAttempts })
     await phaseBarrier("reconnect", "end")
 
-    // Phase 9: Slow consumer / backpressure at frozen concurrency
-    await phaseBarrier("slow-consumer", "start")
-    metrics.beginPhase("slow-consumer")
-    const slowConsumerStart = ctx.clock.now()
-    ctx._activePopulationStart = pool.size
-    const slowConsumer = new SlowConsumerScenario(pool)
-    const slowResult = await slowConsumer.execute(ctx)
-    const slowConsumerDuration = ctx.clock.now() - slowConsumerStart
-    metrics.endPhase()
-    log(`  ${slowResult.passed ? "PASS" : "FAIL"} ${slowResult.name}: ${slowResult.detail}`)
-    // §4.6: Record phase snapshot with actual duration
-    const slowSnap = publisher.snapshotAndReset()
-    ctx.phaseSnapshots.push({ phase: "slow-consumer", eventsPublished: slowSnap.eventsPublished, byMatch: slowSnap.byMatch, durationMs: slowConsumerDuration, matchPublished: slowSnap.matchPublished, lobbyPublished: slowSnap.lobbyPublished, matchAttempts: slowSnap.matchAttempts, lobbyAttempts: slowSnap.lobbyAttempts })
-    await phaseBarrier("slow-consumer", "end")
-
-    // Phase 10: Nchan restart — §v2.1.0 partition-targeted drill.
+    // Phase 9: Nchan restart — §v2.1.0 partition-targeted drill.
     // owner (publisher-owner shard): spare-node cross-node probe.
     // target (restartTargetShard): literal partition restart + planned pool failover.
     // bystander: records non-participation with no fabricated paths.
@@ -668,10 +652,6 @@ async function main(): Promise<void> {
     const totalSubscribers = MATCH_IDS.reduce((sum, id) => sum + pool.getSubscriberCount(id), 0) + pool.getSubscriberCount("lobby")
     log(`§V viewer-concentration: lobby=${aggregated.lobby_subscribers}, ${matchViewerCounts.join(", ")}, total=${totalSubscribers}`)
 
-    // §4.7: Wire slow-consumer metrics from scenario
-    aggregated.slow_consumer_metrics = slowConsumer.slowMetrics
-    aggregated.non_slow_p95_degradation_pct = slowConsumer.slowMetrics?.healthy_degradation_pct ?? 0
-
     // Parse nchan restart result
     aggregated.nchan_restart_history_replay_correct = nchanResult.passed && !nchanResult.detail.includes("skipped")
     aggregated.nchan_restart_missing_sequences = Object.values(ctx._restartReplay ?? {})
@@ -725,11 +705,6 @@ async function main(): Promise<void> {
       aggregated.burst_active_start = ctx._burstActivePopulation.start
       aggregated.burst_active_peak = ctx._burstActivePopulation.peak
       aggregated.burst_active_end = ctx._burstActivePopulation.end
-    }
-    if (ctx._slowConsumerActivePopulation) {
-      aggregated.slow_consumer_active_start = ctx._slowConsumerActivePopulation.start
-      aggregated.slow_consumer_active_peak = ctx._slowConsumerActivePopulation.peak
-      aggregated.slow_consumer_active_end = ctx._slowConsumerActivePopulation.end
     }
     if (ctx._restartActivePopulation) {
       aggregated.restart_active_start = ctx._restartActivePopulation.start
@@ -917,7 +892,6 @@ async function main(): Promise<void> {
             detail: reconnectResult.detail,
             structured: { clients: ctx._reconnectPerClient ?? [] },
           },
-          { name: "slow-consumer", participated: true, passed: slowResult.passed, detail: slowResult.detail, structured: slowResult.structured },
           {
             name: "restart-replacement",
             participated: restartRole !== "bystander",

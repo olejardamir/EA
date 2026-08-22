@@ -332,7 +332,11 @@ func main() {
 	if cfg.spareSubURL != "" {
 		p.SetSpare(cfg.spareSubURL)
 	}
-	if err := buildPopulation(p, cfg.localTarget); err != nil {
+	baselineTarget := cfg.localTarget
+	if cfg.globalTarget == 100000 {
+		baselineTarget = cfg.localTarget - cfg.surgeLocal
+	}
+	if err := buildPopulation(p, baselineTarget); err != nil {
 		logf("population error: %v", err)
 		cl.Abort(err.Error())
 		os.Exit(3)
@@ -391,7 +395,11 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if !r.barrier("preflight", "start") {
 		return nil, fmt.Errorf("preflight start barrier")
 	}
-	sp, err := dut.BuildSourcePortEvidence(cfg.localTarget + cfg.surgeLocal)
+	maxTarget := cfg.localTarget
+	if cfg.globalTarget != 100000 {
+		maxTarget = cfg.localTarget + cfg.surgeLocal
+	}
+	sp, err := dut.BuildSourcePortEvidence(maxTarget)
 	if err != nil {
 		r.reasonf("source-port evidence: %v", err)
 	} else {
@@ -403,7 +411,7 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if hErr := dut.HealthCheck(ctx, cfg.pubURL); hErr != nil {
 		r.reasonf("partition healthcheck: %v", hErr)
 	}
-	if pf, pfErr := dut.PreflightPartition(ctx, cfg.controlURL, cfg.localTarget+cfg.surgeLocal); pfErr != nil {
+	if pf, pfErr := dut.PreflightPartition(ctx, cfg.controlURL, maxTarget); pfErr != nil {
 		r.reasonf("partition preflight: %v", pfErr)
 	} else if !pf.Sufficient {
 		r.reasonf("partition capacity insufficient for %d", cfg.localTarget+cfg.surgeLocal)
@@ -450,12 +458,16 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 		return r.pool.ActiveCurrent(), r.pool.AttemptedTotal(), r.pool.EstablishedTotal(),
 			r.pool.Counters.ConnectionFailures.Load()
 	})
-	if !waitEstablished(r.pool, cfg.localTarget, time.Duration(cfg.warmupSeconds)*time.Second) {
+	baselineTarget2 := cfg.localTarget
+	if cfg.globalTarget == 100000 {
+		baselineTarget2 = cfg.localTarget - cfg.surgeLocal
+	}
+	if !waitEstablished(r.pool, baselineTarget2, time.Duration(cfg.warmupSeconds)*time.Second) {
 		r.baselineShortfall = true
 		r.logf("baseline establishment shortfall: active=%d target=%d",
 			r.pool.ActiveCurrent(), cfg.localTarget)
 	}
-	r.logf("baseline established active=%d", r.pool.ActiveCurrent())
+	r.logf("baseline established active=%d (target %d)", r.pool.ActiveCurrent(), baselineTarget2)
 	if !r.barrier("warmup", "end") {
 		return nil, fmt.Errorf("warmup end barrier")
 	}
@@ -475,7 +487,9 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	if !r.barrier("surge", "start") {
 		return nil, fmt.Errorf("surge start barrier")
 	}
+	r.pool.BeginSurgeWindow()
 	r.rampSurge(ctx, cfg.surgeLocal, time.Duration(cfg.surgeSeconds)*time.Second)
+	r.pool.EndSurgeWindow()
 	if !r.barrier("surge", "end") {
 		return nil, fmt.Errorf("surge end barrier")
 	}

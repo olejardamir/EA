@@ -100,7 +100,7 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       fan_out: histogram([10 + shardId * 10, 20 + shardId * 10, 30 + shardId * 10]),
       goal_fan_out: histogram([10 + shardId * 10]),
       other_fan_out: histogram([20 + shardId * 10]),
-      late_join: histogram([100]),
+      late_join: histogram(Array(64).fill(100)),
       burst: histogram([30 + shardId * 10]),
     },
     correctness_counters: {
@@ -124,7 +124,6 @@ function shardResult(shardId: number, overrides: Partial<ShardExperimentResult> 
       { name: "late-join", participated: true, passed: true, detail: "exact full history" },
       { name: "burst", participated: owner, passed: true, detail: owner ? "authoritative burst" : "owner-only" },
       { name: "reconnect", participated: true, passed: true, detail: "all clients re-established" },
-      { name: "slow-consumer", participated: true, passed: true, detail: "independent offered/consumed proof" },
       { name: "restart-replacement", participated: true, passed: true, detail: owner ? "spare-probe exact range" : "failover-drill exact range", structured: restartStructured },
     ],
     ...overrides,

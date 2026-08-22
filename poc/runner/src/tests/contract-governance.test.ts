@@ -17,6 +17,7 @@ const POC_V206 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_
 const POC_V210 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_0.md")
 const POC_V211 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_1_1.md")
 const POC_V220 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_2_0.md")
+const POC_V230 = path.join(REPO_ROOT, "poc/internal_docs/EXPERIMENT_CONTRACT_v2_3_0.md")
 const MILESTONES = path.join(REPO_ROOT, "internal_docs/LIVE_MATCH_CENTRE_ASSIGNMENT_MILESTONES (3).md")
 
 function read(p: string): string {
@@ -25,21 +26,21 @@ function read(p: string): string {
 
 describe("contract governance", () => {
   it("exactly one canonical active contract exists and predecessors are historical", () => {
-    // §v2.2.0: the lightweight-generator contract is the canonical active
-    // freeze. v2.1.1 is preserved BYTE-UNCHANGED as historical evidence; the
-    // canonical producer must point at v2.2.0 and never back at a superseded
+    // §v2.3.0: the full-population integrity contract is the canonical active
+    // freeze. v2.2.0 and v2.1.1 are preserved BYTE-UNCHANGED as historical evidence; the
+    // canonical producer must point at v2.3.0 and never back at a superseded
     // predecessor.
-    const active = read(POC_V220)
+    const active = read(POC_V230)
     assert.match(active, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
-    assert.match(active, /Contract Version: v2\.2\.0/)
-    assert.match(active, /Supersedes: v2\.1\.1/)
+    assert.match(active, /Contract Version: v2\.3\.0/)
+    assert.match(active, /Supersedes: v2\.2\.0/)
     // Predecessor preserved historically: original version marker intact.
     const pocV211 = read(POC_V211)
     assert.match(pocV211, /Status: \*\*FROZEN — CANONICAL ACTIVE\*\*/)
     assert.match(pocV211, /Contract Version: v2\.1\.1/)
     // The canonical producer points at exactly the active document.
     const producer = read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts"))
-    assert.match(producer, /ACTIVE_CONTRACT_FILENAME = "EXPERIMENT_CONTRACT_v2_2_0\.md"/)
+    assert.match(producer, /ACTIVE_CONTRACT_FILENAME = "EXPERIMENT_CONTRACT_v2_3_0\.md"/)
     assert.doesNotMatch(producer, /EXPERIMENT_CONTRACT_v2_1_1\.md/)
     const pocV210 = read(POC_V210)
     assert.match(pocV210, /Contract Version: v2\.1\.0/)
@@ -129,7 +130,7 @@ describe("contract governance", () => {
       assert.match(source, /ACTIVE_CONTRACT_VERSION/, `${relative} must use the canonical producer`)
       assert.doesNotMatch(source, /contract_version:\s*["']v2\.0\./, `${relative} must not hard-code a version`)
     }
-    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.2\.0"/)
+    assert.match(read(path.join(REPO_ROOT, "poc/runner/src/domain/active-contract.ts")), /ACTIVE_CONTRACT_VERSION = "v2\.3\.0"/)
   })
 
   it("freezes the partitioned fan-out acceptance-recovery semantics in v2.1.0", () => {

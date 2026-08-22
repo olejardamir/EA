@@ -144,8 +144,10 @@ type Pool struct {
 	goalHist  hist.Histogram
 	otherHist hist.Histogram
 	burstHist hist.Histogram
+	surgeHist hist.Histogram
 	histMu    sync.Mutex // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
+	surgeOpen atomic.Bool
 
 	pathMu      sync.Mutex
 	PathResults map[string]*deep.PathResult
@@ -186,6 +188,7 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		goalHist:    *hist.New(hist.DefaultMaxMs),
 		otherHist:   *hist.New(hist.DefaultMaxMs),
 		burstHist:   *hist.New(hist.DefaultMaxMs),
+		surgeHist:   *hist.New(hist.DefaultMaxMs),
 	}
 }
 
@@ -393,7 +396,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 		line, rerr := br.ReadSlice('\n')
 		if rerr != nil {
 			if errors.Is(rerr, bufio.ErrBufferFull) {
-				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+				if v.matchID != "" {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -403,7 +406,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 				continue
 			}
 			if len(line) > 0 {
-				if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+				if v.matchID != "" {
 					if dataPrefix(line) {
 						p.appendScratch(v, line[5:])
 					}
@@ -421,7 +424,7 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 			p.Counters.TransportIDPresent.Add(1)
 		case hasPrefixColon(trimmed, "data"):
 			payload := trimmed[5:]
-			if v.st.Role == RoleDeep || v.st.Role == RoleReconnect || v.capturing.Load() {
+			if v.matchID != "" {
 				p.appendScratch(v, payload)
 			}
 		default:
@@ -490,11 +493,9 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 	p.Counters.TransportIDPresent.Add(1)
 
 	var canonSeq uint64
-	var haveCanon bool
 	if v.scratchLen > 0 {
 		if c, ok := extractCanonSeq(v.scratch[:v.scratchLen]); ok {
 			canonSeq = c
-			haveCanon = true
 			v.mu.Lock()
 			v.lastCanon = c
 			v.mu.Unlock()
@@ -575,7 +576,9 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 			lat = 0
 		}
 		p.histMu.Lock()
-		if p.burstOpen.Load() {
+		if p.surgeOpen.Load() {
+			p.surgeHist.Record(lat)
+		} else if p.burstOpen.Load() {
 			p.burstHist.Record(lat)
 		} else if ev.EventType == "goal" {
 			p.goalHist.Record(lat)
@@ -585,6 +588,12 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		p.histMu.Unlock()
 	}
 }
+
+func (p *Pool) BeginSurgeWindow() { p.surgeOpen.Store(true) }
+
+func (p *Pool) EndSurgeWindow() { p.surgeOpen.Store(false) }
+
+func (p *Pool) SurgeHistogram() hist.Serialized { return p.surgeHist.Serialize() }
 
 // BeginBurstWindow routes deep-cohort latency samples into the burst histogram
 // until EndBurstWindow is called (burst-phase isolation, coordinator gate).

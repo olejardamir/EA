@@ -142,7 +142,7 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       fan_out: { max_ms: 30_000, total_count: 3, overflow_count: 0, buckets: [[20, 1], [40, 1], [25, 1]] },
       goal_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[20, 1]] },
       other_fan_out: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[40, 1]] },
-      late_join: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[5, 1]] },
+      late_join: { max_ms: 30_000, total_count: 64, overflow_count: 0, buckets: [[5, 64]] },
       burst: { max_ms: 30_000, total_count: 1, overflow_count: 0, buckets: [[25, 1]] },
     },
     correctness_counters: {
@@ -166,7 +166,6 @@ function shardResult(shardId: number, runId: string): ShardExperimentResult {
       { name: "late-join", participated: true, passed: true, detail: "ok" },
       { name: "burst", participated: owner, passed: true, detail: "ok" },
       { name: "reconnect", participated: true, passed: true, detail: "ok" },
-      { name: "slow-consumer", participated: true, passed: true, detail: "ok" },
       {
         name: "restart-replacement",
         participated: true,
