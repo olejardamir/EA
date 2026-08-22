@@ -410,6 +410,10 @@ export class GlobalExperimentCoordinator {
   get resultCount(): number { return this.results.size }
   get aborted(): string | null { return this.abortedReason }
   get complete(): boolean { return this.results.size === this.shardCount }
+  get finalBarrierComplete(): boolean {
+    const state = this.barriers.get("final-metrics:end")
+    return !!state && state.arrivals.size === this.shardCount && state.releasedAtMs !== null
+  }
 
   buildGlobalResult(): GlobalExperimentResult {
     const shardResults = [...this.results.values()].sort((a, b) => a.shard_id - b.shard_id)

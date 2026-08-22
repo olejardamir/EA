@@ -273,6 +273,7 @@ services:
       SURGE_SECONDS: "120"
       COOLDOWN_SECONDS: "10"
       RUN_PROFILE: "evidence"
+      RUN_MODE: "coordinated-shard"
       COORDINATOR_URL: "http://coordinator:3000"
       CAMPAIGN_ID: "${CAMPAIGN_ID:?Use ./run-evidence-100k.sh}"
       GLOBAL_TARGET: "100000"

@@ -45,7 +45,7 @@ describe("Milestone 2 infrastructure contract", () => {
     assert.equal((compose.match(/RUN_MODE: "coordinated-shard"/g) ?? []).length, 1)
     assert.equal((compose.match(/PUBLISHER_OWNER: "true"/g) ?? []).length, 1)
     assert.equal((compose.match(/PUBLISHER_OWNER: "false"/g) ?? []).length, 3)
-    for (const shard of ["runner-shard-0", "runner-shard-1", "runner-shard-2", "runner-shard-3"]) {
+    for (const shard of ["loadgen-shard-0", "loadgen-shard-1", "loadgen-shard-2", "loadgen-shard-3"]) {
       assert.match(compose, new RegExp(`^  ${shard}:$`, "m"))
     }
     // §v2.1.0: four partition nodes plus one spare replacement node.
