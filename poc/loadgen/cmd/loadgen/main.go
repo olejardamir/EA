@@ -1537,7 +1537,11 @@ func (r *shardRun) timingEvidence() map[string]any {
 			entry["end_ms"] = end.UnixMilli()
 		}
 		if hasStart && hasEnd {
-			entry["duration_ms"] = end.Sub(start).Milliseconds()
+			// Derive the duration from the same truncated millisecond values
+			// that go on the wire — the coordinator's R10 cross-check requires
+			// end_ms - start_ms == duration_ms exactly, and computing from the
+			// exact clocks can disagree by 1ms after independent truncation.
+			entry["duration_ms"] = end.UnixMilli() - start.UnixMilli()
 		}
 		out[phase] = entry
 	}
