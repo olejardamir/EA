@@ -6,7 +6,7 @@
 
 ---
 
-## 1. M3 terminal classification (unchanged, honest)
+## 1. M3 result (hard-stopped without ACCEPT)
 
 The local experiment (POC) under the frozen contract `EXPERIMENT_CONTRACT_v2.3.0.md` reached its best validated result **F1**:
 
@@ -19,7 +19,7 @@ The local experiment (POC) under the frozen contract `EXPERIMENT_CONTRACT_v2.3.0
 | fan_out p95 | **2757 ms** | <=500 ms | **missed (5.5×)** |
 | burst p95 | **3707 ms** | <=1000 ms | **missed (3.7×)** |
 
-**Terminal M3 verdict = INCONCLUSIVE at frozen v2.3.0.** The 100k scale/correctness behavior succeeded; the frozen fan-out/burst latency gates did not. F1 config: Redis `io-threads-do-reads yes`, 4 partitions × 4 workers, source `ffe3ae6`. Root cause isolated to a fundamental Nchan per-worker fan-out throughput wall (Redis PUBSUB main-thread contention in the local delivery hot path); config-only tuning of the frozen topology was exhausted. No seeds-42/43/44 campaign was run at this failing config (it would only re-confirm INCONCLUSIVE).
+**M3 was hard-stopped without ACCEPT at frozen v2.3.0.** The 100k scale/correctness behavior succeeded; the frozen fan-out/burst latency gates did not. F1 config: Redis `io-threads-do-reads yes`, 4 partitions × 4 workers, source `ffe3ae6`. Root cause isolated to a fundamental Nchan per-worker fan-out throughput wall (Redis PUBSUB main-thread contention in the local delivery hot path); config-only tuning of the frozen topology was exhausted. The terminal three-run v2.3.0 qualification campaign (seeds 42/43/44) was not run because the configuration was already demonstrably outside the gates.
 
 ---
 
@@ -66,10 +66,12 @@ The POC did **not** validate the final replacement topology. Its remaining laten
     match -> partition (deterministic hash); HOT match = dedicated sub-shard
         |
         v
- NLB (routing / target groups per partition)
-        |
-        v
- CloudFront (private origins for SSE; cached static Next.js at edge)
+  CloudFront (path behaviors route each match to its partition's private NLB origin;
+              cached static Next.js at edge)
+         |
+         v
+  private NLB per partition (L4 target groups + health checks; NLB does NOT do
+  HTTP path/match-ID routing — that is performed by the CloudFront behavior)
         |
         v
  Next.js App Router client (EventSource, idempotent canonical_seq reducer)
@@ -82,7 +84,7 @@ The POC did **not** validate the final replacement topology. Its remaining laten
 ### 3.2 Horizontal partitioning & hot-match sub-sharding
 - Matches are mapped to partitions by deterministic hash. Each partition owns a bounded connection/capacity envelope (planned **~8k concurrent SSE per node**, c7g.xlarge — deliberately conservative; the M3 failing node itself served 25k across 4 partitions, so 8k is a planning margin, not a universal per-node claim).
 - A hot match (e.g., 40k+ viewers) is assigned a **dedicated partition / sub-shard** (its own node(s)), so one popular match cannot recreate the single-node fan-out bottleneck that limited the fixed local topology.
-- Partitions run behind NLB target groups; deterministic routing sends a match's subscribers to the owning node.
+- Partitions are fronted by a private NLB target group each; **CloudFront path behaviors (or a thin routing edge)** map each match to its partition and send subscribers to that partition's private NLB origin. NLB itself is L4 — it does not route by HTTP path or match-ID; the match→partition mapping is realized by CloudFront behaviors (or by the client being handed the partition's origin URL).
 
 ### 3.3 History-to-live handoff (no gap, no double-apply)
 Client connects, fetches snapshot/history up to cursor `N`, then subscribes live for `seq > N`. The browser reducer is idempotent by `canonical_seq`. This closes late-join, reload, and phone-wake races in one rule.
@@ -107,8 +109,8 @@ N+1 baseline; warm/pre-scale peak fleet before known kickoffs; NLB connection dr
 
 ### 3.10 Failure domains
 - One delivery node loss: partition fails over to spare/peer; history rebuilt from DynamoDB.
-- One AZ loss: stateless delivery nodes + DynamoDB Multi-AZ + Redis per-partition replicas survive within region.
-- Valkey is co-located per partition (no single shared store bottleneck); it is a cache of canonical truth, never the only copy.
+- One AZ loss: DynamoDB Multi-AZ holds canonical truth; delivery partitions run across >=2 AZs, and a lost partition node is replaced by an ASG node in another AZ that reseeds hot history from DynamoDB. No separate Valkey replica is required because DynamoDB is canonical — a cache rebuild does not lose events.
+- Valkey is co-located per partition (primary only, no separate replica) and is a cache of canonical truth, never the only copy; on node loss the replacement reseeds from DynamoDB.
 
 ---
 
@@ -129,6 +131,6 @@ N+1 baseline; warm/pre-scale peak fleet before known kickoffs; NLB connection dr
 
 ## 5. M4 completion gate — self-check
 
-All items in prompt §24 pass: terminal M3 remains INCONCLUSIVE; F1 represented exactly (100k, correctness 0, fan_out 2757 ms, burst 3707 ms); historical q5/v2.0.5 and v2.0.6 preserved as provenance; fixed 4-partition capacity assumption withdrawn; one final architecture selected; hot-match sub-sharding solved; no local M3 result treated as universal per-node capacity; no shared Redis/routing singleton as unexplained bottleneck; failure domains explicit (>=2 AZ); crowd invariance addressed without false benchmark claims; N+1/rolling-deploy capacity explicit; warm/pre-scaled kickoff explicit; autoscaling does not pretend to migrate SSE connections; geography explicit; no new untested custom risk ignored; provider semantics honest; architecture source-of-truth updated.
+All items in prompt §24 pass: M3 was hard-stopped without ACCEPT (not "INCONCLUSIVE terminal verdict"); F1 represented exactly (100k, correctness 0, fan_out 2757 ms, burst 3707 ms); historical q5/v2.0.5 and v2.0.6 preserved as provenance; fixed 4-partition capacity assumption withdrawn; one final architecture selected; hot-match sub-sharding solved; no local M3 result treated as universal per-node capacity; routing realized by CloudFront path behaviors to per-partition private NLB (NLB is L4, not an HTTP path router); no shared Redis/routing singleton as unexplained bottleneck; failure domains explicit (>=2 AZ, DynamoDB canonical so no Valkey replica needed); crowd invariance addressed without false benchmark claims; N+1/rolling-deploy capacity explicit; warm/pre-scaled kickoff explicit; autoscaling does not pretend to migrate SSE connections; geography explicit; Lambda is VPC-attached to reach the private delivery NLB; no new untested custom risk ignored; provider semantics honest; architecture source-of-truth updated.
 
 **M4 COMPLETION: 100%**

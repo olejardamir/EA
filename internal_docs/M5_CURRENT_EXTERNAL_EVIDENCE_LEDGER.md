@@ -21,7 +21,7 @@
 - Source: aws.amazon.com/sqs/pricing.
 
 ## D. Lambda (canonical processor)
-- $0.20 per million requests; ARM/Graviton 20% cheaper; 400k GB-s free tier. Not VPC-required (publishes to private NLB via VPC interface endpoint or internal network).
+- $0.20 per million requests; ARM/Graviton 20% cheaper; 400k GB-s free tier. The canonical-processor Lambda is **VPC-attached** (runs in the VPC with ENIs) so it can publish to the private delivery NLB; a VPC interface endpoint (PrivateLink) is the alternative if the function is kept outside the VPC. A Lambda reaching private resources inside a VPC must have VPC configuration.
 - Source: aws.amazon.com/lambda/pricing, costgoat Lambda guide (2026-08).
 
 ## E. DynamoDB (canonical truth)

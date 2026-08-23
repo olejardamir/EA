@@ -4,7 +4,7 @@ Reviewer-facing entry point. The full design rationale is in `proposal.md`; curr
 
 ## Run the POC
 
-**Prerequisite:** a container runtime (Docker) only. No AWS account, no credentials, no host Node/npm, no Redis/Nginx install. The launcher uses Bash and Python 3 only to compute deterministic routing env — they are not part of the application runtime.
+**Prerequisite:** Docker and a Bash shell. No AWS account, no credentials, no host Node/npm, no host Python (routing env is precomputed and committed), no host Git (source commit is committed in `poc/SOURCE_COMMIT`), no Redis/Nginx install. The launcher is a Bash script; all application components run in containers.
 
 **Working directory:** repository root, then `cd poc`.
 
@@ -20,7 +20,7 @@ This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, a
 
 **Important — what this command is and is not:** it exercises the **post-terminal revised topology** (match-aware 16-shard horizontal fan-out). It is NOT a re-run of the frozen v2.3.0 / F1 configuration, and it is a **non-qualifying** development probe, not the terminal measured campaign. The terminal M3 F1 numbers are historical measured evidence and are not reproduced by this command.
 
-**Terminal M3 result (submitted measured evidence, not re-run here):** the frozen v2.3.0 campaign measured F1 at config source `ffe3ae6` (Redis `io-threads-do-reads`, 4 partitions × 4 workers): 100,000 active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms, terminal classification **INCONCLUSIVE**. The earlier `run-evidence-100k.sh` (seeds 42–44) is the **historical v2.2.0 campaign and is non-terminal provenance only** — it is not the terminal M3 claim.
+**Terminal M3 result (submitted measured evidence, not re-run here):** the frozen v2.3.0 campaign measured F1 at config source `ffe3ae6` (Redis `io-threads-do-reads`, 4 partitions × 4 workers): 100,000 active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. **M3 was hard-stopped without ACCEPT**: the single best-validated F1 probe met the scale/correctness behavior but missed the frozen latency gates, and the terminal three-run v2.3.0 qualification campaign (seeds 42/43/44) was not run because the configuration was already demonstrably outside the gates. The earlier `run-evidence-100k.sh` (seeds 42–44) is the **historical v2.2.0 campaign and is non-terminal provenance only** — it is not the terminal M3 claim.
 
 **Expected runtime:** not independently re-measured in this submission; a fresh run's duration depends on host CPU/RAM/FD capacity and chosen scale (4k smoke vs 100k). The frozen v2.3.0 campaign profile (~20 min/seed, 3 seeds) is recorded in `poc/internal_docs/m3_evidence/`, not regenerated here.
 
@@ -37,13 +37,13 @@ A fresh heavy run is **environment-dependent**: on weaker hardware it may classi
 
 **Method.** A simulated event stream drives 8 matches with a 60k baseline surging +40k to 100k within 120s, at ~10 events/s steady and ~50/s burst, across four coordinated load-generator shards. Scenarios cover correctness, reconnect, late-join, and restart replacement under the frozen v2.3.0 contract (fan_out p95 ≤500ms, burst p95 ≤1000ms, late-join ≤2000ms, zero missing/duplicate/out-of-order).
 
-**Result.** The local experiment reached 100,000 active viewers with zero correctness violations; surge and late-join were clean. It measured fan_out p95 2757ms and burst p95 3707ms, missing the frozen latency gates. The terminal M3 classification is **INCONCLUSIVE**. The limit was isolated to Nchan per-worker fan-out throughput (Redis PUBSUB contention); config-only tuning was exhausted, so no further qualifying campaign was run at that config.
+**Result.** The local experiment reached 100,000 active viewers with zero correctness violations; surge and late-join were clean. It measured fan_out p95 2757ms and burst p95 3707ms, missing the frozen latency gates. **M3 was hard-stopped without ACCEPT** — the single best-validated F1 probe met scale/correctness but missed the frozen gates, and the terminal three-run v2.3.0 campaign (seeds 42/43/44) was not run because the config was already demonstrably outside the gates. The limit was isolated to Nchan per-worker fan-out throughput (Redis PUBSUB contention); config-only tuning was exhausted.
 
 **Proposal impact.** The POC removes the fixed-capacity assumption. Production uses horizontally bounded fan-out replicas with match/hot-match sharding, resource-aware autoscaling, pre-scaled kickoff capacity, and N+1 headroom. The replacement topology was not itself benchmark-validated by the POC.
 
 ## Material limitations
 
-M3 terminal classification was INCONCLUSIVE; 100k scale/correctness succeeded but the frozen latency acceptance did not. F1 was measured on specific local hardware/containers; absolute fan-out capacity is hardware/deployment dependent. The replacement production topology was not benchmark-validated by M3. Real provider semantics, real AWS/geographic/browser end-to-end latency, and actual production spend are not measured. A fresh reviewer run may classify differently on different hardware.
+M3 was hard-stopped without ACCEPT; 100k scale/correctness succeeded but the frozen latency acceptance did not, and the terminal three-run v2.3.0 campaign was not run. F1 was measured on specific local hardware/containers; absolute fan-out capacity is hardware/deployment dependent. The replacement production topology was not benchmark-validated by M3. Real provider semantics, real AWS/geographic/browser end-to-end latency, and actual production spend are not measured. A fresh reviewer run may classify differently on different hardware.
 
 ## AI process
 

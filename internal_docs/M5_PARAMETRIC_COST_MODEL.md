@@ -94,6 +94,8 @@ Base P=16 covers 100k + N+1 + hot-match expansion + one-node drain.
 | Route53/ACM/misc | — | 5 |
 | **TOTAL** | | **≈ 2,318** |
 
+> Valkey is modeled as **16 primary nodes (one per partition)**. HA does **not** use a separate Valkey replica fleet: DynamoDB holds canonical truth, so on node/AZ loss an ASG replacement reseeds hot history from DynamoDB with no event loss. This is why the ledger charges 16 nodes, not 32, and the ~23% margin is computed against that consistent baseline.
+
 ---
 
 ## 7. Cost conclusion
@@ -131,7 +133,7 @@ Local M3 measured only the delivery portion and missed the frozen gates; product
 | VPC / subnets / IGW | yes | standard |
 | NAT Gateway | optional | VPC gateway endpoints cover S3/DynamoDB free; NAT only for outbound $33 |
 | Route53 / ACM | yes | negligible |
-| Cross-AZ transfer | yes | $0.01/GB (partition-local Valkey replica) |
+| Cross-AZ transfer | yes | $0.01/GB (DynamoDB reseed of hot history into a replacement node) |
 | CloudWatch | yes | $80 observability |
 | Backups (Valkey snapshots) | yes | $0.085/GiB-mo, small |
 

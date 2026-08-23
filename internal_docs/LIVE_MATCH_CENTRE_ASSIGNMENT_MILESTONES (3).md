@@ -431,7 +431,7 @@ The result can be reproduced and classified without changing the acceptance crit
 
 **Status: DONE (2026-08-23)**
 
-**Terminal M3 truth:** INCONCLUSIVE at frozen `EXPERIMENT_CONTRACT_v2_3_0.md`; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. Fixed 4-partition topology latency gates missed; config-only tuning exhausted.
+**Terminal M3 truth:** hard-stopped without ACCEPT at frozen `EXPERIMENT_CONTRACT_v2_3_0.md`; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. Fixed 4-partition topology latency gates missed; config-only tuning exhausted; terminal three-run campaign not run.
 
 ## Goal
 
@@ -501,7 +501,7 @@ Write `proposal.md` (final architecture only, ≤1500 prose words, full assignme
 ## Done
 
 - `proposal.md` — 100-vs-100k crowd invariance, provider-ingress assumption explicit, schema/accepted-event failure handling, honest 2s/5s budget, production SLO observability, coverage of all assignment questions.
-- `README.md` — run command (`poc/run-evidence-100k.sh`), ≤300-word writeup, explicit limitations, AI disclosure.
+- `README.md` — run command (`poc/run-arch-revision-probe.sh`), ≤300-word writeup, explicit limitations, AI disclosure.
 
 ## Completion gate
 
@@ -537,7 +537,7 @@ Every claim carries an explicit evidence level; the never-validated partitioned 
 
 # Milestone 5 — Close the Proposal Evidence and Cost Model
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-23)**
 
 ## Goal
 
@@ -637,7 +637,7 @@ unresolved external assumption
 
 # Milestone 6 — Write Final `proposal.md`
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-23)**
 
 ## Goal
 
@@ -720,7 +720,7 @@ no conflict with README or POC
 
 # Milestone 7 — Write Final `README.md`
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-23)**
 
 ## Goal
 
@@ -1063,7 +1063,7 @@ M1  Freeze POC contract for Nchan + Redis + SSE        DONE
      |
 M2  Build smallest runnable POC                         DONE — 100% (gap closure per v5a)
      |
-M3  Run POC and produce measured result                 DONE — 100% (terminal verdict INCONCLUSIVE at frozen v2.3.0; F1 = 100k active, correctness 0, fan_out 2757ms, burst 3707ms)
+M3  Run POC and produce measured result                 DONE — 100% (hard-stopped without ACCEPT at frozen v2.3.0; F1 = 100k active, correctness 0, fan_out 2757ms, burst 3707ms; terminal three-run campaign not run)
      |
 M4  Reconcile result with architecture                  DONE — 100% (fixed 4-partition capacity assumption withdrawn; horizontally partitioned production architecture selected — see M4_FINAL_ARCHITECTURE.md)
      |     \

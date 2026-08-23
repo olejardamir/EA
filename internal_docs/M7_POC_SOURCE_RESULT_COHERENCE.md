@@ -24,7 +24,7 @@ No claim is promoted across these levels without an explicit label.
 **Proved (measured, frozen v2.3.0, F1):**
 - 100,000 concurrent SSE viewers can be held with **zero** missing/duplicate/out-of-order events.
 - Surge (+40k in 120 s) and late-join (1–31 ms recovery) behave correctly.
-- The fixed-capacity assumption **fails** the frozen latency gates (fan_out 2757 ms vs ≤500; burst 3707 ms vs ≤1000) → terminal **INCONCLUSIVE**.
+- The fixed-capacity assumption **fails** the frozen latency gates (fan_out 2757 ms vs ≤500; burst 3707 ms vs ≤1000); **M3 was hard-stopped without ACCEPT** — the single best-validated F1 probe met scale/correctness but missed the gates, and the terminal three-run v2.3.0 campaign (seeds 42/43/44) was not run.
 
 **Did NOT prove (must not be implied):**
 - That any production topology meets the latency gates — the replacement **horizontally partitioned** design was **never benchmark-validated by M3**. It is supported by current service facts, explicit quotas, conservative assumptions, cost analysis, and required pre-launch production load testing only.
@@ -60,7 +60,7 @@ The following production-design elements are **planning/inference only** and are
 
 ## 6. Coverage of prompt §27 (M7) gates
 
-- [x] M3 terminal result (INCONCLUSIVE, F1 exact) stated without distortion.
+- [x] M3 result stated without distortion: hard-stopped without ACCEPT (not a terminal INCONCLUSIVE verdict); F1 represented exactly (100k, correctness 0, fan_out 2757 ms, burst 3707 ms); terminal three-run campaign not run.
 - [x] POC-measured vs production-claimed distinction maintained throughout.
 - [x] Never-validated topology explicitly labeled.
 - [x] Evidence-level taxonomy applied (no silent promotion).

@@ -1,6 +1,6 @@
 # Live Match Centre — Final Minimum Defensible Architecture
 
-> **SUPERSEDED (2026-08-23).** This document described the earlier one-primary-derived simplification. The terminal M3 result (INCONCLUSIVE at frozen v2.3.0; F1 = 100k active, correctness 0, fan_out 2757 ms, burst 3707 ms) falsified the fixed-capacity assumption. The **current** production architecture is the horizontally partitioned design in `internal_docs/M4_FINAL_ARCHITECTURE.md`. Selected M4 architecture is costed WITHIN $3k/month in `internal_docs/M5_*.md`. This file is preserved for provenance only.
+> **SUPERSEDED (2026-08-23).** This document described the earlier one-primary-derived simplification. **M3 was hard-stopped without ACCEPT** at frozen v2.3.0 (F1 = 100k active, correctness 0, fan_out 2757 ms, burst 3707 ms — the single best-validated probe met scale/correctness but missed the frozen latency gates; the terminal three-run campaign was not run); this falsified the fixed-capacity assumption. The **current** production architecture is the horizontally partitioned design in `internal_docs/M4_FINAL_ARCHITECTURE.md`. Selected M4 architecture is costed WITHIN $3k/month in `internal_docs/M5_*.md`. This file is preserved for provenance only.
 
 **Date:** 2026-08-19  
 **Status:** FINAL SIMPLIFICATION PASS COMPLETE (historical)  
