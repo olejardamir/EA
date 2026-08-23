@@ -276,15 +276,30 @@ func (v *viewer) urlFor(base string) string {
 // connection attempt, so held viewers generate zero failure accounting.
 func (p *Pool) runLoop(v *viewer) {
 	defer p.wg.Done()
+	// Deterministic reconnect stagger: releasing a drained pool wakes every
+	// viewer goroutine at once, and 12k simultaneous dials spike the
+	// generator container past its frozen CPU-health envelope exactly during
+	// the failover window. Spreading repairs by viewer ID (~2s span) is
+	// semantically neutral — the settle gate bounds total recovery time.
+	wasHeldOffline := false
 	for p.ctx.Err() == nil {
 		if v.reconnectQ.Load() {
 			// held offline awaiting the coordinated release
+			wasHeldOffline = true
 			select {
 			case <-p.ctx.Done():
 				return
 			case <-time.After(20 * time.Millisecond):
 			}
 			continue
+		}
+		if wasHeldOffline {
+			wasHeldOffline = false
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-time.After(time.Duration(v.st.ID%100) * 20 * time.Millisecond):
+			}
 		}
 		v.mu.Lock()
 		resume := v.resumeID
