@@ -139,6 +139,22 @@ const server = http.createServer((req, res) => {
   } else if (req.method === "GET" && req.url === "/healthcheck") {
     res.writeHead(200, { "Content-Type": "text/plain" })
     res.end("ok")
+  } else if (req.method === "GET" && req.url === "/workers/cpu") {
+    // TEMP-DIAG: per-worker CPU ticks (utime+stime from /proc) so the loadgen
+    // can watch for frozen or pegged nginx workers on the stall timeline.
+    const { workers } = findNginxProcesses()
+    const out = []
+    for (const pid of workers) {
+      try {
+        const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8")
+        const close = stat.lastIndexOf(")")
+        const f = stat.slice(close + 2).split(/\s+/)
+        // fields after state: utime is index 11, stime index 12
+        out.push({ pid, utime: parseInt(f[11], 10), stime: parseInt(f[12], 10), state: f[0] })
+      } catch {}
+    }
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ ts: Date.now(), workers: out }))
   } else if (req.method === "GET" && req.url === "/metrics") {
     const metrics = getNchanMetrics()
     res.writeHead(200, { "Content-Type": "application/json" })

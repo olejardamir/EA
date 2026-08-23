@@ -583,7 +583,7 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	// TEMP-DIAG: per-second nchan stub-status + worker-CPU sampling for the
 	// burst/drill stall investigation; exported as generator evidence.
 	if port := subscriberPort(cfg.subURL); port != "" {
-		r.nchanMon = newNchanStatusMonitor(port)
+		r.nchanMon = newNchanStatusMonitor(port, cfg.controlURL)
 		go r.nchanMon.Run(ctx)
 	}
 

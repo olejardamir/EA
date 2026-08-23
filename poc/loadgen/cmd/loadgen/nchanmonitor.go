@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,19 +48,21 @@ type nchanStatusSample struct {
 
 // nchanStatusMonitor samples one partition every second into a bounded ring.
 type nchanStatusMonitor struct {
-	port   string
-	client *http.Client
-	mu     sync.Mutex
-	ring   []nchanStatusSample
-	idx    int
-	full   bool
+	port       string
+	controlURL string
+	client     *http.Client
+	mu         sync.Mutex
+	ring       []nchanStatusSample
+	idx        int
+	full       bool
 }
 
 const nchanStatusRingSize = 2048 // ~34 min at 1 Hz covers the longest run
 
-func newNchanStatusMonitor(port string) *nchanStatusMonitor {
+func newNchanStatusMonitor(port, controlURL string) *nchanStatusMonitor {
 	return &nchanStatusMonitor{
-		port: port,
+		port:       port,
+		controlURL: controlURL,
 		client: &http.Client{
 			Timeout: 900 * time.Millisecond,
 		},
@@ -111,63 +114,29 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 					}
 				}
 			}
-			for pid, ticks := range workerCPUTicks() {
-				s.WorkerCPU[pid] = ticks
+			if m.controlURL != "" {
+				resp2, err := m.client.Get(m.controlURL + "/workers/cpu")
+				if err == nil {
+					buf2 := make([]byte, 8192)
+					n2, _ := resp2.Body.Read(buf2)
+					resp2.Body.Close()
+					var wc struct {
+						Workers []struct {
+							Pid   int    `json:"pid"`
+							Utime int64  `json:"utime"`
+							Stime int64  `json:"stime"`
+							State string `json:"state"`
+						} `json:"workers"`
+					}
+					if json.Unmarshal(buf2[:n2], &wc) == nil {
+						for _, w := range wc.Workers {
+							s.WorkerCPU[strconv.Itoa(w.Pid)] = w.Utime + w.Stime
+							s.Fields["worker_state_"+strconv.Itoa(w.Pid)] = w.State
+						}
+					}
+				}
 			}
 			m.record(s)
 		}
 	}
-}
-
-// workerCPUTicks reads utime+stime (clock ticks) for every nginx worker in
-// this container's PID namespace: flat deltas across seconds identify
-// hard-frozen workers directly (the earlier debug-run observation).
-func workerCPUTicks() map[string]int64 {
-	out := map[string]int64{}
-	entries, err := osReadDir("/proc")
-	if err != nil {
-		return out
-	}
-	for _, e := range entries {
-		if !isNumeric(e) {
-			continue
-		}
-		b, err := osReadFile("/proc/" + e + "/stat")
-		if err != nil {
-			continue
-		}
-		stat := string(b)
-		// comm may contain spaces; find the closing paren
-		i := strings.LastIndexByte(stat, ')')
-		if i < 0 || i+2 >= len(stat) {
-			continue
-		}
-		fields := strings.Fields(stat[i+2:])
-		// fields[0]=state; utime=field 11 (index 11 after state), stime=12
-		if len(fields) < 13 || fields[0] != "R" && fields[0] != "S" && fields[0] != "D" && fields[0] != "Z" {
-			continue
-		}
-		ut := atoiOrZero(fields[11])
-		st := atoiOrZero(fields[12])
-		comm := procComm(e)
-		if !strings.Contains(comm, "nginx") {
-			continue
-		}
-		out[e] = ut + st
-	}
-	return out
-}
-
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return len(s) > 0
-}
-
-func atoiOrZero(s string) int64 {
-	v, _ := strconv.ParseInt(s, 10, 64)
-	return v
 }
