@@ -70,6 +70,34 @@ All runs use the frozen B1 baseline: `NGINX_DEBUG=0`, `LIVELOCK_WATCHER=0`,
 | C1    | `sendfile_max_chunk 64k` | surge hung | — | — | REGRESSION (reverted) |
 | D1    | `nchan_shared_memory_size 512m` | 5296 | 3198 | **12352 ❌** | REGRESSION (broke ordering; reverted) |
 | E1    | `tcp_nopush off` | 6239 | 8333 | 0 ✅ | REGRESSION (worse; reverted) |
+| F1    | redis `--io-threads-do-reads yes` | **2757** | **3707** | 0 ✅ | **WIN 2.2× (committed 85e1e0d→ffe3ae6)** |
+| G1    | `+nchan_redis_storage_mode backup` | n/a | n/a | 0 | ABORT: coordinator DNS `server misbehaving` at late-join:end barrier |
+| G2    | `worker_processes 4→8` | 10055 | 6846 | 0 | REGRESSION (CPU oversubscribe; reverted) |
+| G1b   | `backup` retry | n/a | n/a | 0 | ABORT: same coordinator DNS barrier (reproducible) |
+
+**F1 is the validated best baseline**: fan_out p95 2757ms, burst p95 3707ms,
+correctness 0, peak 100k, surge/late_join clean. Still **5.5× over** fan_out≤500
+and **3.7× over** burst≤1000.
+
+Note: 85e1e0d accidentally also committed the `backup` line (swept in from G1-prep);
+ffe3ae6 removes it so the frozen baseline = F1's actual config (redis only).
+
+### Redis is a real contributor (F1 proves it)
+DUT-side `fan_out_transport` dropped 3849–6255ms (B1) → 1919–3129ms (F1) after
+enabling redis `--io-threads-do-reads`, i.e. the cross/incidental redis PUBSUB
+main-thread path was a major slice of the latency. Redis 7.2 caps us at
+`io-threads-do-reads` (no `io-threads-do-writes`); the remaining hot path still
+round-trips redis for *local* delivery because `nchan_redis_pass` is set.
+
+### `storage_mode backup` would remove redis from the hot path — but is blocked
+`nchan_redis_storage_mode backup` serves local delivery from shared memory and
+only backs up to redis, which should cut the dominant DUT-side slice further.
+However it reproducibly aborts the run at the `late-join:end` coordinator
+barrier with Docker DNS `lookup coordinator … server misbehaving` — the faster
+late-join (1–31 ms recovery) triggers a burst of coordinator HTTP calls that
+overwhelms Docker's embedded DNS (127.0.0.11). This is an **infra/orchestration**
+failure, not a nchan delivery fault, but it makes `backup` unusable for a clean
+qualifying run as-is.
 
 ### DUT vs harness split (from `fan_out_transport` = publish→wire, DUT-side)
 Measured on the E1 run's per-shard histograms; `fan_out` = total (DUT+harness):
@@ -94,15 +122,34 @@ unavoidable contributor. Harness-side (wire→dispatch) gap is ≤~3 s and usual
   burst p95) — already ~4× above nchan's documented 300K/s, yet 4.5× short of
   the gate. This is a hard per-worker fan-out throughput wall.
 
-### Conclusion
-The frozen topology (4 partitions, 4 workers each) cannot fan out the burst
-volume within the frozen latency gates. Every config lever tried either
-regressed or was neutral; the root cause is nchan write-path serialization
-(worker draining SSE output chains), which is source-level — outside the
-config-only scope. ACCEPT is unattainable without one of:
-1. nchan/nginx source patch (frozen DUT binary),
-2. architecture change — more workers/partitions (frozen topology), or
-3. relaxing the frozen latency gates in `EXPERIMENT_CONTRACT_v2_3_0.md`.
+### Conclusion (updated 2026-08-23 after probe ladder B1→F1)
+- **F1 (redis `--io-threads-do-reads`) is a validated 2.2× win**: fan_out p95
+  6083→2757 ms, burst 4490→3707 ms, correctness 0, peak 100k. This proves Redis
+  PUBSUB main-thread contention was a major latency slice — earlier dismissed
+  incorrectly. Committed as the frozen baseline (ffe3ae6).
+- Remaining gap is the **redis local round-trip** still in the hot path because
+  `nchan_redis_pass` makes even same-partition delivery transit Redis. DUT-side
+  transport is still 1919–3129 ms p95.
+- `nchan_redis_storage_mode backup` would remove redis from the hot path
+  (memory-first local delivery) and is the most promising remaining lever, but
+  it reproducibly aborts at the `late-join:end` coordinator barrier via a Docker
+  DNS failure — an **infra/orchestration** issue, not a DUT fault. As-is it
+  cannot produce a clean qualifying run.
+- worker_processes 4→8 regressed (CPU oversubscription on the 4-CPU budget); 4 is
+  optimal. All other config levers (sendfile_max_chunk, shared_memory 512m,
+  tcp_nopush off) regressed or were neutral.
+
+**ACCEPT is still unattainable at the frozen baseline (5.5×/3.7× over gates).**
+Closing paths, in order of promise vs scope:
+1. **Fix the orchestration/DNS issue** (harness/infra tuning — e.g. cache the
+   coordinator address in the loadgen, or pin it in /etc/hosts) so
+   `storage_mode backup` can run cleanly. This is not a DUT or contract-semantics
+   change and could yield the remaining ~5× needed.
+2. redis 7.4 (`io-threads-do-writes`) — but Redis **7.2 is frozen** in the
+   topology; would require relaxing that.
+3. nchan/nginx source patch — **frozen DUT binary**.
+4. more workers/partitions — **frozen topology**.
+5. relaxing the frozen latency gates in `EXPERIMENT_CONTRACT_v2_3_0.md`.
 
 ## Next steps
 1. Identify the contended shm lock: perf/gdb on the spinning worker mid-run
