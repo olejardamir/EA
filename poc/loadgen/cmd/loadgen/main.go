@@ -480,6 +480,15 @@ func (r *shardRun) captureNetstatSnapshot(stage string) {
 		r.logf("netstat snapshot %s failed: %v", stage, err)
 		return
 	}
+	// TEMP-DIAG: host TCP socket-memory footprint at each stage boundary —
+	// tcp_mem vs the pressure thresholds discriminates global window squeeze
+	// (server writers buffer, then drain in monopolizing waves) from
+	// per-connection slowness during the target era.
+	if ss, err := readSockstatTCP(); err == nil {
+		for k, v := range ss {
+			snap[k] = v
+		}
+	}
 	r.resMu.Lock()
 	if r.netstatSnaps == nil {
 		r.netstatSnaps = map[string]map[string]int64{}
@@ -2061,6 +2070,9 @@ func subscriberPort(base string) string {
 // tcpHealthKeys selects the TcpExt counters relevant to delivery-stall
 // attribution (packet loss vs queueing) from /proc/net/netstat.
 var tcpHealthKeys = map[string]bool{
+	"tcp_inuse":         true,
+	"tcp_mem":           true,
+	"tcp_alloc":         true,
 	"ActiveOpens":       true,
 	"PassiveOpens":      true,
 	"AttemptFails":      true,
