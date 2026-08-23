@@ -2,6 +2,7 @@ package pool
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -597,5 +598,54 @@ func TestFullTargetWindowLatencyProvenance(t *testing.T) {
 	goal, other := p.GoalHistogram(), p.OtherHistogram()
 	if goal.TotalCount != 1 || other.TotalCount != 2 {
 		t.Fatalf("post-window routing wrong: goal=%d other=%d, want 1/2", goal.TotalCount, other.TotalCount)
+	}
+}
+
+// A connect accepted by the kernel but never serviced (no response headers)
+// must fail and retry, not hang the viewer goroutine forever. This is the
+// harness-side guard for the silent population-shrink wedge observed at
+// terminal scale: reconnect-cohort members drawn from hung viewers can
+// never pass, and no retry ever happens.
+func TestHangingServerFailsAndRetries(t *testing.T) {
+	orig := responseHeaderTimeout
+	responseHeaderTimeout = func() time.Duration { return 300 * time.Millisecond }
+	defer func() { responseHeaderTimeout = orig }()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			// accept and hold: never read, never respond
+			go func(c net.Conn) {
+				time.Sleep(10 * time.Second)
+				c.Close()
+			}(conn)
+		}
+	}()
+
+	p := New(fmt.Sprintf("http://%s/sub/", l.Addr().String()), []string{"match-001"}, 4)
+	if err := p.Add(RoleLight, "match-001"); err != nil {
+		t.Fatal(err)
+	}
+	p.StartIndices([]int{len(p.viewers) - 1})
+
+	deadline := time.Now().Add(5 * time.Second)
+	attempts := int64(0)
+	for time.Now().Before(deadline) {
+		attempts = p.Counters.ConnectionFailures.Load()
+		if attempts >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if attempts < 2 {
+		t.Fatalf("hanging server did not produce >=2 counted connection failures (got %d): viewer goroutine is hung", attempts)
 	}
 }

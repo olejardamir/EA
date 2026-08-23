@@ -170,6 +170,10 @@ type Pool struct {
 	headFn func(matchID string) (int64, bool) // injected expected-head lookup (publisher evidence)
 }
 
+// responseHeaderTimeout bounds the wait for SSE response headers. A package
+// variable so tests can shorten it; production default is 15s.
+var responseHeaderTimeout = func() time.Duration { return 15 * time.Second }
+
 func New(subBase string, matchIDs []string, capacity int) *Pool {
 	ctx, cancel := context.WithCancel(context.Background())
 	transport := &http.Transport{
@@ -181,6 +185,13 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 1024,
 		MaxConnsPerHost:     0,
+		// Bound the wait for response HEADERS only (SSE bodies stream
+		// indefinitely afterwards). Without this, a connect accepted by the
+		// kernel but never serviced by the server blocks the viewer goroutine
+		// forever: the population silently shrinks, no retry ever happens,
+		// and reconnect-cohort members drawn from the missing viewers can
+		// never pass.
+		ResponseHeaderTimeout: responseHeaderTimeout(),
 	}
 	return &Pool{
 		subBase:     strings.TrimSuffix(subBase, "/") + "/",
