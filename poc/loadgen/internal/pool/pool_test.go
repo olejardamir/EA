@@ -710,3 +710,71 @@ func TestHangingServerFailsAndRetries(t *testing.T) {
 		t.Fatalf("hanging server did not produce >=2 counted connection failures (got %d): viewer goroutine is hung", attempts)
 	}
 }
+
+// ── resumed-stream backlog provenance ────────────────────────────────────────
+
+// A deep viewer resuming with Last-Event-ID first replays buffered history:
+// those frames carry pre-disconnect publish timestamps, so their recv-publish
+// delta is backlog age. They must land in the backlog diagnostic class and
+// never in the live fan-out evidence, until a fresh frame proves the stream
+// reached the live tail.
+func TestResumedStreamBacklogProvenance(t *testing.T) {
+	p := New("http://unused/sub/", []string{"m1"}, 4)
+	defer p.Stop()
+	p.BeginFullTargetWindow()
+	v := &viewer{}
+	v.st.Role = RoleDeep
+	v.matchID = "m1"
+
+	// Simulate the resumed-stream state (as streamOnce sets it).
+	v.catchUp.Store(true)
+
+	// Old frame on a catching-up stream: backlog class, not live evidence.
+	p.recordDeepLatency(v, 600000, "goal")
+	if got := p.GoalHistogram().TotalCount + p.OtherHistogram().TotalCount; got != 0 {
+		t.Fatalf("backlog sample leaked into live fan-out evidence: %d", got)
+	}
+	if got := p.BacklogHistogram().TotalCount; got != 1 {
+		t.Fatalf("backlog histogram total = %d, want 1", got)
+	}
+	if got := p.Counters.FanOutBacklogSamples.Load(); got != 1 {
+		t.Fatalf("FanOutBacklogSamples = %d, want 1", got)
+	}
+
+	// Fresh frame (< threshold): proves live tail; catch-up ends and the
+	// sample is genuine live evidence.
+	p.recordDeepLatency(v, 40, "other")
+	if v.catchUp.Load() {
+		t.Fatal("fresh frame must clear the catch-up state")
+	}
+	if got := p.OtherHistogram().TotalCount; got != 1 {
+		t.Fatalf("live-tail sample missing from other histogram: %d", got)
+	}
+
+	// After catch-up ends, even old-ish frames are ordinary live samples.
+	p.recordDeepLatency(v, 4900, "goal")
+	if got := p.GoalHistogram().TotalCount; got != 1 {
+		t.Fatalf("post-catch-up goal total = %d, want 1", got)
+	}
+	if got := p.BacklogHistogram().TotalCount; got != 1 {
+		t.Fatalf("backlog total changed after catch-up: %d", got)
+	}
+}
+
+// Fresh (never-resumed) streams are never affected by the catch-up logic.
+func TestFreshStreamLatencyUnaffected(t *testing.T) {
+	p := New("http://unused/sub/", []string{"m1"}, 4)
+	defer p.Stop()
+	p.BeginFullTargetWindow()
+	v := &viewer{}
+	v.st.Role = RoleDeep
+	v.matchID = "m1"
+
+	p.recordDeepLatency(v, 600000, "goal")
+	if got := p.GoalHistogram().TotalCount; got != 1 {
+		t.Fatalf("fresh-stream sample missing from goal histogram: %d", got)
+	}
+	if got := p.BacklogHistogram().TotalCount; got != 0 {
+		t.Fatalf("fresh-stream sample misfiled as backlog: %d", got)
+	}
+}

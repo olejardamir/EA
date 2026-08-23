@@ -73,6 +73,7 @@ type Counters struct {
 	JSONParseErrors          atomic.Int64
 	InvalidTimestampCount    atomic.Int64
 	CanonicalStateViolations atomic.Int64
+	FanOutBacklogSamples     atomic.Int64 // resumed-stream replay frames excluded from live latency evidence
 }
 
 // ClientState mirrors design doc §3.1 (~64 B, fixed, no arrays). Owned by the
@@ -113,6 +114,7 @@ type viewer struct {
 	online     atomic.Bool   // currently established (goroutine-owned writes)
 	sawDeep    atomic.Bool   // validated ≥1 deep frame (agreement eligibility)
 	lastSeq    atomic.Uint64 // mirror of st.LastSeq for cross-goroutine reads
+	catchUp    atomic.Bool   // resumed stream still replaying buffered history
 
 	cancelMu  sync.Mutex          // guards curCancel; makes hold-vs-connect race-free
 	curCancel *context.CancelFunc // cancels the in-flight connection attempt
@@ -142,11 +144,12 @@ type Pool struct {
 	Counters
 	activeNow atomic.Int64
 
-	goalHist  hist.Histogram
-	otherHist hist.Histogram
-	burstHist hist.Histogram
-	surgeHist hist.Histogram
-	histMu    sync.Mutex // deep cohort only (256 writers/shard)
+	goalHist    hist.Histogram
+	otherHist   hist.Histogram
+	burstHist   hist.Histogram
+	surgeHist   hist.Histogram
+	backlogHist hist.Histogram // resumed-stream history replay (not live evidence)
+	histMu      sync.Mutex     // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
 	surgeOpen atomic.Bool
 	// fullTargetOpen gates terminal fan-out evidence: only deep-cohort
@@ -205,6 +208,7 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		otherHist:   *hist.New(hist.DefaultMaxMs),
 		burstHist:   *hist.New(hist.DefaultMaxMs),
 		surgeHist:   *hist.New(hist.DefaultMaxMs),
+		backlogHist: *hist.New(hist.DefaultMaxMs),
 	}
 }
 
@@ -408,6 +412,10 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 		v.mu.Lock()
 		v.resumeID = ""
 		v.mu.Unlock()
+		// Resumed streams start inside buffered history; latency samples are
+		// diverted to the backlog histogram until a fresh frame proves the
+		// stream reached the live tail (see liveTailThresholdMs).
+		v.catchUp.Store(true)
 	}
 
 	br := bufio.NewReaderSize(resp.Body, 32*1024)
@@ -606,9 +614,34 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		if latMs < 0 {
 			latMs = 0
 		}
-		p.routeLatency(latMs, ev.EventType)
+		p.recordDeepLatency(v, latMs, ev.EventType)
 	}
 }
+
+// recordDeepLatency routes one deep-cohort latency sample with resumed-stream
+// provenance: frames arriving on a stream that is still replaying buffered
+// history carry pre-disconnect publish timestamps (backlog age, not transport
+// latency) and must never enter the live fan-out evidence.
+func (p *Pool) recordDeepLatency(v *viewer, latMs int, eventType string) {
+	if v.catchUp.Load() {
+		if latMs >= liveTailThresholdMs {
+			p.histMu.Lock()
+			p.backlogHist.Record(latMs)
+			p.histMu.Unlock()
+			p.Counters.FanOutBacklogSamples.Add(1)
+			return
+		}
+		// A freshly published frame arrived on the resumed stream — it has
+		// reached the live tail; from here on samples are genuine.
+		v.catchUp.Store(false)
+	}
+	p.routeLatency(latMs, eventType)
+}
+
+// liveTailThresholdMs bounds catch-up detection for resumed deep streams: a
+// frame published within the last 5 s proves the stream is at the live tail;
+// anything older on a resumed stream is buffered-history replay.
+const liveTailThresholdMs = 5000
 
 // routeLatency applies the frozen phase-window provenance rules for
 // deep-cohort latency evidence: surge and burst windows own their samples;
@@ -658,6 +691,10 @@ func (p *Pool) EndBurstWindow() { p.burstOpen.Store(false) }
 // HistogramSnapshot returns serialized histogram evidence.
 func (p *Pool) GoalHistogram() hist.Serialized  { return p.goalHist.Serialize() }
 func (p *Pool) OtherHistogram() hist.Serialized { return p.otherHist.Serialize() }
+
+// BacklogHistogram returns resumed-stream history-replay latency samples that
+// were excluded from the live fan-out evidence (diagnostic provenance class).
+func (p *Pool) BacklogHistogram() hist.Serialized { return p.backlogHist.Serialize() }
 func (p *Pool) BurstHistogram() hist.Serialized { return p.burstHist.Serialize() }
 
 // CanonicalHead is the expected-side match state fetched from the independent

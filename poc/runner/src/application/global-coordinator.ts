@@ -169,6 +169,7 @@ export interface GlobalExperimentResult {
     late_join: ReturnType<typeof histogramSummary>
     burst: ReturnType<typeof histogramSummary>
     surge_fan_out?: ReturnType<typeof histogramSummary>
+    fan_out_backlog: ReturnType<typeof histogramSummary>
   }
   correctness_counters: Record<string, number>
   per_shard_generator_validity: Array<{ shard_id: number; validity: ShardValidity }>
@@ -489,6 +490,9 @@ export class GlobalExperimentCoordinator {
     const mergedLateJoin = mergeHistograms(shardResults.map((result) => result.histograms.late_join ?? emptyHistogram()))
     const mergedBurst = mergeHistograms(shardResults.map((result) => result.histograms.burst ?? emptyHistogram()))
     const mergedSurge = mergeHistograms(shardResults.map((result) => (result.histograms as Record<string, unknown>).surge_fan_out as SerializedHistogram ?? emptyHistogram()))
+    // Resumed-stream history-replay samples excluded from live fan-out
+    // evidence (diagnostic provenance class, never gated).
+    const mergedBacklog = mergeHistograms(shardResults.map((result) => (result.histograms as Record<string, unknown>).fan_out_backlog as SerializedHistogram ?? emptyHistogram()))
     if (mergedFanOut.count === 0) validityReasons.push("global fan-out histogram is empty")
     if (mergedBurst.count === 0) validityReasons.push("global burst fan-out histogram is empty")
     if (mergedGoalFanOut.count + mergedOtherFanOut.count === 0) {
@@ -1096,6 +1100,7 @@ export class GlobalExperimentCoordinator {
         late_join: histogramSummary(mergedLateJoin),
         burst: histogramSummary(mergedBurst),
         surge_fan_out: histogramSummary(mergedSurge),
+        fan_out_backlog: histogramSummary(mergedBacklog),
       },
       correctness_counters: correctnessCounters,
       per_shard_generator_validity: shardResults.map((result) => ({ shard_id: result.shard_id, validity: result.validity })),

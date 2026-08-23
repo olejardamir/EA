@@ -65,6 +65,10 @@ type ShardExperimentResult struct {
 		LateJoin    HistogramWire `json:"late_join"`
 		Burst       HistogramWire `json:"burst"`
 		Surge       HistogramWire `json:"surge_fan_out,omitempty"`
+		// BacklogFanOut: resumed-stream history-replay latency samples that
+		// were excluded from the live fan-out evidence (diagnostic class,
+		// never gated).
+		BacklogFanOut HistogramWire `json:"fan_out_backlog"`
 	} `json:"histograms"`
 	CorrectnessCounters map[string]float64 `json:"correctness_counters"`
 	Workload            struct {
