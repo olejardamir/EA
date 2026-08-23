@@ -42,6 +42,14 @@ docker compose --project-name "$PROJECT" --project-directory "$POC_DIR" \
   up --build --force-recreate --abort-on-container-exit --exit-code-from coordinator
 status=$?
 set -e
+# Preserve the run's evidence volume before scratch cleanup so failures can
+# be diagnosed from full wire results, not just log lines.
+EVID_OUT="$POC_DIR/evidence-launches/$PROJECT"
+mkdir -p "$EVID_OUT"
+if docker volume ls -q --filter "label=com.docker.compose.project=$PROJECT" | grep -q .; then
+  docker run --rm -v "${PROJECT}_global-evidence:/evidence" -v "$EVID_OUT:/host" alpine \
+    sh -c "cp /evidence/global-result-*.json /host/ 2>/dev/null; echo evidence_preserved"
+fi
 # Robust scratch cleanup: compose down first, then force-sweep any labeled
 # leftovers so a crashed phase can never leak networks/volumes that would
 # collide with later probes (subnet pool exhaustion).
