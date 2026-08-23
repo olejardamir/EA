@@ -59,8 +59,11 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpcre3 libssl3 zlib1g libcurl4 libyajl2 \
-    curl ca-certificates bash procps && \
+    curl ca-certificates bash procps gdb && \
     rm -rf /var/lib/apt/lists/*
+# TEMP-DIAG: gdb ships so a mid-run attach can capture the userspace
+# backtrace of the livelocked worker (SYS_PTRACE granted in compose).
+# Remove once the burst-onset spin root cause is fixed.
 
 COPY --from=builder /usr/sbin/nginx /usr/sbin/nginx
 COPY --from=builder /etc/nginx/ /etc/nginx/
