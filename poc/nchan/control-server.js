@@ -168,6 +168,15 @@ const server = http.createServer((req, res) => {
           entry.vctx = parseInt((status.match(/^voluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
           entry.nctx = parseInt((status.match(/^nonvoluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
         } catch {}
+        try {
+          // Drain-rate discriminator: a worker monopolized flushing buffered
+          // SSE chains writes continuously; write_bytes/s says whether it
+          // drains at wire speed (capacity-bound) or trickles into closed
+          // client windows (backlog lives in kernel queues / userland).
+          const ioStat = fs.readFileSync(`/proc/${pid}/io`, "utf-8")
+          entry.write_bytes = parseInt((ioStat.match(/^write_bytes:\s+(\d+)/m) || [])[1], 10)
+          entry.read_bytes = parseInt((ioStat.match(/^read_bytes:\s+(\d+)/m) || [])[1], 10)
+        } catch {}
         out.push(entry)
       } catch {}
     }
@@ -200,6 +209,31 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ ts: Date.now(), workers: out }))
+  } else if (req.method === "GET" && req.url === "/net/tcpsum") {
+    // TEMP-DIAG: aggregate kernel socket queues in this container's netns.
+    // tx_queue bytes pending = kernel-side undelivered SSE data (client not
+    // reading / zero window); rx_queue = unread peer data. Splits the stall
+    // backlog between kernel send buffers and nginx userland chains.
+    const sum = { sockets: 0, tx_queue_bytes: 0, rx_queue_bytes: 0, tx_nonempty: 0, rx_nonempty: 0 }
+    for (const tbl of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+      let text = ""
+      try { text = fs.readFileSync(tbl, "utf-8") } catch { continue }
+      for (const line of text.split("\n").slice(1)) {
+        const f = line.trim().split(/\s+/)
+        if (f.length < 5 || !f[4]) continue
+        const q = f[4].split(":")
+        if (q.length !== 2) continue
+        const tx = parseInt(q[0], 16) || 0
+        const rx = parseInt(q[1], 16) || 0
+        sum.sockets++
+        sum.tx_queue_bytes += tx
+        sum.rx_queue_bytes += rx
+        if (tx > 0) sum.tx_nonempty++
+        if (rx > 0) sum.rx_nonempty++
+      }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ ts: Date.now(), ...sum }))
   } else if (req.method === "GET" && req.url === "/metrics") {
     const metrics = getNchanMetrics()
     res.writeHead(200, { "Content-Type": "application/json" })

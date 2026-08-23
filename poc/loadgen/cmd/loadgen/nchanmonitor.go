@@ -124,14 +124,16 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 					resp2.Body.Close()
 					var wc struct {
 						Workers []struct {
-							Pid     int    `json:"pid"`
-							Utime   int64  `json:"utime"`
-							Stime   int64  `json:"stime"`
-							State   string `json:"state"`
-							Wchan   string `json:"wchan,omitempty"`
-							Syscall *int   `json:"syscall,omitempty"`
-							Vctx    *int64 `json:"vctx,omitempty"`
-							Nctx    *int64 `json:"nctx,omitempty"`
+							Pid        int    `json:"pid"`
+							Utime      int64  `json:"utime"`
+							Stime      int64  `json:"stime"`
+							State      string `json:"state"`
+							Wchan      string `json:"wchan,omitempty"`
+							Syscall    *int   `json:"syscall,omitempty"`
+							Vctx       *int64 `json:"vctx,omitempty"`
+							Nctx       *int64 `json:"nctx,omitempty"`
+							WriteBytes *int64 `json:"write_bytes,omitempty"`
+							ReadBytes  *int64 `json:"read_bytes,omitempty"`
 						} `json:"workers"`
 					}
 					if json.Unmarshal(buf2[:n2], &wc) == nil {
@@ -150,6 +152,17 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 							}
 							if w.Nctx != nil {
 								s.Fields["worker_nctx_"+key] = strconv.FormatInt(*w.Nctx, 10)
+							}
+							// Drain-rate discriminator: per-worker cumulative
+							// /proc/io byte counters. Deltas between samples
+							// give each stalled worker's actual egress rate —
+							// wire-rate drain (capacity) vs trickle (client
+							// windows closed / kernel queues full).
+							if w.WriteBytes != nil {
+								s.Fields["worker_wbytes_"+key] = strconv.FormatInt(*w.WriteBytes, 10)
+							}
+							if w.ReadBytes != nil {
+								s.Fields["worker_rbytes_"+key] = strconv.FormatInt(*w.ReadBytes, 10)
 							}
 						}
 					}
@@ -184,7 +197,32 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 					}
 				}
 			}
-		}
+				// TEMP-DIAG: kernel socket-queue sums in this container's
+				// netns. Large tx_queue during the stall = SSE bytes pending
+				// in kernel send buffers (clients not reading); tx_queue ~0
+				// while workers still drain = the backlog sits in nginx
+				// userland chains, not the kernel.
+				resp5, err5 := m.client.Get(m.controlURL + "/net/tcpsum")
+				if err5 == nil {
+					buf5 := make([]byte, 4096)
+					n5, _ := resp5.Body.Read(buf5)
+					resp5.Body.Close()
+					var ts struct {
+						Sockets      int64 `json:"sockets"`
+						TxQueueBytes int64 `json:"tx_queue_bytes"`
+						RxQueueBytes int64 `json:"rx_queue_bytes"`
+						TxNonempty   int64 `json:"tx_nonempty"`
+						RxNonempty   int64 `json:"rx_nonempty"`
+					}
+					if json.Unmarshal(buf5[:n5], &ts) == nil {
+						s.Fields["tcp_sockets"] = strconv.FormatInt(ts.Sockets, 10)
+						s.Fields["tcp_txq_bytes"] = strconv.FormatInt(ts.TxQueueBytes, 10)
+						s.Fields["tcp_rxq_bytes"] = strconv.FormatInt(ts.RxQueueBytes, 10)
+						s.Fields["tcp_txq_nonempty"] = strconv.FormatInt(ts.TxNonempty, 10)
+						s.Fields["tcp_rxq_nonempty"] = strconv.FormatInt(ts.RxNonempty, 10)
+					}
+				}
+			}
 		// TEMP-DIAG: ptrace-grade per-worker snapshot each second (syscall,
 		// kernel stack, wchan, state) — kept as a parallel evidence stream so
 		// the Fields map stays flat for the stub-status fields.
