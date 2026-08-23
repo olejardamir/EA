@@ -155,6 +155,13 @@ type Pool struct {
 	backlogHist    hist.Histogram // resumed-stream history replay (not live evidence)
 	transportHist  hist.Histogram // publish→wire-arrival attribution (DUT-side)
 	procHist       hist.Histogram // wire-arrival→dispatch attribution (harness-side)
+	// Per-era transport attribution: routeLatency discards out-of-window
+	// samples from gate evidence, so the merged transport histogram cannot
+	// say WHERE on the run timeline slowness occurs. Four era hists fix that.
+	tPre    hist.Histogram // before any window opens (warmup/steady)
+	tSurge  hist.Histogram // surge window
+	tBurst  hist.Histogram // burst window
+	tTarget hist.Histogram // full-target window
 
 	upMu       sync.Mutex
 	upstreams  map[string]*upstreamTransport // per-subscriber-base delivery attribution
@@ -220,6 +227,10 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		burstHist:   *hist.New(hist.DefaultMaxMs),
 		surgeHist:     *hist.New(hist.DefaultMaxMs),
 		backlogHist:   *hist.New(hist.DefaultMaxMs),
+		tPre:          *hist.New(hist.DefaultMaxMs),
+		tSurge:        *hist.New(hist.DefaultMaxMs),
+		tBurst:        *hist.New(hist.DefaultMaxMs),
+		tTarget:       *hist.New(hist.DefaultMaxMs),
 		upstreams:     make(map[string]*upstreamTransport),
 		transportHist: *hist.New(hist.DefaultMaxMs),
 		procHist:      *hist.New(hist.DefaultMaxMs),
@@ -671,6 +682,16 @@ func (p *Pool) recordDeepLatency(v *viewer, latMs, transportMs, procMs int, even
 	p.histMu.Lock()
 	p.transportHist.Record(transportMs)
 	p.procHist.Record(procMs)
+	switch {
+	case p.surgeOpen.Load():
+		p.tSurge.Record(transportMs)
+	case p.burstOpen.Load():
+		p.tBurst.Record(transportMs)
+	case p.fullTargetOpen.Load():
+		p.tTarget.Record(transportMs)
+	default:
+		p.tPre.Record(transportMs)
+	}
 	p.histMu.Unlock()
 	if base := v.curBase; base != "" {
 		p.upMu.Lock()
@@ -810,6 +831,17 @@ func (p *Pool) BacklogHistogram() hist.Serialized { return p.backlogHist.Seriali
 // wire-arrival→dispatch); never gated, evidence-only.
 func (p *Pool) TransportHistogram() hist.Serialized { return p.transportHist.Serialize() }
 func (p *Pool) ProcDelayHistogram() hist.Serialized { return p.procHist.Serialize() }
+
+// TransportEraEvidence returns per-era transport-latency distributions
+// (pre-window / surge / burst / full-target). Evidence-only.
+func (p *Pool) TransportEraEvidence() map[string]hist.Serialized {
+	return map[string]hist.Serialized{
+		"pre":     p.tPre.Serialize(),
+		"surge":   p.tSurge.Serialize(),
+		"burst":   p.tBurst.Serialize(),
+		"target":  p.tTarget.Serialize(),
+	}
+}
 func (p *Pool) BurstHistogram() hist.Serialized { return p.burstHist.Serialize() }
 
 // CanonicalHead is the expected-side match state fetched from the independent
