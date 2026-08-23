@@ -21,6 +21,21 @@
 #
 # Launch with ./run-evidence-100k.sh; it injects the checkout SHA automatically.
 
+# Non-blocking container logging for the nchan partitions. nginx writes its
+# error log to /dev/stderr — a pipe into the docker json-file driver. When
+# dockerd applies backpressure (log bursts during reconnect churn reach
+# ~200 lines/s at info level), the 64K pipe fills and the blocking write()
+# freezes the worker mid-event-loop: IPC alerts and hiredis replies then wait
+# seconds-to-tens-of-seconds (observed as "interprocess alerts delayed by N
+# sec" up to 37s, redis command timeouts, mass NULL-reply reconnects), while
+# the worker shows idle CPU in S state. mode=non-blocking decouples the
+# container from the log sink; diagnostics are kept (drops only under burst).
+x-nonblocking-logging: &nonblocking-logging
+  driver: json-file
+  options:
+    mode: non-blocking
+    max-buffer-size: 4m
+
 services:
   redis:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
@@ -73,6 +88,7 @@ services:
           cpus: "4"
           memory: 6G
     cpu_shares: 262144
+    logging: *nonblocking-logging
     ulimits:
       nofile:
         soft: 200000
@@ -102,6 +118,7 @@ services:
           cpus: "4"
           memory: 6G
     cpu_shares: 262144
+    logging: *nonblocking-logging
     ulimits:
       nofile:
         soft: 200000
@@ -131,6 +148,7 @@ services:
           cpus: "4"
           memory: 6G
     cpu_shares: 262144
+    logging: *nonblocking-logging
     ulimits:
       nofile:
         soft: 200000
@@ -160,6 +178,7 @@ services:
           cpus: "4"
           memory: 6G
     cpu_shares: 262144
+    logging: *nonblocking-logging
     ulimits:
       nofile:
         soft: 200000
@@ -189,6 +208,7 @@ services:
           cpus: "4"
           memory: 6G
     cpu_shares: 262144
+    logging: *nonblocking-logging
     ulimits:
       nofile:
         soft: 200000
