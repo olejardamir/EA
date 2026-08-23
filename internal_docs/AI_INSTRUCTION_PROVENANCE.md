@@ -49,6 +49,18 @@ purpose:          AI instruction artifact directing the Milestone 3 acceptance-r
                   executing session's anchored context.
 ```
 
+## Preserved instruction artifact — M4–M7 closure (v10 terminal-sync)
+
+```text
+artifact path:    internal_docs/MILESTONES_4_5_6_7_CLOSE_100_PERCENT_OVERNIGHT_PROMPT_ARTIFACT.md
+SHA-256:          e3e31916164ab700bc76beca9712fa428f269709ba76a13c923ceb2ef30bf597
+first-use commit: d42d4718c89b5b7288ada0bcb9d1b8c28ffec7a8 (terminal M3 verdict commit)
+purpose:          AI instruction artifact directing the M4–M7 100% closure execution
+                   (architecture reconciliation, external-evidence/cost closure, proposal.md,
+                   README.md, source/result coherence). This exact copy was used to direct
+                   M4–M7 execution; it is preserved unmutated per the prompt's §5.
+```
+
 ## Rules
 
 - The preserved copy at `internal_docs/MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md` must never be modified.

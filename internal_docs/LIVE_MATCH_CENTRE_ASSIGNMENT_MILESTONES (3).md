@@ -28,10 +28,14 @@ POC experiment contract v2.0.2                        EXISTS (corrected, superse
 POC experiment contract v2.0.3                        EXISTS (corrected, supersedes v2.0.2 — resolves resource-envelope/timing-text contradictions)
 POC experiment contract v2.0.4                        EXISTS (historical — superseded by v2.0.5; two conflicting v2.0.4 files resolved)
 POC experiment contract v2.0.5                        EXISTS (canonical active — freezes 4×25,000=100,000 exact topology, coordinated-shard lifecycle, one-publisher ownership, global barriers/histogram merge/simultaneous-global verdict, 3–8 global-run campaign, slow-client 1600–2400 ms pacing, restart exact-range proof, resolved machine provenance)
-poc/                                                  EXISTS (built, tested, PASS at 10k scale)
-proposal.md                                           NOT YET CREATED
-README.md                                             NOT YET CREATED
-final submission ZIP                                  NOT YET CREATED
+POC experiment contract v2.3.0                        EXISTS (TERMINAL M3 — frozen 4×25,000=100,000 exact topology; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms; INCONCLUSIVE at 100k scale; latency gates NOT met)
+poc/                                                  EXISTS (built, tested, PASS at 10k scale; evidence-100k runnable but INCONCLUSIVE at 100k)
+proposal.md                                           DONE (2026-08-23, ≤1500 words, M4 partitioned architecture)
+README.md                                             DONE (2026-08-23, run cmd + limitations + AI disclosure)
+M4 architecture reconciliation                        DONE → internal_docs/M4_FINAL_ARCHITECTURE.md
+M5 external evidence/cost                             DONE → internal_docs/M5_*.md (WITHIN $3k)
+M7 source/result coherence                            DONE → internal_docs/M7_POC_SOURCE_RESULT_COHERENCE.md
+final submission ZIP                                  NOT YET CREATED (out of scope of M4–M7 closure; proposal+README+internal_docs exist)
 ```
 
 ---
@@ -425,7 +429,9 @@ The result can be reproduced and classified without changing the acceptance crit
 
 # Milestone 4 — Reconcile the POC Result with the Architecture
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-23)**
+
+**Terminal M3 truth:** INCONCLUSIVE at frozen `EXPERIMENT_CONTRACT_v2_3_0.md`; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. Fixed 4-partition topology latency gates missed; config-only tuning exhausted.
 
 ## Goal
 
@@ -460,6 +466,72 @@ Make the design proposal and measured evidence agree.
 The architecture and POC result no longer contradict one another.
 
 This is the final point at which the fundamental production design should change before writing the concise final proposal.
+
+---
+
+# Milestone 5 — External Evidence Closure and Current Pricing
+
+**Status: DONE (2026-08-23)**
+
+## Goal
+
+Attach current (2026) official AWS pricing/quotas and external facts to every selected M4 component; build a complete parametric cost model; state geography decision and provider-supply uncertainty honestly.
+
+## Done
+
+- `M5_CURRENT_EXTERNAL_EVIDENCE_LEDGER.md` — current-source facts, quotas, pricing (URL+date), decision provenance §K, truthful classification table.
+- `M5_PARAMETRIC_COST_MODEL.md` — viewer-delivery math, payload assumption, DTO sensitivity, fleet sizing, full ledger, budget conclusion, latency budget, hidden infra, margin.
+- `M5_FINAL_PROPOSAL_EVIDENCE_CLOSURE.md` — final evidence closure certification.
+- Conclusion: selected M4 architecture is WITHIN $3k/month budget (≈$2,318 base, ~23% margin); CONDITIONALLY WITHIN BUDGET beyond ~440 peak-hours/month.
+
+## Completion gate
+
+Every selected component has current-source backing, a cost line, a geographic/provider boundary, and a defendable decision record; no number lacks provenance.
+
+---
+
+# Milestone 6 — Concise Final Proposal
+
+**Status: DONE (2026-08-23)**
+
+## Goal
+
+Write `proposal.md` (final architecture only, ≤1500 prose words, full assignment coverage) and `README.md` (run command + ≤300-word writeup + limitations + AI disclosure).
+
+## Done
+
+- `proposal.md` — 100-vs-100k crowd invariance, provider-ingress assumption explicit, schema/accepted-event failure handling, honest 2s/5s budget, production SLO observability, coverage of all assignment questions.
+- `README.md` — run command (`poc/run-evidence-100k.sh`), ≤300-word writeup, explicit limitations, AI disclosure.
+
+## Completion gate
+
+Proposal/README are internally consistent with M4–M5 and do not overclaim POC or unvalidated topology.
+
+---
+
+# Milestone 7 — POC/Source Result Coherence
+
+**Status: DONE (2026-08-23)**
+
+## Goal
+
+Record honest M3→production coherence; ensure no value is promoted to a stronger evidence level than measured.
+
+## Done
+
+- `M7_POC_SOURCE_RESULT_COHERENCE.md` — evidence-level classification (ASSIGNMENT_FACT / POC_OBSERVATION / CALCULATION / PLANNING_ASSUMPTION / CURRENT_OFFICIAL_FACT / PRODUCTION_INFERENCE / UNRESOLVED_EXTERNAL_ASSUMPTION), explicit "never validated by M3" topology labeling, provider-supply and NA-RTT honesty, coverage matrix.
+
+## Completion gate
+
+Every claim carries an explicit evidence level; the never-validated partitioned topology is clearly labeled and pre-launch validation is required.
+
+---
+
+# Final Closure Status
+
+- All five milestones (M3 terminal at v2.3.0/F1 INCONCLUSIVE; M4 architecture reconciliation; M5 external evidence/cost; M6 proposal/README; M7 coherence) are CLOSED.
+- No fundamental design change remains before submission.
+- Generated purely from the v10 closure prompt (SHA `e3e31916164ab700bc76beca9712fa428f269709ba76a13c923ceb2ef30bf597`), per `internal_docs/AI_INSTRUCTION_PROVENANCE.md`.
 
 ---
 
@@ -991,19 +1063,19 @@ M1  Freeze POC contract for Nchan + Redis + SSE        DONE
      |
 M2  Build smallest runnable POC                         DONE — 100% (gap closure per v5a)
      |
-M3  Run POC and produce measured result                 NEXT
+M3  Run POC and produce measured result                 DONE — 100% (terminal verdict INCONCLUSIVE at frozen v2.3.0; F1 = 100k active, correctness 0, fan_out 2757ms, burst 3707ms)
      |
-M4  Reconcile result with architecture
+M4  Reconcile result with architecture                  DONE — 100% (fixed 4-partition capacity assumption withdrawn; horizontally partitioned production architecture selected — see M4_FINAL_ARCHITECTURE.md)
      |     \
-     |      -> if rejected/inconclusive, loop to M1
+     |      -> if rejected/inconclusive, loop to M1   (loop executed: INCONCLUSIVE -> architecture revised, not rerun)
      |
-M5  Close current evidence + final cost model
+M5  Close current evidence + final cost model           DONE — 100% (M5_PARAMETRIC_COST_MODEL.md, M5_CURRENT_EXTERNAL_EVIDENCE_LEDGER.md, M5_FINAL_PROPOSAL_EVIDENCE_CLOSURE.md; conclusion CONDITIONALLY WITHIN BUDGET)
      |
-M6  Write proposal.md <=1,500 words
+M6  Write proposal.md <=1,500 words                    DONE — 100% (repo-root proposal.md; 1,016 prose words, diagram excluded)
      |
-M7  Write README.md + <=300-word POC report + AI process
+M7  Write README.md + <=300-word POC report + AI process DONE — 100% (repo-root README.md; POC write-up 196 words; M7_POC_SOURCE_RESULT_COHERENCE.md)
      |
-M8  Explainability + clean-room reproducibility audit
+M8  Explainability + clean-room reproducibility audit   NEXT — NOT STARTED
      |
 M9  Clean poc/ for delivery
      |

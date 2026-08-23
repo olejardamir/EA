@@ -2,7 +2,13 @@
 
 Purpose: Map every POC requirement to implementation, test, metric, and classification effect.
 
-**Active contract:** `internal_docs/LIVE_MATCH_CENTRE_POC_EXPERIMENT_CONTRACT_v2_0_5.md` (canonical successor; both v2.0.4 documents are historical/superseded). Requirement rows citing "Contract §N" refer to the active contract's section numbering.
+**Active contract (POC experiment):** `poc/internal_docs/EXPERIMENT_CONTRACT_v2_3_0.md` (FROZEN — CANONICAL ACTIVE, terminal M3 era). Historical `v2.0.5`/`v2.0.6` contracts are preserved as provenance only and are NOT the current terminal M3 contract. Requirement rows citing "Contract §N" refer to the v2.3.0 section numbering.
+
+**Terminal M3 verdict:** INCONCLUSIVE at frozen v2.3.0. F1 (validated best effort): 100,000 active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. The archival fixed 4-partition single-primary 100k capacity assumption was withdrawn for production.
+
+> **M4 architecture authority (2026-08-23):** The one-primary / 4-partition 100k topology traced in this matrix is the **POC contract topology**, NOT the final production design. The **final M4 production architecture** is the horizontally partitioned Nchan/SSE fleet (see `internal_docs/M4_FINAL_ARCHITECTURE.md`); it is the successor and now holds architecture authority. No traceability row here should be read as validating that topology for production. Cost/pricing: `internal_docs/M5_*.md` (selected M4 architecture WITHIN $3k/month). Generated from v10 closure prompt (SHA `e3e31916164ab700bc76beca9712fa428f269709ba76a13c923ceb2ef30bf597`), per `internal_docs/AI_INSTRUCTION_PROVENANCE.md`.
+
+**Production architecture (post-M3):** horizontally partitioned self-hosted Nchan/Redis delivery fleet with match/hot-match sharding, DynamoDB canonical truth, API Gateway + SQS FIFO + Lambda ingest, CloudFront edge, Next.js static client. See `M4_FINAL_ARCHITECTURE.md`. No row below should be read as treating the old one-primary 100k architecture as the final design.
 
 ## Contract acceptance criteria → implementation
 
