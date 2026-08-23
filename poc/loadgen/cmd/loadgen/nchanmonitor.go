@@ -122,16 +122,33 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 					resp2.Body.Close()
 					var wc struct {
 						Workers []struct {
-							Pid   int    `json:"pid"`
-							Utime int64  `json:"utime"`
-							Stime int64  `json:"stime"`
-							State string `json:"state"`
+							Pid     int    `json:"pid"`
+							Utime   int64  `json:"utime"`
+							Stime   int64  `json:"stime"`
+							State   string `json:"state"`
+							Wchan   string `json:"wchan,omitempty"`
+							Syscall *int   `json:"syscall,omitempty"`
+							Vctx    *int64 `json:"vctx,omitempty"`
+							Nctx    *int64 `json:"nctx,omitempty"`
 						} `json:"workers"`
 					}
 					if json.Unmarshal(buf2[:n2], &wc) == nil {
 						for _, w := range wc.Workers {
-							s.WorkerCPU[strconv.Itoa(w.Pid)] = w.Utime + w.Stime
-							s.Fields["worker_state_"+strconv.Itoa(w.Pid)] = w.State
+							key := strconv.Itoa(w.Pid)
+							s.WorkerCPU[key] = w.Utime + w.Stime
+							s.Fields["worker_state_"+key] = w.State
+							if w.Wchan != "" {
+								s.Fields["worker_wchan_"+key] = w.Wchan
+							}
+							if w.Syscall != nil {
+								s.Fields["worker_syscall_"+key] = strconv.Itoa(*w.Syscall)
+							}
+							if w.Vctx != nil {
+								s.Fields["worker_vctx_"+key] = strconv.FormatInt(*w.Vctx, 10)
+							}
+							if w.Nctx != nil {
+								s.Fields["worker_nctx_"+key] = strconv.FormatInt(*w.Nctx, 10)
+							}
 						}
 					}
 				}

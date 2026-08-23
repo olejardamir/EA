@@ -142,6 +142,13 @@ const server = http.createServer((req, res) => {
   } else if (req.method === "GET" && req.url === "/workers/cpu") {
     // TEMP-DIAG: per-worker CPU ticks (utime+stime from /proc) so the loadgen
     // can watch for frozen or pegged nginx workers on the stall timeline.
+    // Extended DIAG: kernel-side stall evidence per worker —
+    //   wchan:            kernel wait channel (where a sleeping worker waits)
+    //   syscall:          current syscall number (-1 = running in userspace)
+    //   vctx/nctx:        voluntary/nonvoluntary context-switch totals; a
+    //                     zero vctx delta across seconds proves the worker was
+    //                     never woken (missed readiness event), as opposed to
+    //                     waking and finding no work.
     const { workers } = findNginxProcesses()
     const out = []
     for (const pid of workers) {
@@ -150,7 +157,18 @@ const server = http.createServer((req, res) => {
         const close = stat.lastIndexOf(")")
         const f = stat.slice(close + 2).split(/\s+/)
         // fields after state: utime is index 11, stime index 12
-        out.push({ pid, utime: parseInt(f[11], 10), stime: parseInt(f[12], 10), state: f[0] })
+        const entry = { pid, utime: parseInt(f[11], 10), stime: parseInt(f[12], 10), state: f[0] }
+        try { entry.wchan = fs.readFileSync(`/proc/${pid}/wchan`, "utf-8").trim() } catch {}
+        try {
+          const sc = fs.readFileSync(`/proc/${pid}/syscall`, "utf-8").trim().split(/\s+/)[0]
+          entry.syscall = parseInt(sc, 10)
+        } catch {}
+        try {
+          const status = fs.readFileSync(`/proc/${pid}/status`, "utf-8")
+          entry.vctx = parseInt((status.match(/^voluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
+          entry.nctx = parseInt((status.match(/^nonvoluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
+        } catch {}
+        out.push(entry)
       } catch {}
     }
     res.writeHead(200, { "Content-Type": "application/json" })
