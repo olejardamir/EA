@@ -29,19 +29,29 @@ frames were published during/right after the burst — one backlog draining at
 - redis-node bounce as ROOT cause: command_timeout 5s→60s eliminated all
   "Marking node as failed" events and NULL-reply storms (L), stalls persist
 
-## Root-cause signature (runs J/M, SYS_PTRACE deep snapshots)
-At burst onset, ONE worker per nchan partition livelocks: userspace spin
-(~0.3–0.9 core sustained), voluntary context switches freeze at a fixed value
-for the rest of the run (shard0/pid16: frozen at 17813 from t+111s), syscall
-always "-1" (userspace). Matches ngx_spinlock semantics (multicore: pure busy-
-wait, no yield). Correlated: "interprocess alerts delayed by N sec" up to 37s;
-delayed workers sleep in ep_poll with ready IPC pipes unread; their subscribers'
-frames stall until churn forces wakeups. Redis rail stays intact → correctness
-counters remain perfect (late, never lost).
+## Root cause signature — CAPTURED (runs J–O)
+Auto-backtrace watcher (75e2445) caught the stalling workers on EVERY
+partition (run O, 30 dumps): all frozen-vctx/CPU-burning workers are inside
 
-Also observed per node: 1–2 other workers show zero wakeups for 10–22s windows
-during burst/post-burst (possibly legitimate accept-imbalance × weighted match
-selection; possibly same lock waiting in epoll).
+    #0 writev
+    #1 ngx_writev            src/os/unix/ngx_writev_chain.c:189
+    #2 ngx_linux_sendfile_chain  (limit=2097152)
+    #3 ngx_http_write_filter
+    #4 ngx_http_chunked_body_filter
+
+i.e. continuously flushing huge buffered SSE output chains. Draining such a
+chain monopolizes the worker (no event processing → delayed IPC alerts, late
+redis replies, stalled deliveries to that worker's other subscribers) for
+seconds-to-tens-of-seconds, which cascades into more per-connection buffering.
+Not ngx_rwlock (DEBUG_NGX_RWLOCK=1 would flood 'rwlock mutex wait' warns; none
+appear). Redis rail intact → frames late, never lost (correctness perfect).
+
+Open question: what fills the per-connection output buffers ahead of the
+drain waves — TCP zero-window from briefly-unread client sockets, or nchan
+handing the worker an oversized message chain in one shot. Next instrument:
+per-worker written-bytes/s (nginx stub_status lacks it; use /proc/<pid>/io
+write_bytes deltas per worker via /workers/deep) plus per-connection
+correlation with slow_delivery_timeline timestamps.
 
 ## Fix landed so far
 - e1e77ec: nchan_redis_command_timeout 5s→60s (removes bounce amplifier;
