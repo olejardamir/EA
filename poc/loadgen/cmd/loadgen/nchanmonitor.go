@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -44,6 +45,7 @@ type nchanStatusSample struct {
 	Port      string            `json:"port"`
 	Fields    map[string]string `json:"fields,omitempty"`
 	WorkerCPU map[string]int64  `json:"worker_cpu_ticks"`
+	Deep      []json.RawMessage `json:"workers_deep,omitempty"`
 }
 
 // nchanStatusMonitor samples one partition every second into a bounded ring.
@@ -181,8 +183,24 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 						s.Fields["status_active"] = strconv.Itoa(*pf.NginxActive)
 					}
 				}
+			}
+		}
+		// TEMP-DIAG: ptrace-grade per-worker snapshot each second (syscall,
+		// kernel stack, wchan, state) — kept as a parallel evidence stream so
+		// the Fields map stays flat for the stub-status fields.
+		if m.controlURL != "" {
+			resp4, err4 := m.client.Get(m.controlURL + "/workers/deep")
+			if err4 == nil {
+				buf4, _ := io.ReadAll(resp4.Body)
+				resp4.Body.Close()
+				var dp struct {
+					Workers []json.RawMessage `json:"workers"`
+				}
+				if json.Unmarshal(buf4, &dp) == nil {
+					s.Deep = dp.Workers
 				}
 			}
+		}
 			m.record(s)
 		}
 	}

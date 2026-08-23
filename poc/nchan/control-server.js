@@ -173,6 +173,33 @@ const server = http.createServer((req, res) => {
     }
     res.writeHead(200, { "Content-Type": "application/json" })
     res.end(JSON.stringify({ ts: Date.now(), workers: out }))
+  } else if (req.method === "GET" && req.url === "/workers/deep") {
+    // TEMP-DIAG: ptrace-grade per-worker stall evidence. Requires SYS_PTRACE.
+    // syscall: current syscall number and args (-1 = userspace);
+    // stack:   kernel-side stack of the sleeping task (wchan symbols);
+    // status:  State + ctxt switches. Together these prove whether a
+    //          zero-wakeup worker sleeps in epoll_wait (missed wakeup),
+    //          in a blocking write/read, or is runnable-but-starved.
+    const { workers } = findNginxProcesses()
+    const out = []
+    for (const pid of workers) {
+      const entry = { pid }
+      try { entry.syscall = fs.readFileSync(`/proc/${pid}/syscall`, "utf-8").trim() } catch {}
+      try {
+        const st = fs.readFileSync(`/proc/${pid}/stack`, "utf-8")
+        entry.stack = st.split("\n").filter((l) => l.includes("]")).slice(0, 6).map((l) => l.trim())
+      } catch {}
+      try {
+        const status = fs.readFileSync(`/proc/${pid}/status`, "utf-8")
+        entry.state = (status.match(/^State:\s+(\S)/m) || [])[1]
+        entry.vctx = parseInt((status.match(/^voluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
+        entry.nctx = parseInt((status.match(/^nonvoluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
+      } catch {}
+      try { entry.wchan = fs.readFileSync(`/proc/${pid}/wchan`, "utf-8").trim() } catch {}
+      out.push(entry)
+    }
+    res.writeHead(200, { "Content-Type": "application/json" })
+    res.end(JSON.stringify({ ts: Date.now(), workers: out }))
   } else if (req.method === "GET" && req.url === "/metrics") {
     const metrics = getNchanMetrics()
     res.writeHead(200, { "Content-Type": "application/json" })
