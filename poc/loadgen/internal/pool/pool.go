@@ -158,6 +158,8 @@ type Pool struct {
 
 	upMu       sync.Mutex
 	upstreams  map[string]*upstreamTransport // per-subscriber-base delivery attribution
+	slowRing   [slowRingSize]SlowDelivery    // timestamped slow-delivery timeline (evidence)
+	slowIdx    int
 	histMu      sync.Mutex     // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
 	surgeOpen atomic.Bool
@@ -681,6 +683,12 @@ func (p *Pool) recordDeepLatency(v *viewer, latMs, transportMs, procMs int, even
 		u.samples.Add(1)
 		if latMs >= liveTailThresholdMs {
 			u.slow.Add(1)
+			p.slowRing[p.slowIdx%slowRingSize] = SlowDelivery{
+				TMs:   time.Now().UnixMilli(),
+				Base:  base,
+				LatMs: latMs,
+			}
+			p.slowIdx++
 		}
 	}
 }
@@ -697,6 +705,26 @@ func (p *Pool) UpstreamEvidence() map[string]map[string]int64 {
 	return out
 }
 
+// SlowDeliveryTimeline returns the retained slow deliveries in chronological
+// order (ring order normalized). Evidence-only.
+func (p *Pool) SlowDeliveryTimeline() []SlowDelivery {
+	p.upMu.Lock()
+	defer p.upMu.Unlock()
+	n := p.slowIdx
+	if n > slowRingSize {
+		n = slowRingSize
+	}
+	out := make([]SlowDelivery, 0, n)
+	start := p.slowIdx - n
+	for i := start; i < p.slowIdx; i++ {
+		e := p.slowRing[i%slowRingSize]
+		if e.TMs != 0 {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // liveTailThresholdMs bounds catch-up detection for resumed deep streams: a
 // frame published within the last 5 s proves the stream is at the live tail;
 // anything older on a resumed stream is buffered-history replay.
@@ -709,6 +737,19 @@ const liveTailThresholdMs = 5000
 type upstreamTransport struct {
 	samples atomic.Int64
 	slow    atomic.Int64 // transport latency >= liveTailThresholdMs
+}
+
+// slowRingSize bounds the timestamped slow-delivery timeline kept in memory:
+// enough to cover repeated multi-second stall clusters across a full run.
+const slowRingSize = 4096
+
+// SlowDelivery is one deep-cohort frame whose transport latency reached the
+// slow threshold, recorded with its wall-clock time and delivering base so
+// the run timeline can be correlated with phase windows and DUT state.
+type SlowDelivery struct {
+	TMs   int64  `json:"t_ms"`
+	Base  string `json:"base"`
+	LatMs int    `json:"lat_ms"`
 }
 
 // routeLatency applies the frozen phase-window provenance rules for

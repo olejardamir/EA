@@ -2230,6 +2230,7 @@ func (r *shardRun) assembleResult(
 	}
 	res.Resources.Generator["publisher"] = r.publisherEvidence()
 	res.Resources.Generator["upstream_transport"] = r.pool.UpstreamEvidence()
+	res.Resources.Generator["slow_delivery_timeline"] = r.pool.SlowDeliveryTimeline()
 	res.Resources.Generator["resource_stages"] = r.resourceEvidence()
 	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)
