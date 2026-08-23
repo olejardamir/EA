@@ -1,0 +1,17 @@
+# M3 evidence manifest — campaign ea-evidence-100k-d54b74b13fb9-1787447414
+
+| artifact | sha256 |
+|----------|--------|
+| CAMPAIGN.md | acc333796cc02806a5a931112498c238445f7278b010956e838afd64eae86978 |
+| command.txt | 01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b |
+| source-commit.txt | 59281b42cf1bc82ded6bb36ff724a769645238f9daa8cbc85452ba7a5b09c693 |
+| contract-version.txt | 07e187700fb844f50e119e0120bdde98f26e67927d1356903d39885ca79cc871 |
+| contract.sha256 | 0516bb49d58e4fe92b0c7b5b2e39ced6e0f5e5fb22b7d7909e722920a382283b |
+| git-status-before.txt | 1d33ac6365068d00cce436539f7378940a42e2e0b41fbcb4712139981ab4c194 |
+| environment.txt | 69177d8d09aafd56fd361e227b2f785b054a33a4f96b50cc514d5c34b070305c |
+| compose-config.txt | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| docker-images.txt | 43c327ae9c3c83f2882637c0b2b946680b501ce7b2103188c9afcc6eb1e07caa |
+| campaign.stdout.log | f1fd168a79653668a723d6018848ad275d918d69e4efe6506cf3dc45c7afbcf0 |
+| campaign.stderr.log | 96eed26d707c423546e254f27b461ce64f9883a5beb882ec0419c603b031bf88 |
+| campaign.exit | 4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865 |
+| campaign-result.json | 349678c6ee89d0a55454f74310e19b1f9817c6eae85ebd0104a6b4d3d2c535ff |
