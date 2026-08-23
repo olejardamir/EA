@@ -760,9 +760,11 @@ type upstreamTransport struct {
 	slow    atomic.Int64 // transport latency >= liveTailThresholdMs
 }
 
-// slowRingSize bounds the timestamped slow-delivery timeline kept in memory:
-// enough to cover repeated multi-second stall clusters across a full run.
-const slowRingSize = 4096
+// slowRingSize bounds the timestamped slow-delivery timeline kept in memory.
+// 65536: run G's reconnect phase alone produced >18k slow samples and wrapped
+// the old 4096 ring, discarding every earlier stall window; 64k entries
+// (~24 bytes each, ~1.5 MiB) retain the full slow population of any probe run.
+const slowRingSize = 65536
 
 // SlowDelivery is one deep-cohort frame whose transport latency reached the
 // slow threshold, recorded with its wall-clock time and delivering base so
