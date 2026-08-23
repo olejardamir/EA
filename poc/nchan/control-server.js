@@ -185,6 +185,7 @@ const server = http.createServer((req, res) => {
       nginx_active: null,
       nginx_reading: null,
       nginx_writing: null,
+      nginx_waiting: null,
       nginx_master_pid: null,
       nginx_worker_pids: [],
       nginx_master_fd_soft: null,
@@ -223,10 +224,11 @@ const server = http.createServer((req, res) => {
       // §M3-R: locate the Reading/Writing line wherever it appears (stub_status
       // emits it as the 4th line; earlier code wrongly indexed lines[2]).
       const rwLine = lines.find((l) => /Reading:\s+\d+\s+Writing:\s+\d+/.test(l))
-      const rwMatch = rwLine?.match(/Reading:\s+(\d+)\s+Writing:\s+(\d+)/)
+      const rwMatch = rwLine?.match(/Reading:\s+(\d+)\s+Writing:\s+(\d+)(?:\s+Waiting:\s+(\d+))?/)
       if (rwMatch) {
         result.nginx_reading = parseInt(rwMatch[1], 10)
         result.nginx_writing = parseInt(rwMatch[2], 10)
+        if (rwMatch[3] !== undefined) result.nginx_waiting = parseInt(rwMatch[3], 10)
       }
     } catch {}
 

@@ -152,6 +152,36 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 						}
 					}
 				}
+				// TEMP-DIAG: nginx_status Reading/Writing/Waiting — locates the
+				// delivery backlog inside the node: thousands Writing = frames
+				// queued in local SSE output; high Waiting + low Writing = the
+				// stall is upstream (redis relay / IPC), not socket writes.
+				resp3, err3 := m.client.Get(m.controlURL + "/preflight?target=1")
+				if err3 == nil {
+					buf3 := make([]byte, 8192)
+					n3, _ := resp3.Body.Read(buf3)
+					resp3.Body.Close()
+				var pf struct {
+					NginxReading *int `json:"nginx_reading"`
+					NginxWriting *int `json:"nginx_writing"`
+					NginxWaiting *int `json:"nginx_waiting"`
+					NginxActive  *int `json:"nginx_active"`
+				}
+				if json.Unmarshal(buf3[:n3], &pf) == nil {
+					if pf.NginxReading != nil {
+						s.Fields["status_reading"] = strconv.Itoa(*pf.NginxReading)
+					}
+					if pf.NginxWriting != nil {
+						s.Fields["status_writing"] = strconv.Itoa(*pf.NginxWriting)
+					}
+					if pf.NginxWaiting != nil {
+						s.Fields["status_waiting"] = strconv.Itoa(*pf.NginxWaiting)
+					}
+					if pf.NginxActive != nil {
+						s.Fields["status_active"] = strconv.Itoa(*pf.NginxActive)
+					}
+				}
+				}
 			}
 			m.record(s)
 		}
