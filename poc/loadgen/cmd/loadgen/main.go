@@ -258,6 +258,7 @@ type shardRun struct {
 	resSnapshots  map[string]*dut.ControlMetrics
 	prefSnapshots map[string]*dut.Preflight
 	netstatSnaps  map[string]map[string]int64
+	redisCpuSnaps map[string]*dut.RedisInfo
 	nchanMon      *nchanStatusMonitor
 	spareResSnaps map[string]*dut.ControlMetrics
 
@@ -485,6 +486,19 @@ func (r *shardRun) captureNetstatSnapshot(stage string) {
 	}
 	r.netstatSnaps[stage] = snap
 	r.resMu.Unlock()
+	// Redis CPU at the same stage: nchan's relay path queues on redis during
+	// the burst era (redis pending commands 70-330), so redis saturation is
+	// directly testable from cumulative used_cpu_sys+user deltas.
+	if ri, err := dut.QueryRedisInfo(r.runCtx, r.cfg.redisAddr); err == nil {
+		r.resMu.Lock()
+		if r.redisCpuSnaps == nil {
+			r.redisCpuSnaps = map[string]*dut.RedisInfo{}
+		}
+		r.redisCpuSnaps[stage] = ri
+		r.resMu.Unlock()
+	} else {
+		r.logf("redis cpu snapshot %s failed: %v", stage, err)
+	}
 }
 
 // resourceStage maps a coordinated boundary to its mandated R12 resource-
@@ -2008,6 +2022,24 @@ func (r *shardRun) resourceEvidence() map[string]any {
 	if r.nchanMon != nil {
 		out["nchan_status_timeline"] = r.nchanMon.Snapshot()
 	}
+	// Redis CPU deltas across the same mandated stages (seconds of
+	// used_cpu_sys+user between consecutive snapshots).
+	var prevRedis *dut.RedisInfo
+	redisOut := map[string]any{}
+	for _, stage := range []string{"baseline", "post_steady", "post_surge", "post_burst", "post_reconnect", "post_restart", "final"} {
+		ri, ok := r.redisCpuSnaps[stage]
+		if !ok {
+			continue
+		}
+		entry := map[string]float64{"used_cpu_sys": ri.UsedCPUSys, "used_cpu_user": ri.UsedCPUUser}
+		if prevRedis != nil {
+			entry["cpu_delta_sec"] = (ri.UsedCPUSys - prevRedis.UsedCPUSys) + (ri.UsedCPUUser - prevRedis.UsedCPUUser)
+			entry["clients"] = float64(ri.ConnectedClients)
+		}
+		prevRedis = ri
+		redisOut[stage] = entry
+	}
+	out["redis_cpu_stages"] = redisOut
 	return out
 }
 

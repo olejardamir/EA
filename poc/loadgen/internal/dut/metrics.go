@@ -118,6 +118,8 @@ type RedisInfo struct {
 	UsedBytes        int64
 	PeakBytes        int64
 	ConnectedClients int64
+	UsedCPUSys       float64 // INFO used_cpu_sys — cumulative CPU seconds (system)
+	UsedCPUUser      float64 // INFO used_cpu_user — cumulative CPU seconds (user)
 }
 
 // RedisInfo queries INFO over a one-shot minimal RESP connection.
@@ -170,6 +172,10 @@ func QueryRedisInfo(ctx context.Context, addr string) (*RedisInfo, error) {
 			out.PeakBytes, _ = strconv.ParseInt(kv[1], 10, 64)
 		case "connected_clients":
 			out.ConnectedClients, _ = strconv.ParseInt(kv[1], 10, 64)
+		case "used_cpu_sys":
+			out.UsedCPUSys, _ = strconv.ParseFloat(kv[1], 64)
+		case "used_cpu_user":
+			out.UsedCPUUser, _ = strconv.ParseFloat(kv[1], 64)
 		}
 	}
 	return out, nil
