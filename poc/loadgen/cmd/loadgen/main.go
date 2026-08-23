@@ -257,6 +257,7 @@ type shardRun struct {
 	resMu         sync.Mutex
 	resSnapshots  map[string]*dut.ControlMetrics
 	prefSnapshots map[string]*dut.Preflight
+	netstatSnaps  map[string]map[string]int64
 	spareResSnaps map[string]*dut.ControlMetrics
 
 	// R12: REJECT-level resource violations (OOM kill, memory limit, worker
@@ -460,9 +461,29 @@ func (r *shardRun) barrier(phase, boundary string) bool {
 	if r.runCtx != nil {
 		if stage := resourceStage(phase, boundary); stage != "" {
 			r.captureResourceSnapshots(stage)
+			r.captureNetstatSnapshot(stage)
 		}
 	}
 	return true
+}
+
+// captureNetstatSnapshot records host-kernel TCP health counters
+// (/proc/net/netstat TcpExt) at a phase boundary. The loadgen containers
+// share the host kernel, so deltas across stages expose packet loss /
+// retransmission storms exactly where the transport-era attribution shows
+// delivery stalls — without trusting any single counter in isolation.
+func (r *shardRun) captureNetstatSnapshot(stage string) {
+	snap, err := readTcpExt()
+	if err != nil {
+		r.logf("netstat snapshot %s failed: %v", stage, err)
+		return
+	}
+	r.resMu.Lock()
+	if r.netstatSnaps == nil {
+		r.netstatSnaps = map[string]map[string]int64{}
+	}
+	r.netstatSnaps[stage] = snap
+	r.resMu.Unlock()
 }
 
 // resourceStage maps a coordinated boundary to its mandated R12 resource-
@@ -1946,7 +1967,56 @@ func (r *shardRun) resourceEvidence() map[string]any {
 	}
 	out["worker_topology"] = workers
 	out["reject_reasons"] = r.rejectNotes
+	// Host-kernel TCP health across the same mandated stages: deltas expose
+	// retransmission storms / listen drops in exactly the eras where
+	// transport attribution shows delivery stalls.
+	net := map[string]any{}
+	first := true
+	var prev map[string]int64
+	for _, stage := range []string{"baseline", "post_steady", "post_surge", "post_burst", "post_reconnect", "post_restart", "final"} {
+		snap, ok := r.netstatSnaps[stage]
+		if !ok {
+			continue
+		}
+		entry := map[string]int64{}
+		if first {
+			for k, v := range snap {
+				if tcpHealthKeys[k] {
+					entry[k] = v
+				}
+			}
+			first = false
+		} else {
+			for k, v := range snap {
+				if tcpHealthKeys[k] {
+					entry[k] = v - prev[k]
+				}
+			}
+		}
+		prev = snap
+		net[stage] = entry
+	}
+	out["tcp_health_stages"] = net
 	return out
+}
+
+// tcpHealthKeys selects the TcpExt counters relevant to delivery-stall
+// attribution (packet loss vs queueing) from /proc/net/netstat.
+var tcpHealthKeys = map[string]bool{
+	"ActiveOpens":       true,
+	"PassiveOpens":      true,
+	"AttemptFails":      true,
+	"EstabResets":       true,
+	"RetransSegs":       true,
+	"FastRetrans":       true,
+	"TCPLostRetransmit": true,
+	"TCPSynRetrans":     true,
+	"TCPTimeouts":       true,
+	"ListenOverflows":   true,
+	"ListenDrops":       true,
+	"TCPBacklogDrop":    true,
+	"OfPrune":           true,
+	"OutRsts":           true,
 }
 
 // applyGeneratorGates applies the frozen R09 generator validity rules: the
