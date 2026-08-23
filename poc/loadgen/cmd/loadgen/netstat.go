@@ -79,3 +79,45 @@ func readSockstatTCP() (map[string]int64, error) {
 	}
 	return out, sc.Err()
 }
+
+// readLocalTcpQueues sums rx/tx socket queues in the LOCAL netns (the loadgen
+// container) from /proc/net/tcp[6]. During the target-era stall, large
+// rx_queue sums = SSE frames delivered by the DUT but unread by client
+// readers — proving the bottleneck is downstream consumption, not DUT egress.
+func readLocalTcpQueues() (sockets int64, rxB, txB, rxN, txN int64, err error) {
+	for _, tbl := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		f, e := os.Open(tbl)
+		if e != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		first := true
+		for sc.Scan() {
+			if first {
+				first = false
+				continue
+			}
+			fields := strings.Fields(sc.Text())
+			if len(fields) < 5 {
+				continue
+			}
+			q := strings.Split(fields[4], ":")
+			if len(q) != 2 {
+				continue
+			}
+			tx, _ := strconv.ParseInt(q[0], 16, 64)
+			rx, _ := strconv.ParseInt(q[1], 16, 64)
+			sockets++
+			txB += tx
+			rxB += rx
+			if tx > 0 {
+				txN++
+			}
+			if rx > 0 {
+				rxN++
+			}
+		}
+		f.Close()
+	}
+	return sockets, rxB, txB, rxN, txN, nil
+}

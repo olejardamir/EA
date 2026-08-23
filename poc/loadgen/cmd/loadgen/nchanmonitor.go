@@ -134,6 +134,8 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 							Nctx       *int64 `json:"nctx,omitempty"`
 							WriteBytes *int64 `json:"write_bytes,omitempty"`
 							ReadBytes  *int64 `json:"read_bytes,omitempty"`
+							Wchar      *int64 `json:"wchar,omitempty"`
+							Rchar      *int64 `json:"rchar,omitempty"`
 						} `json:"workers"`
 					}
 					if json.Unmarshal(buf2[:n2], &wc) == nil {
@@ -154,15 +156,16 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 								s.Fields["worker_nctx_"+key] = strconv.FormatInt(*w.Nctx, 10)
 							}
 							// Drain-rate discriminator: per-worker cumulative
-							// /proc/io byte counters. Deltas between samples
-							// give each stalled worker's actual egress rate —
-							// wire-rate drain (capacity) vs trickle (client
-							// windows closed / kernel queues full).
-							if w.WriteBytes != nil {
-								s.Fields["worker_wbytes_"+key] = strconv.FormatInt(*w.WriteBytes, 10)
+							// wchar/rchar (ALL syscall I/O bytes, sockets
+							// included — write_bytes is storage-only and
+							// stays zero for SSE fan-out). Deltas between
+							// samples give each stalled worker's actual
+							// egress rate.
+							if w.Wchar != nil {
+								s.Fields["worker_wchar_"+key] = strconv.FormatInt(*w.Wchar, 10)
 							}
-							if w.ReadBytes != nil {
-								s.Fields["worker_rbytes_"+key] = strconv.FormatInt(*w.ReadBytes, 10)
+							if w.Rchar != nil {
+								s.Fields["worker_rchar_"+key] = strconv.FormatInt(*w.Rchar, 10)
 							}
 						}
 					}
@@ -222,6 +225,17 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 						s.Fields["tcp_rxq_nonempty"] = strconv.FormatInt(ts.RxNonempty, 10)
 					}
 				}
+			}
+			// Client-side counterpart: this loadgen container's own netns
+			// socket queues. Large rx_queue during the stall = frames the DUT
+			// delivered but client readers have not consumed yet — proves the
+			// bottleneck is downstream consumption, not DUT egress.
+			if lsock, rxB, txB, rxN, txN, err := readLocalTcpQueues(); err == nil {
+				s.Fields["cli_tcp_sockets"] = strconv.FormatInt(lsock, 10)
+				s.Fields["cli_rxq_bytes"] = strconv.FormatInt(rxB, 10)
+				s.Fields["cli_txq_bytes"] = strconv.FormatInt(txB, 10)
+				s.Fields["cli_rxq_nonempty"] = strconv.FormatInt(rxN, 10)
+				s.Fields["cli_txq_nonempty"] = strconv.FormatInt(txN, 10)
 			}
 		// TEMP-DIAG: ptrace-grade per-worker snapshot each second (syscall,
 		// kernel stack, wchan, state) — kept as a parallel evidence stream so

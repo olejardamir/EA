@@ -169,13 +169,14 @@ const server = http.createServer((req, res) => {
           entry.nctx = parseInt((status.match(/^nonvoluntary_ctxt_switches:\s+(\d+)/m) || [])[1], 10)
         } catch {}
         try {
-          // Drain-rate discriminator: a worker monopolized flushing buffered
-          // SSE chains writes continuously; write_bytes/s says whether it
-          // drains at wire speed (capacity-bound) or trickles into closed
-          // client windows (backlog lives in kernel queues / userland).
+          // Drain-rate discriminator: wchar/rchar count ALL syscall I/O bytes
+          // (sockets included); write_bytes/read_bytes count storage-backed
+          // I/O only and stay zero for SSE fan-out. wchar/s per stalled
+          // worker says whether it drains at wire speed (capacity-bound) or
+          // trickles (backlog lives elsewhere — memstore/redis relay).
           const ioStat = fs.readFileSync(`/proc/${pid}/io`, "utf-8")
-          entry.write_bytes = parseInt((ioStat.match(/^write_bytes:\s+(\d+)/m) || [])[1], 10)
-          entry.read_bytes = parseInt((ioStat.match(/^read_bytes:\s+(\d+)/m) || [])[1], 10)
+          entry.wchar = parseInt((ioStat.match(/^wchar:\s+(\d+)/m) || [])[1], 10)
+          entry.rchar = parseInt((ioStat.match(/^rchar:\s+(\d+)/m) || [])[1], 10)
         } catch {}
         out.push(entry)
       } catch {}
