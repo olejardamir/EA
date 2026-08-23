@@ -42,6 +42,7 @@ RUN cd /tmp/nginx-${NGINX_VERSION} && \
         --with-http_v2_module \
         --with-http_realip_module \
         --with-http_stub_status_module \
+        --with-debug \
         --add-module=/tmp/nchan-${NCHAN_VERSION} && \
     make -j$(nproc) && \
     make install && \
