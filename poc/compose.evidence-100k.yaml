@@ -29,7 +29,10 @@ services:
     # Ephemeral per-run dataset (FLUSHALL between runs; durability carries no
     # evidence value): disable RDB/AOF so BGSAVE fork stalls on the CPU quota
     # cannot freeze the publication-accept path mid-run.
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # io-threads=4 with writes: redis is the shared publication/interconnect
+    # hub and its single main thread saturates one core under the frozen
+    # publication rate, spiking accept and cross-partition delivery latency.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--io-threads", "4", "--io-threads-do-writes", "yes"]
     volumes:
       - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
       - redis-cgroup-evidence:/redis-cgroup
