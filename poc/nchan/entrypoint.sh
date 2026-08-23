@@ -34,6 +34,12 @@ echo "Starting control server on port $CONTROL_PORT"
 node /usr/local/bin/control-server.js &
 CONTROL_PID=$!
 
+# TEMP-DIAG: auto-backtrace any worker whose context switches freeze while it
+# burns CPU (burst-onset livelock). Remove with the watcher once fixed.
+if [ -f /usr/local/bin/livelock-watcher.sh ]; then
+  /usr/local/bin/livelock-watcher.sh &
+fi
+
 start_nginx
 
 # Supervisor loop: if nginx exits (stop or crash), restart it.

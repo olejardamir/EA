@@ -85,7 +85,8 @@ COPY nchan-portable.conf /etc/nginx/nchan-portable.conf
 # §E/§6.7: Test-only restart control server and script
 COPY control-server.js /usr/local/bin/control-server.js
 COPY nchan-restart.sh /usr/local/bin/nchan-restart.sh
-RUN chmod +x /usr/local/bin/nchan-restart.sh
+COPY livelock-watcher.sh /usr/local/bin/livelock-watcher.sh
+RUN chmod +x /usr/local/bin/nchan-restart.sh /usr/local/bin/livelock-watcher.sh
 
 # §M3-R: All node ports (partition nodes p0-p3 + spare) — informational only;
 # the evidence topology uses host networking.
