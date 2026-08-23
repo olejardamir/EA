@@ -27,6 +27,11 @@ RUN cd /tmp && \
     echo "${NCHAN_SHA256}  nchan-${NCHAN_VERSION}.tar.gz" | sha256sum -c - && \
     tar xzf nchan-${NCHAN_VERSION}.tar.gz
 
+# TEMP-DIAG: NGINX_DEBUG=0 builds without --with-debug. The debug build is the
+# leading suspect for the interprocess-alert trickle (30s IPC receive delay at
+# 24k subscribers reproduced standalone); A/B via this arg.
+ARG NGINX_DEBUG=1
+
 # Build Nginx with Nchan module
 RUN cd /tmp/nginx-${NGINX_VERSION} && \
     ./configure \
@@ -42,7 +47,7 @@ RUN cd /tmp/nginx-${NGINX_VERSION} && \
         --with-http_v2_module \
         --with-http_realip_module \
         --with-http_stub_status_module \
-        --with-debug \
+        $( [ "$NGINX_DEBUG" = "1" ] && echo --with-debug ) \
         --add-module=/tmp/nchan-${NCHAN_VERSION} && \
     make -j$(nproc) && \
     make install && \
