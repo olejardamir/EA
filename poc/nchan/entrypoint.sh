@@ -36,7 +36,11 @@ CONTROL_PID=$!
 
 # TEMP-DIAG: auto-backtrace any worker whose context switches freeze while it
 # burns CPU (burst-onset livelock). Remove with the watcher once fixed.
-if [ -f /usr/local/bin/livelock-watcher.sh ]; then
+# LIVELOCK_WATCHER=0 disables: gdb -p ATTACH STOPS the worker for the whole
+# symbol-load + backtrace window; 39 attaches landed mid-drain in run S,
+# each one pausing exactly the worker whose delivery queue was already the
+# deepest. Needed to separate diagnostic interference from the base stall.
+if [ -f /usr/local/bin/livelock-watcher.sh ] && [ "${LIVELOCK_WATCHER:-1}" != "0" ]; then
   /usr/local/bin/livelock-watcher.sh &
 fi
 

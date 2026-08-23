@@ -55,3 +55,26 @@ services:
       BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
       SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
       COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
+
+# TEMP-DIAG (run T experiment): the auto-gdb livelock watcher attaches to and
+# STOPS nginx workers mid-run — 39 backtrace dumps landed in run S, each one
+# pausing exactly the worker whose delivery queue was already deepest. The
+# standalone fan-out microbenchmark delivers 12M frames with p95 ~1s on the
+# same node image when nothing ptraces it, so diagnostic interference is now
+# the leading amplifier of the target-era stall. Disabled here; the base
+# stall (if any remains) is still measurable via stub-status + wchar timeline.
+  nchan-p0:
+    environment:
+      LIVELOCK_WATCHER: "0"
+  nchan-p1:
+    environment:
+      LIVELOCK_WATCHER: "0"
+  nchan-p2:
+    environment:
+      LIVELOCK_WATCHER: "0"
+  nchan-p3:
+    environment:
+      LIVELOCK_WATCHER: "0"
+  nchan-spare:
+    environment:
+      LIVELOCK_WATCHER: "0"
