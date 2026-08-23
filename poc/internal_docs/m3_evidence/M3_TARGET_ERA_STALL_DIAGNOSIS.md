@@ -74,6 +74,8 @@ All runs use the frozen B1 baseline: `NGINX_DEBUG=0`, `LIVELOCK_WATCHER=0`,
 | G1    | `+nchan_redis_storage_mode backup` | n/a | n/a | 0 | ABORT: coordinator DNS `server misbehaving` at late-join:end barrier |
 | G2    | `worker_processes 4→8` | 10055 | 6846 | 0 | REGRESSION (CPU oversubscribe; reverted) |
 | G1b   | `backup` retry | n/a | n/a | 0 | ABORT: same coordinator DNS barrier (reproducible) |
+| H1    | `backup` + `extra_hosts: coordinator:127.0.0.1` | n/a | n/a | 0 | ABORT: loadgen→self (bridge net) exit 3 + coordinator crash; pin invalid |
+| H2    | `extra_hosts: coordinator:127.0.0.1` only (no backup) | n/a | n/a | 0 | ABORT: loadgen-shard-2 exit 3 → compose abort; confirms pin is invalid |
 
 **F1 is the validated best baseline**: fan_out p95 2757ms, burst p95 3707ms,
 correctness 0, peak 100k, surge/late_join clean. Still **5.5× over** fan_out≤500
@@ -98,6 +100,16 @@ late-join (1–31 ms recovery) triggers a burst of coordinator HTTP calls that
 overwhelms Docker's embedded DNS (127.0.0.11). This is an **infra/orchestration**
 failure, not a nchan delivery fault, but it makes `backup` unusable for a clean
 qualifying run as-is.
+
+A `coordinator:127.0.0.1` `extra_hosts` pin was attempted to bypass Docker DNS
+(H1/H2). It is **invalid here**: the loadgen service declares both `network:
+host` and `networks: - shard-net`; in Compose `networks:` wins, so the loadgen
+runs on the **bridge `shard-net`**, where `127.0.0.1` is the loadgen's *own*
+loopback. Pinning `coordinator:127.0.0.1` made the loadgen connect to itself
+→ `loadgen-shard-2 exited with code 3` → compose abort (H2, no backup). The pin
+was reverted; the frozen baseline is exactly F1. The only way to make `backup`
+runnable is a genuine harness fix (cache coordinator address / correct
+host-resolution on the bridge net), independent of any DUT change.
 
 ### DUT vs harness split (from `fan_out_transport` = publish→wire, DUT-side)
 Measured on the E1 run's per-shard histograms; `fan_out` = total (DUT+harness):
@@ -159,5 +171,44 @@ Closing paths, in order of promise vs scope:
 2. Candidate upstream suspects: nchan memstore channel-lock hold times during
    multi-hundred-subscriber fan-out writes; ipc.c write path under lock.
    Check nchan issue tracker for 1.3.x spinlock/livelock reports.
-3. After root fix: re-run ladder (100k probe ×3 seeds), then qualifying
-   campaign per M3 closeout plan.
+ 3. After root fix: re-run ladder (100k probe ×3 seeds), then qualifying
+    campaign per M3 closeout plan.
+
+---
+
+## M3 TERMINAL VERDICT (2026-08-23)
+
+**M3 (ACCEPT at frozen v2.3.0 gates) is NOT closable via config-only changes at
+the frozen topology.** This is a definitive, evidence-backed conclusion, not a
+timeout.
+
+- **Validated optimum = F1**: fan_out p95 **2757 ms** (gate ≤500 → 5.5× over),
+  burst p95 **3707 ms** (gate ≤1000 → 3.7× over), correctness 0, peak 100k,
+  surge/late_join clean. Every other config lever regressed or was neutral:
+  - `sendfile_max_chunk 64k` → surge hung (C1)
+  - `nchan_shared_memory_size 512m` → correctness violation, out_of_order 12352 (D1)
+  - `tcp_nopush off` → worse delivery (E1)
+  - `worker_processes 4→8` → CPU oversubscription (G2)
+  - `nchan_redis_storage_mode backup` → infra abort (G1/G1b) + invalid DNS pin (H1/H2)
+- **Residual is a fundamental throughput wall, not a tunable**: DUT-side
+  `fan_out_transport` is 1919–3129 ms p95 after the redis win; nchan's own
+  documented ceiling (300K subs/s excluding TCP) vs required ~5.2M deliveries/s
+  for the burst window is a hard ~4.5× gap. No config knob bridges a 4.5×
+  per-worker fan-out throughput deficit.
+- **Seeds-42/43/44 campaign must NOT be run** at this config: it would inherit
+  F1's 5.5×/3.7× gate overruns and terminate INCONCLUSIVE/REJECT — wasting
+  compute without producing a qualifying result.
+
+**Paths to ACCEPT all require a contract amendment (outside current authority):**
+1. Relax frozen gates in `EXPERIMENT_CONTRACT_v2_3_0.md` to match the
+   achievable F1 envelope (e.g. fan_out ≤3000, burst ≤4000). — changes the frozen contract.
+2. Change topology (more partitions/workers) or patch the nchan/nginx binary.
+   — changes the frozen DUT/topology.
+3. Fix the harness DNS/coordinator so `storage_mode backup` runs; even then
+   estimated DUT transport ~1500–2500 ms still fails the gates. — effort with
+   no path to ACCEPT.
+
+**Recommendation:** record F1 as the validated best-effort result, mark M3
+INCONCLUSIVE at the frozen v2.3.0 contract, and escalate the three amendment
+options above to the contract owner. Do not broaden the contract or patch the
+binary without explicit authorization.
