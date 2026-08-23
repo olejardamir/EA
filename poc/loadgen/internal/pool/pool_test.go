@@ -528,6 +528,67 @@ func TestDeepHeadAgreementEverEstablishedEligibility(t *testing.T) {
 	}
 }
 
+// A disagreed deep client must carry per-viewer attribution: both sides of
+// every compared field plus liveness at sample time, so silent tail
+// truncation (view seq < head seq) is distinguishable from a semantic
+// mismatch at evidence time.
+func TestDeepHeadDisagreementDetail(t *testing.T) {
+	p := New("http://127.0.0.1:9/sub/", []string{"m1"}, 2) // unused origin
+	v := &viewer{matchID: "m1"}
+	v.st.Role = RoleDeep
+	p.viewers = append(p.viewers, v)
+	p.deepIdx = []int{0}
+	v.everEst.Store(true)
+	v.sawDeep.Store(true)
+
+	// silent truncation: viewer stopped short of the final head seq
+	v.state.Started = true
+	v.state.LastSeq = 5
+	v.state.LastScoreHome = 1
+	v.state.LastScoreAway = 0
+	v.state.LastElapsed = 500
+	v.state.LastPeriod = "1H"
+	heads := map[string]CanonicalHead{
+		"m1": {Seq: 7, Home: 2, Away: 0, Period: "1H", Elapsed: 600},
+	}
+	a, d, u, details := p.DeepHeadAgreementDetailed(heads)
+	if a != 0 || d != 1 || u != 0 {
+		t.Fatalf("disagreeing viewer misjudged: %d/%d/%d", a, d, u)
+	}
+	if len(details) != 1 {
+		t.Fatalf("want exactly 1 disagreement detail, got %d", len(details))
+	}
+	got := details[0]
+	if got.MatchID != "m1" {
+		t.Fatalf("wrong match id: %q", got.MatchID)
+	}
+	if got.ViewLastSeq != 5 || got.HeadSeq != 7 {
+		t.Fatalf("seq sides wrong: view=%d head=%d", got.ViewLastSeq, got.HeadSeq)
+	}
+	if got.ViewHome != 1 || got.HeadHome != 2 {
+		t.Fatalf("score sides wrong: view=%d head=%d", got.ViewHome, got.HeadHome)
+	}
+	if got.Live {
+		t.Fatal("offline viewer must not be reported live")
+	}
+
+	// agreeing viewer produces no detail records
+	p.viewers[0].state.LastSeq = 7
+	p.viewers[0].state.LastScoreHome = 2
+	p.viewers[0].state.LastElapsed = 600
+	a, d, u, details = p.DeepHeadAgreementDetailed(heads)
+	if a != 1 || d != 0 || len(details) != 0 {
+		t.Fatalf("agreement must produce no details: %d/%d details=%d", a, d, len(details))
+	}
+
+	// unmatched viewer is never in the disagreement list
+	p.viewers[0].sawDeep.Store(false)
+	_, _, _, details = p.DeepHeadAgreementDetailed(heads)
+	if len(details) != 0 {
+		t.Fatalf("unmatched viewer leaked into details: %d", len(details))
+	}
+}
+
 // ── parser edge cases ────────────────────────────────────────────────────
 
 func TestParseUintRejectsNonNumericIDs(t *testing.T) {

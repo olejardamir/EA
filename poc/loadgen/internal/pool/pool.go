@@ -670,6 +670,30 @@ type CanonicalHead struct {
 	Elapsed int
 }
 
+// HeadDisagreement is the per-viewer attribution for one deep client whose
+// reconstructed final state did not match the canonical head: it records both
+// sides of every compared field plus connection liveness, so a silent tail
+// truncation (viewer lastSeq < head seq) is distinguishable at evidence time
+// from a semantic mismatch on equal seqs.
+type HeadDisagreement struct {
+	MatchID string `json:"match_id"`
+
+	ViewLastSeq int64  `json:"view_last_seq"`
+	ViewHome    int    `json:"view_home"`
+	ViewAway    int    `json:"view_away"`
+	ViewPeriod  string `json:"view_period"`
+	ViewElapsed int    `json:"view_elapsed"`
+	Violations  int64  `json:"semantic_violations"`
+
+	HeadSeq     int64  `json:"head_seq"`
+	HeadHome    int    `json:"head_home"`
+	HeadAway    int    `json:"head_away"`
+	HeadPeriod  string `json:"head_period"`
+	HeadElapsed int    `json:"head_elapsed"`
+
+	Live bool `json:"live_at_sample"` // connected when heads were sampled
+}
+
 // DeepHeadAgreement compares each deep viewer's reconstructed final state
 // against independently fetched canonical heads. Call after publication has
 // quiesced and heads are final; connections may still be live — eligibility
@@ -679,6 +703,16 @@ type CanonicalHead struct {
 // quiesced window (publication stopped, no frames in flight); Stop() joins
 // the goroutines before process exit.
 func (p *Pool) DeepHeadAgreement(heads map[string]CanonicalHead) (agreed, disagreed, unmatched int64) {
+	agreed, disagreed, unmatched, _ = p.DeepHeadAgreementDetailed(heads)
+	return agreed, disagreed, unmatched
+}
+
+// DeepHeadAgreementDetailed is DeepHeadAgreement with per-viewer disagreement
+// attribution: every disagreed deep client is described by a HeadDisagreement
+// record bound to its match and both sides of the comparison.
+func (p *Pool) DeepHeadAgreementDetailed(heads map[string]CanonicalHead) (
+	agreed, disagreed, unmatched int64, details []HeadDisagreement,
+) {
 	for _, i := range p.deepIdx {
 		v := p.viewers[i]
 		head, ok := heads[v.matchID]
@@ -688,11 +722,26 @@ func (p *Pool) DeepHeadAgreement(heads map[string]CanonicalHead) (agreed, disagr
 		}
 		if v.state.AgreeWithHead(head.Seq, head.Home, head.Away, head.Elapsed, head.Period) {
 			agreed++
-		} else {
-			disagreed++
+			continue
 		}
+		disagreed++
+		details = append(details, HeadDisagreement{
+			MatchID:     v.matchID,
+			ViewLastSeq: v.state.LastSeq,
+			ViewHome:    v.state.LastScoreHome,
+			ViewAway:    v.state.LastScoreAway,
+			ViewPeriod:  v.state.LastPeriod,
+			ViewElapsed: v.state.LastElapsed,
+			Violations:  int64(v.state.Violations),
+			HeadSeq:     head.Seq,
+			HeadHome:    head.Home,
+			HeadAway:    head.Away,
+			HeadPeriod:  head.Period,
+			HeadElapsed: head.Elapsed,
+			Live:        v.online.Load(),
+		})
 	}
-	return agreed, disagreed, unmatched
+	return agreed, disagreed, unmatched, details
 }
 
 // DeepExpected returns the configured deep-cohort denominator for this pool:

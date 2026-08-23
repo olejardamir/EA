@@ -183,6 +183,7 @@ type counterSnapshot struct {
 // expected deep client lands in exactly one of agreed/disagreed/unmatched.
 type deepAgreementSnapshot struct {
 	expected, agreed, disagreed, unmatched int64
+	details                                []pool.HeadDisagreement
 }
 
 func takeSnapshot(p *pool.Pool) counterSnapshot {
@@ -792,16 +793,23 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	r.applyGeneratorGates()
 	headAgreement := struct{ agreed, disagreed, unmatched int64 }{}
 	if err := r.refreshHeads(ctx); err == nil {
-		headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched =
-			r.pool.DeepHeadAgreement(*r.headCache.Load())
+		var details []pool.HeadDisagreement
+		headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched, details =
+			r.pool.DeepHeadAgreementDetailed(*r.headCache.Load())
 		r.deepAgree = &deepAgreementSnapshot{
 			expected:  r.pool.DeepExpected(),
 			agreed:    headAgreement.agreed,
 			disagreed: headAgreement.disagreed,
 			unmatched: headAgreement.unmatched,
+			details:   details,
 		}
 		r.logf("deep head agreement agreed=%d disagreed=%d unmatched=%d",
 			headAgreement.agreed, headAgreement.disagreed, headAgreement.unmatched)
+		for _, d := range details {
+			r.logf("head disagreement match=%s view[seq=%d score=%d-%d period=%s elapsed=%d viol=%d live=%t] head[seq=%d score=%d-%d period=%s elapsed=%d]",
+				d.MatchID, d.ViewLastSeq, d.ViewHome, d.ViewAway, d.ViewPeriod, d.ViewElapsed,
+				d.Violations, d.Live, d.HeadSeq, d.HeadHome, d.HeadAway, d.HeadPeriod, d.HeadElapsed)
+		}
 	} else {
 		r.reasonf("final evidence fetch: %v", err)
 	}
@@ -2203,10 +2211,16 @@ func (r *shardRun) assembleResult(
 			r.resourceReject = true
 			r.rejectf("deep head agreement %d/%d with %d disagreements", da.agreed, da.expected, da.disagreed)
 		}
-		res.Resources.Generator["deep_agreement"] = map[string]any{
-			"expected": da.expected, "agreed": da.agreed,
-			"disagreed": da.disagreed, "unmatched": da.unmatched,
-		}
+		res.Resources.Generator["deep_agreement"] = func() map[string]any {
+			m := map[string]any{
+				"expected": da.expected, "agreed": da.agreed,
+				"disagreed": da.disagreed, "unmatched": da.unmatched,
+			}
+			if len(da.details) > 0 {
+				m["disagreements"] = da.details
+			}
+			return m
+		}()
 	}
 	res.Resources.Generator["publisher"] = r.publisherEvidence()
 	res.Resources.Generator["resource_stages"] = r.resourceEvidence()
