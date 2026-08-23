@@ -101,7 +101,7 @@ func (m *nchanStatusMonitor) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			s := nchanStatusSample{TMs: time.Now().UnixMilli(), Port: m.port, WorkerCPU: map[string]int64{}}
+			s := nchanStatusSample{TMs: time.Now().UnixMilli(), Port: m.port, Fields: map[string]string{}, WorkerCPU: map[string]int64{}}
 			resp, err := m.client.Get("http://host.docker.internal:" + m.port + "/nchan_stub_status")
 			if err == nil {
 				buf := make([]byte, 4096)
