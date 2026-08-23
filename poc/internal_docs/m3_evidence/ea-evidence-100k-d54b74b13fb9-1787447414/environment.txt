@@ -1,0 +1,22 @@
+Linux glompy 7.0.0-108029-tuxedo #29~24.04.1tux2 SMP PREEMPT_DYNAMIC Tue Jul 28 22:11:59 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Client: Docker Engine - Community
+ Version:           29.7.2
+ API version:       1.55
+ Go version:        go1.26.5
+ Git commit:        a7dcaa6
+ Built:             Wed Aug  5 18:28:53 2026
+ OS/Arch:           linux/amd64
+ Context:           default
+
+Server: Docker Engine - Community
+ Engine:
+  Version:          29.7.2
+  API version:      1.55 (minimum version 1.40)
+  Go version:       go1.26.5
+  Git commit:       6a43e3d
+  Built:            Wed Aug  5 18:28:53 2026
+  OS/Arch:          linux/amd64
+  Experimental:     false
+ containerd:
+  Version:          v2.3.3
+Docker Compose version v5.5.0
