@@ -86,6 +86,7 @@ COPY nchan-3.conf /etc/nginx/nchan-3.conf
 COPY nchan-4.conf /etc/nginx/nchan-4.conf
 COPY nchan-spare.conf /etc/nginx/nchan-spare.conf
 COPY nchan-portable.conf /etc/nginx/nchan-portable.conf
+COPY fanout-*.conf /etc/nginx/
 
 # §E/§6.7: Test-only restart control server and script
 COPY control-server.js /usr/local/bin/control-server.js
@@ -95,7 +96,7 @@ RUN chmod +x /usr/local/bin/nchan-restart.sh /usr/local/bin/livelock-watcher.sh
 
 # §M3-R: All node ports (partition nodes p0-p3 + spare) — informational only;
 # the evidence topology uses host networking.
-EXPOSE 8080 8081 18080 18081 28080 28081 38080 38081 48080 48081 18888 18889 28888 38889 48888
+EXPOSE 8080 8081 18080 18081 28080 28081 38080 38081 48080 48081 11080 11081 11180 11181 11280 11281 11380 11381 11480 11481 11580 11581 11680 11681 11780 11781 11880 11881 11980 11981 12080 12081 12180 12181 12280 12281 12380 12381 12480 12481 12580 12581 18888 18889 28888 38889 48888 11088 11188 11288 11388 11488 11588 11688 11788 11888 11988 12088 12188 12288 12388 12488 12588
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -1,0 +1,56 @@
+services:
+  coordinator:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+  loadgen-shard-0:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
+  loadgen-shard-1:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
+  loadgen-shard-2:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
+  loadgen-shard-3:
+    environment:
+      GLOBAL_TARGET: "${PROBE_GLOBAL_TARGET:?set PROBE_GLOBAL_TARGET}"
+      TARGET_CONNECTIONS: "${PROBE_TARGET:?set PROBE_TARGET}"
+      WARMUP_SECONDS: "${PROBE_WARMUP_SECONDS:-15}"
+      MEASURE_SECONDS: "${PROBE_MEASURE_SECONDS:-30}"
+      BURST_SECONDS: "${PROBE_BURST_SECONDS:-10}"
+      SURGE_SECONDS: "${PROBE_SURGE_SECONDS:-60}"
+      COOLDOWN_SECONDS: "${PROBE_COOLDOWN_SECONDS:-5}"
+  fanout-0a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-0b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-1a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-1b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-2a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-2b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-3a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-3b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-4a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-4b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-5a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-5b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-6a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-6b: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-7a: { environment: { LIVELOCK_WATCHER: "0" } }
+  fanout-7b: { environment: { LIVELOCK_WATCHER: "0" } }

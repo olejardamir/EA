@@ -1,0 +1,437 @@
+# ARCHITECTURE REVISION — match-aware horizontal fan-out (post-M3).
+#
+# > This is a post-M3 architecture revision. It does not alter or supersede
+# > the frozen v2.3.0 M3 evidence. It retains the original workload and
+# > performance gates while allowing topology changes in response to M3's
+# > falsified architecture assumption.
+#
+# Topology: 8 matches x 2 fan-out shards = 16 independent Nchan instances,
+# each 1 worker (same total worker count as the frozen 4×4), ~6,250 viewers
+# per shard at 100k. Each (match, shard) owns its viewers; events are
+# published only to the two shards that own the match. Redis removed from
+# the delivery hot path (local in-memory storage per shard).
+#
+# F1 improvements preserved: NGINX_DEBUG=0, LIVELOCK_WATCHER=0, Redis
+# io-threads-do-reads. No regressing knobs reintroduced.
+#
+# Port scheme (instance k = m*2 + s, 0..15):
+#   fanout-{m}{a|b}: pub 11080+k*100, sub 11081+k*100, ctrl 11088+k*100
+
+x-nonblocking-logging: &nonblocking-logging
+  driver: json-file
+  options:
+    mode: non-blocking
+    max-buffer-size: 4m
+
+services:
+  redis:
+    image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
+    network_mode: host
+    entrypoint: ["/bin/sh", "/redis-cgroup-entrypoint.sh"]
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--io-threads", "4", "--io-threads-do-reads", "yes"]
+    volumes:
+      - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
+      - redis-cgroup-evidence:/redis-cgroup
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    cpu_shares: 262144
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  fanout-0a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-0a.conf", CONTROL_PORT: "11088", NGINX_STATUS_PORT: "11080", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11080/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-0b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-0b.conf", CONTROL_PORT: "11188", NGINX_STATUS_PORT: "11180", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11180/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-1a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-1a.conf", CONTROL_PORT: "11288", NGINX_STATUS_PORT: "11280", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11280/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-1b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-1b.conf", CONTROL_PORT: "11388", NGINX_STATUS_PORT: "11380", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11380/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-2a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-2a.conf", CONTROL_PORT: "11488", NGINX_STATUS_PORT: "11480", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11480/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-2b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-2b.conf", CONTROL_PORT: "11588", NGINX_STATUS_PORT: "11580", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11580/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-3a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-3a.conf", CONTROL_PORT: "11688", NGINX_STATUS_PORT: "11680", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11680/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-3b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-3b.conf", CONTROL_PORT: "11788", NGINX_STATUS_PORT: "11780", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11780/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-4a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-4a.conf", CONTROL_PORT: "11888", NGINX_STATUS_PORT: "11880", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11880/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-4b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-4b.conf", CONTROL_PORT: "11988", NGINX_STATUS_PORT: "11980", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:11980/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-5a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-5a.conf", CONTROL_PORT: "12088", NGINX_STATUS_PORT: "12080", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12080/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-5b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-5b.conf", CONTROL_PORT: "12188", NGINX_STATUS_PORT: "12180", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12180/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-6a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-6a.conf", CONTROL_PORT: "12288", NGINX_STATUS_PORT: "12280", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12280/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-6b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-6b.conf", CONTROL_PORT: "12388", NGINX_STATUS_PORT: "12380", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12380/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-7a:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-7a.conf", CONTROL_PORT: "12488", NGINX_STATUS_PORT: "12480", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12480/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+  fanout-7b:
+    build: { context: ./nchan, network: host, args: { NGINX_DEBUG: "${NGINX_DEBUG:-0}" } }
+    network_mode: host
+    depends_on: { redis: { condition: service_healthy } }
+    environment: { NGINX_CONF: "/etc/nginx/fanout-7b.conf", CONTROL_PORT: "12588", NGINX_STATUS_PORT: "12580", MIN_CPU_QUOTA: "1", LIVELOCK_WATCHER: "0" }
+    deploy: { resources: { limits: { cpus: "2", memory: 2G } } }
+    cpu_shares: 262144
+    logging: *nonblocking-logging
+    cap_add: [SYS_PTRACE]
+    ulimits: { nofile: { soft: 200000, hard: 200000 } }
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:12580/pub/healthcheck"], interval: 5s, timeout: 3s, retries: 10 }
+
+  publisher:
+    build: { context: ./runner, network: host }
+    network_mode: host
+    depends_on:
+      redis: { condition: service_healthy }
+      fanout-0a: { condition: service_healthy }
+      fanout-0b: { condition: service_healthy }
+      fanout-1a: { condition: service_healthy }
+      fanout-1b: { condition: service_healthy }
+      fanout-2a: { condition: service_healthy }
+      fanout-2b: { condition: service_healthy }
+      fanout-3a: { condition: service_healthy }
+      fanout-3b: { condition: service_healthy }
+      fanout-4a: { condition: service_healthy }
+      fanout-4b: { condition: service_healthy }
+      fanout-5a: { condition: service_healthy }
+      fanout-5b: { condition: service_healthy }
+      fanout-6a: { condition: service_healthy }
+      fanout-6b: { condition: service_healthy }
+      fanout-7a: { condition: service_healthy }
+      fanout-7b: { condition: service_healthy }
+    command: ["npm", "run", "start:publisher"]
+    environment:
+      PUBLISHER_PORT: "8300"
+      NCHAN_PUB_URL: "http://host.docker.internal:11080"
+      NCHAN_PUB_ROUTES: "${NCHAN_PUB_ROUTES:-}"
+      PUB_DEBUG: "${PUB_DEBUG:-0}"
+      REDIS_URL: "redis://host.docker.internal:6379"
+      GLOBAL_SEED: "${GLOBAL_SEED:-42}"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    cpu_shares: 262144
+    healthcheck: { test: ["CMD", "curl", "-sf", "http://localhost:8300/healthz"], interval: 2s, timeout: 2s, retries: 15 }
+  coordinator:
+    build: { context: ./runner, network: host, args: { GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-arch-revision-probe.sh}" } }
+    command: ["npm", "run", "start:coordinator"]
+    networks: [shard-net]
+    environment:
+      SHARD_TOTAL: "4"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "${GLOBAL_SEED:-42}"
+      EXPERIMENT_RUN_ID: "${EXPERIMENT_RUN_ID:?Use ./run-arch-revision-probe.sh}"
+      CAMPAIGN_ID: "${CAMPAIGN_ID:?Use ./run-arch-revision-probe.sh}"
+      GLOBAL_RESULT_PATH: "${GLOBAL_RESULT_PATH:-/evidence/global-result-0.json}"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-arch-revision-probe.sh}"
+      COORDINATOR_MAX_RUN_MS: "2100000"
+    volumes: [global-evidence:/evidence]
+    healthcheck: { test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"], interval: 2s, timeout: 2s, retries: 20 }
+
+  loadgen-shard-0:
+    build: { context: ./loadgen, network: host }
+    depends_on:
+      fanout-0a: { condition: service_healthy }
+      fanout-0b: { condition: service_healthy }
+      fanout-1a: { condition: service_healthy }
+      fanout-1b: { condition: service_healthy }
+      fanout-2a: { condition: service_healthy }
+      fanout-2b: { condition: service_healthy }
+      fanout-3a: { condition: service_healthy }
+      fanout-3b: { condition: service_healthy }
+      fanout-4a: { condition: service_healthy }
+      fanout-4b: { condition: service_healthy }
+      fanout-5a: { condition: service_healthy }
+      fanout-5b: { condition: service_healthy }
+      fanout-6a: { condition: service_healthy }
+      fanout-6b: { condition: service_healthy }
+      fanout-7a: { condition: service_healthy }
+      fanout-7b: { condition: service_healthy }
+      publisher: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
+    networks: [shard-net]
+    sysctls: { net.ipv4.ip_local_port_range: "1024 65535" }
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment: &runner-env
+      NCHAN_PUB_URL: "http://host.docker.internal:11080"
+      NCHAN_SUB_URL: "http://host.docker.internal:11081"
+      NCHAN_SUB_ROUTES: "${NCHAN_SUB_ROUTES:-}"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:11088"
+      NCHAN_SPARE_PUB_URL: ""
+      NCHAN_SPARE_SUB_URL: ""
+      NCHAN_SPARE_CONTROL_URL: ""
+      REDIS_ADDR: "host.docker.internal:6379"
+      PUBLISHER_URL: "http://host.docker.internal:8300"
+      TARGET_CONNECTIONS: "25000"
+      WARMUP_SECONDS: "30"
+      MEASURE_SECONDS: "120"
+      BURST_SECONDS: "30"
+      SURGE_SECONDS: "120"
+      COOLDOWN_SECONDS: "10"
+      RUN_PROFILE: "evidence"
+      RUN_MODE: "coordinated-shard"
+      COORDINATOR_URL: "http://coordinator:3000"
+      CAMPAIGN_ID: "${CAMPAIGN_ID:?Use ./run-arch-revision-probe.sh}"
+      GLOBAL_TARGET: "100000"
+      GLOBAL_SEED: "${GLOBAL_SEED:-42}"
+      GLOBAL_RUN_INDEX: "${GLOBAL_RUN_INDEX:-0}"
+      PUBLISHER_OWNER: "true"
+      SHARD_ID: "0"
+      SHARD_TOTAL: "4"
+      RESTART_TARGET_SHARD: "4"
+      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-arch-revision-probe.sh}"
+      GOMAXPROCS: "4"
+    deploy: { resources: { limits: { cpus: "5", memory: 4G } } }
+    cpu_shares: 262144
+    ulimits: { nofile: { soft: 120000, hard: 120000 } }
+  loadgen-shard-1:
+    build: { context: ./loadgen, network: host }
+    depends_on:
+      fanout-0a: { condition: service_healthy }
+      fanout-0b: { condition: service_healthy }
+      fanout-1a: { condition: service_healthy }
+      fanout-1b: { condition: service_healthy }
+      fanout-2a: { condition: service_healthy }
+      fanout-2b: { condition: service_healthy }
+      fanout-3a: { condition: service_healthy }
+      fanout-3b: { condition: service_healthy }
+      fanout-4a: { condition: service_healthy }
+      fanout-4b: { condition: service_healthy }
+      fanout-5a: { condition: service_healthy }
+      fanout-5b: { condition: service_healthy }
+      fanout-6a: { condition: service_healthy }
+      fanout-6b: { condition: service_healthy }
+      fanout-7a: { condition: service_healthy }
+      fanout-7b: { condition: service_healthy }
+      publisher: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
+    networks: [shard-net]
+    sysctls: { net.ipv4.ip_local_port_range: "1024 65535" }
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      <<: *runner-env
+      NCHAN_PUB_URL: "http://host.docker.internal:11180"
+      NCHAN_SUB_URL: "http://host.docker.internal:11181"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:11188"
+      PUBLISHER_OWNER: "false"
+      SHARD_ID: "1"
+    deploy: { resources: { limits: { cpus: "5", memory: 4G } } }
+    cpu_shares: 262144
+    ulimits: { nofile: { soft: 120000, hard: 120000 } }
+  loadgen-shard-2:
+    build: { context: ./loadgen, network: host }
+    depends_on:
+      fanout-0a: { condition: service_healthy }
+      fanout-0b: { condition: service_healthy }
+      fanout-1a: { condition: service_healthy }
+      fanout-1b: { condition: service_healthy }
+      fanout-2a: { condition: service_healthy }
+      fanout-2b: { condition: service_healthy }
+      fanout-3a: { condition: service_healthy }
+      fanout-3b: { condition: service_healthy }
+      fanout-4a: { condition: service_healthy }
+      fanout-4b: { condition: service_healthy }
+      fanout-5a: { condition: service_healthy }
+      fanout-5b: { condition: service_healthy }
+      fanout-6a: { condition: service_healthy }
+      fanout-6b: { condition: service_healthy }
+      fanout-7a: { condition: service_healthy }
+      fanout-7b: { condition: service_healthy }
+      publisher: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
+    networks: [shard-net]
+    sysctls: { net.ipv4.ip_local_port_range: "1024 65535" }
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      <<: *runner-env
+      NCHAN_PUB_URL: "http://host.docker.internal:11280"
+      NCHAN_SUB_URL: "http://host.docker.internal:11281"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:11288"
+      PUBLISHER_OWNER: "false"
+      SHARD_ID: "2"
+    deploy: { resources: { limits: { cpus: "5", memory: 4G } } }
+    cpu_shares: 262144
+    ulimits: { nofile: { soft: 120000, hard: 120000 } }
+  loadgen-shard-3:
+    build: { context: ./loadgen, network: host }
+    depends_on:
+      fanout-0a: { condition: service_healthy }
+      fanout-0b: { condition: service_healthy }
+      fanout-1a: { condition: service_healthy }
+      fanout-1b: { condition: service_healthy }
+      fanout-2a: { condition: service_healthy }
+      fanout-2b: { condition: service_healthy }
+      fanout-3a: { condition: service_healthy }
+      fanout-3b: { condition: service_healthy }
+      fanout-4a: { condition: service_healthy }
+      fanout-4b: { condition: service_healthy }
+      fanout-5a: { condition: service_healthy }
+      fanout-5b: { condition: service_healthy }
+      fanout-6a: { condition: service_healthy }
+      fanout-6b: { condition: service_healthy }
+      fanout-7a: { condition: service_healthy }
+      fanout-7b: { condition: service_healthy }
+      publisher: { condition: service_healthy }
+      coordinator: { condition: service_healthy }
+    networks: [shard-net]
+    sysctls: { net.ipv4.ip_local_port_range: "1024 65535" }
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      <<: *runner-env
+      NCHAN_PUB_URL: "http://host.docker.internal:11380"
+      NCHAN_SUB_URL: "http://host.docker.internal:11381"
+      NCHAN_CONTROL_URL: "http://host.docker.internal:11388"
+      PUBLISHER_OWNER: "false"
+      SHARD_ID: "3"
+    deploy: { resources: { limits: { cpus: "5", memory: 4G } } }
+    cpu_shares: 262144
+    ulimits: { nofile: { soft: 120000, hard: 120000 } }
+
+networks:
+  shard-net:
+    driver: bridge
+    ipam: { config: [{ subnet: 172.28.0.0/16 }] }
+volumes:
+  global-evidence:
+  redis-cgroup-evidence:

@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -82,6 +83,21 @@ func envInt(name string, def int) int {
 		}
 	}
 	return def
+}
+
+func historyBaseForMatch(matchID string, fallback string) string {
+	raw := os.Getenv("NCHAN_SUB_ROUTES")
+	if raw == "" {
+		return fallback
+	}
+	var m map[string][]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return fallback
+	}
+	if urls, ok := m[matchID]; ok && len(urls) > 0 {
+		return strings.TrimSuffix(urls[0], "/")
+	}
+	return fallback
 }
 
 func loadConfig() (*config, error) {
@@ -1131,7 +1147,7 @@ func (r *shardRun) runLateJoinProbes(ctx context.Context) map[string]*deep.PathR
 			}
 			spec := pool.ProbeSpec{
 				Key:      fmt.Sprintf("late_join:%s:round-%d", m, round),
-				URL:      r.cfg.subURL + "/history/" + m,
+				URL:      historyBaseForMatch(m, r.cfg.subURL) + "/history/" + m,
 				MatchID:  m,
 				ResumeID: "history",
 				First:    1,

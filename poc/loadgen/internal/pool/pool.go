@@ -23,10 +23,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,6 +141,7 @@ type viewer struct {
 type Pool struct {
 	subBase  string // e.g. http://host:8081/sub/
 	spareSub string // restart failover target ("" = none)
+	subRoutes map[string][]string // arch-revision: match-aware routing, keyed by matchID; "lobby" -> all
 	matchIDs []string
 
 	viewers []*viewer
@@ -206,15 +209,9 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 1024,
 		MaxConnsPerHost:     0,
-		// Bound the wait for response HEADERS only (SSE bodies stream
-		// indefinitely afterwards). Without this, a connect accepted by the
-		// kernel but never serviced by the server blocks the viewer goroutine
-		// forever: the population silently shrinks, no retry ever happens,
-		// and reconnect-cohort members drawn from the missing viewers can
-		// never pass.
 		ResponseHeaderTimeout: responseHeaderTimeout(),
 	}
-	return &Pool{
+	p := &Pool{
 		subBase:     strings.TrimSuffix(subBase, "/") + "/",
 		matchIDs:    matchIDs,
 		viewers:     make([]*viewer, 0, capacity),
@@ -235,6 +232,46 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		transportHist: *hist.New(hist.DefaultMaxMs),
 		procHist:      *hist.New(hist.DefaultMaxMs),
 	}
+	p.loadSubRoutes()
+	return p
+}
+
+func (p *Pool) loadSubRoutes() {
+	raw := os.Getenv("NCHAN_SUB_ROUTES")
+	if raw == "" {
+		return
+	}
+	var m map[string][]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return
+	}
+	norm := make(map[string][]string, len(m))
+	for k, v := range m {
+		nv := make([]string, len(v))
+		for i, u := range v {
+			nv[i] = strings.TrimSuffix(u, "/") + "/"
+		}
+		norm[k] = nv
+	}
+	if len(norm) > 0 {
+		p.subRoutes = norm
+	}
+}
+
+func (p *Pool) baseFor(v *viewer) string {
+	if p.useSpare.Load() && p.spareSub != "" {
+		return p.spareSub
+	}
+	if p.subRoutes != nil {
+		if v.st.Role == RoleLobby {
+			if lr, ok := p.subRoutes["lobby"]; ok && len(lr) > 0 {
+				return lr[int(v.st.ID)%len(lr)]
+			}
+		} else if routes, ok := p.subRoutes[v.matchID]; ok && len(routes) > 0 {
+			return routes[int(v.st.ID)%len(routes)]
+		}
+	}
+	return p.subBase
 }
 
 // SetHeadLookup injects the independent publisher-evidence head source used to
@@ -345,7 +382,7 @@ func (p *Pool) runLoop(v *viewer) {
 		resume := v.resumeID
 		v.mu.Unlock()
 
-		base := p.currentBase()
+		base := p.baseFor(v)
 	v.curBase = base
 	frames, established, err := p.streamOnce(v, v.urlFor(base), resume)
 		if p.ctx.Err() != nil {

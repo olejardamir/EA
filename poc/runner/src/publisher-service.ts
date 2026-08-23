@@ -1,5 +1,6 @@
 import http from "node:http"
 import { NchanHttpPublisher } from "./adapters/nchan-http-publisher.js"
+import { RoutedNchanPublisher } from "./adapters/routed-nchan-publisher.js"
 import { MatchEventPublisher } from "./adapters/match-event-publisher.js"
 import { createMatchHeadTracker } from "./domain/match-state.js"
 import { createPRNG } from "./domain/prng.js"
@@ -11,7 +12,18 @@ const nchanPubUrl = (process.env.NCHAN_PUB_URL ?? process.env.PUBLISHER_NCHAN_PU
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379"
 const seed = parseInt(process.env.GLOBAL_SEED ?? "42", 10)
 
-let nchanPublisher = new NchanHttpPublisher(nchanPubUrl)
+function createPublisher(baseUrl: string) {
+  const routesRaw = process.env.NCHAN_PUB_ROUTES
+  if (routesRaw) {
+    try {
+      const routes = JSON.parse(routesRaw) as Record<string, string[]>
+      if (routes && typeof routes === "object" && Object.keys(routes).length > 0) return new RoutedNchanPublisher(baseUrl, routes)
+    } catch {}
+  }
+  return new NchanHttpPublisher(baseUrl)
+}
+
+let nchanPublisher: InstanceType<typeof NchanHttpPublisher> | InstanceType<typeof RoutedNchanPublisher> = createPublisher(nchanPubUrl)
 let headTracker = createMatchHeadTracker()
 let random = createPRNG(seed)
 let publisher = new MatchEventPublisher({
@@ -132,10 +144,10 @@ const server = http.createServer(async (req, res) => {
       publisher.stop()
       started = false
       pendingPeak = 0
-      nchanPublisher = new NchanHttpPublisher(nchanPubUrl)
+      nchanPublisher = createPublisher(nchanPubUrl)
       headTracker = createMatchHeadTracker()
       random = createPRNG(seed)
-      publisher = new MatchEventPublisher({ publisher: nchanPublisher, headTracker, burstMode: false, random })
+      publisher = new MatchEventPublisher({ publisher: nchanPublisher as any, headTracker, burstMode: false, random })
       send(res, 200, { ok: true })
       return
     }
