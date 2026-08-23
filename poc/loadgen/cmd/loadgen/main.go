@@ -2069,6 +2069,12 @@ func (r *shardRun) assembleResult(
 	res.Histograms.BacklogFanOut = wire(backlog)
 	res.Histograms.TransportFanOut = wire(transport)
 	res.Histograms.ProcDelay = wire(procDelay)
+	if r.pool != nil {
+		if res.Resources.Generator == nil {
+			res.Resources.Generator = map[string]any{}
+		}
+		res.Resources.Generator["upstream_transport"] = r.pool.UpstreamEvidence()
+	}
 	lateHist := hist.New(hist.DefaultMaxMs)
 	for key, pr := range lateResults {
 		if strings.HasPrefix(key, "late_join:") {

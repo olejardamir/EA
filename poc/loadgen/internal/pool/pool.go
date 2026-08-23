@@ -117,6 +117,9 @@ type viewer struct {
 	catchUp    atomic.Bool   // resumed stream still replaying buffered history
 	readAt     atomic.Int64  // unix-ms arrival of the current frame's first bytes
 
+	// goroutine-owned stream facts (no cross-goroutine writes)
+	curBase string // subscriber base of the in-flight connection
+
 	cancelMu  sync.Mutex          // guards curCancel; makes hold-vs-connect race-free
 	curCancel *context.CancelFunc // cancels the in-flight connection attempt
 
@@ -152,6 +155,9 @@ type Pool struct {
 	backlogHist    hist.Histogram // resumed-stream history replay (not live evidence)
 	transportHist  hist.Histogram // publish→wire-arrival attribution (DUT-side)
 	procHist       hist.Histogram // wire-arrival→dispatch attribution (harness-side)
+
+	upMu       sync.Mutex
+	upstreams  map[string]*upstreamTransport // per-subscriber-base delivery attribution
 	histMu      sync.Mutex     // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
 	surgeOpen atomic.Bool
@@ -212,6 +218,7 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		burstHist:   *hist.New(hist.DefaultMaxMs),
 		surgeHist:     *hist.New(hist.DefaultMaxMs),
 		backlogHist:   *hist.New(hist.DefaultMaxMs),
+		upstreams:     make(map[string]*upstreamTransport),
 		transportHist: *hist.New(hist.DefaultMaxMs),
 		procHist:      *hist.New(hist.DefaultMaxMs),
 	}
@@ -325,7 +332,9 @@ func (p *Pool) runLoop(v *viewer) {
 		resume := v.resumeID
 		v.mu.Unlock()
 
-		frames, established, err := p.streamOnce(v, v.urlFor(p.currentBase()), resume)
+		base := p.currentBase()
+	v.curBase = base
+	frames, established, err := p.streamOnce(v, v.urlFor(base), resume)
 		if p.ctx.Err() != nil {
 			return
 		}
@@ -661,12 +670,46 @@ func (p *Pool) recordDeepLatency(v *viewer, latMs, transportMs, procMs int, even
 	p.transportHist.Record(transportMs)
 	p.procHist.Record(procMs)
 	p.histMu.Unlock()
+	if base := v.curBase; base != "" {
+		p.upMu.Lock()
+		u := p.upstreams[base]
+		if u == nil {
+			u = &upstreamTransport{}
+			p.upstreams[base] = u
+		}
+		p.upMu.Unlock()
+		u.samples.Add(1)
+		if latMs >= liveTailThresholdMs {
+			u.slow.Add(1)
+		}
+	}
+}
+
+// UpstreamEvidence renders per-subscriber-base delivery attribution for the
+// wire: samples and slow(>=5s) counts per base URL. Evidence-only.
+func (p *Pool) UpstreamEvidence() map[string]map[string]int64 {
+	p.upMu.Lock()
+	defer p.upMu.Unlock()
+	out := make(map[string]map[string]int64, len(p.upstreams))
+	for base, u := range p.upstreams {
+		out[base] = map[string]int64{"samples": u.samples.Load(), "slow": u.slow.Load()}
+	}
+	return out
 }
 
 // liveTailThresholdMs bounds catch-up detection for resumed deep streams: a
 // frame published within the last 5 s proves the stream is at the live tail;
 // anything older on a resumed stream is buffered-history replay.
 const liveTailThresholdMs = 5000
+
+// upstreamTransport attributes deep-cohort transport latency to the subscriber
+// base (nchan partition) that delivered the frame: a single lagging partition
+// shows up as one base with a high slow share while every shard's aggregate
+// degrades by that partition's channel share.
+type upstreamTransport struct {
+	samples atomic.Int64
+	slow    atomic.Int64 // transport latency >= liveTailThresholdMs
+}
 
 // routeLatency applies the frozen phase-window provenance rules for
 // deep-cohort latency evidence: surge and burst windows own their samples;
