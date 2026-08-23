@@ -59,11 +59,11 @@ services:
       NGINX_CONF: "/etc/nginx/nchan.conf"
       CONTROL_PORT: "18888"
       NGINX_STATUS_PORT: "8080"
-      MIN_CPU_QUOTA: "3"
+      MIN_CPU_QUOTA: "4"
     deploy:
       resources:
         limits:
-          cpus: "3"
+          cpus: "4"
           memory: 6G
     cpu_shares: 262144
     ulimits:
@@ -88,11 +88,11 @@ services:
       NGINX_CONF: "/etc/nginx/nchan-2.conf"
       CONTROL_PORT: "18889"
       NGINX_STATUS_PORT: "18080"
-      MIN_CPU_QUOTA: "3"
+      MIN_CPU_QUOTA: "4"
     deploy:
       resources:
         limits:
-          cpus: "3"
+          cpus: "4"
           memory: 6G
     cpu_shares: 262144
     ulimits:
@@ -117,11 +117,11 @@ services:
       NGINX_CONF: "/etc/nginx/nchan-3.conf"
       CONTROL_PORT: "28888"
       NGINX_STATUS_PORT: "28080"
-      MIN_CPU_QUOTA: "3"
+      MIN_CPU_QUOTA: "4"
     deploy:
       resources:
         limits:
-          cpus: "3"
+          cpus: "4"
           memory: 6G
     cpu_shares: 262144
     ulimits:
@@ -146,11 +146,11 @@ services:
       NGINX_CONF: "/etc/nginx/nchan-4.conf"
       CONTROL_PORT: "38889"
       NGINX_STATUS_PORT: "38080"
-      MIN_CPU_QUOTA: "3"
+      MIN_CPU_QUOTA: "4"
     deploy:
       resources:
         limits:
-          cpus: "3"
+          cpus: "4"
           memory: 6G
     cpu_shares: 262144
     ulimits:
@@ -175,11 +175,11 @@ services:
       NGINX_CONF: "/etc/nginx/nchan-spare.conf"
       CONTROL_PORT: "48888"
       NGINX_STATUS_PORT: "48080"
-      MIN_CPU_QUOTA: "3"
+      MIN_CPU_QUOTA: "4"
     deploy:
       resources:
         limits:
-          cpus: "3"
+          cpus: "4"
           memory: 6G
     cpu_shares: 262144
     ulimits:
