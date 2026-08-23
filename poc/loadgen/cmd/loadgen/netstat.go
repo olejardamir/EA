@@ -67,16 +67,14 @@ func readSockstatTCP() (map[string]int64, error) {
 		if !strings.HasPrefix(line, "TCP:") {
 			continue
 		}
-		for _, field := range strings.Fields(strings.TrimPrefix(line, "TCP:")) {
-			kv := strings.SplitN(field, " ", 2)
-			if len(kv) != 2 {
-				continue
-			}
-			v, err := strconv.ParseInt(kv[1], 10, 64)
+		fields := strings.Fields(strings.TrimPrefix(line, "TCP:"))
+		// sockstat lines alternate token pairs: inuse 23 orphan 0 tw 31 ...
+		for i := 0; i+1 < len(fields); i += 2 {
+			v, err := strconv.ParseInt(fields[i+1], 10, 64)
 			if err != nil {
 				continue
 			}
-			out["tcp_"+kv[0]] = v
+			out["tcp_"+fields[i]] = v
 		}
 	}
 	return out, sc.Err()
