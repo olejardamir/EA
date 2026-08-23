@@ -730,7 +730,7 @@ func TestResumedStreamBacklogProvenance(t *testing.T) {
 	v.catchUp.Store(true)
 
 	// Old frame on a catching-up stream: backlog class, not live evidence.
-	p.recordDeepLatency(v, 600000, "goal")
+	p.recordDeepLatency(v, 600000, 599990, 10, "goal")
 	if got := p.GoalHistogram().TotalCount + p.OtherHistogram().TotalCount; got != 0 {
 		t.Fatalf("backlog sample leaked into live fan-out evidence: %d", got)
 	}
@@ -743,7 +743,7 @@ func TestResumedStreamBacklogProvenance(t *testing.T) {
 
 	// Fresh frame (< threshold): proves live tail; catch-up ends and the
 	// sample is genuine live evidence.
-	p.recordDeepLatency(v, 40, "other")
+	p.recordDeepLatency(v, 40, 35, 5, "other")
 	if v.catchUp.Load() {
 		t.Fatal("fresh frame must clear the catch-up state")
 	}
@@ -752,12 +752,21 @@ func TestResumedStreamBacklogProvenance(t *testing.T) {
 	}
 
 	// After catch-up ends, even old-ish frames are ordinary live samples.
-	p.recordDeepLatency(v, 4900, "goal")
+	p.recordDeepLatency(v, 4900, 4890, 10, "goal")
 	if got := p.GoalHistogram().TotalCount; got != 1 {
 		t.Fatalf("post-catch-up goal total = %d, want 1", got)
 	}
 	if got := p.BacklogHistogram().TotalCount; got != 1 {
 		t.Fatalf("backlog total changed after catch-up: %d", got)
+	}
+
+	// Two-sided attribution diagnostics: every non-backlog sample is split
+	// into publish→wire and wire→dispatch components.
+	if got := p.TransportHistogram().TotalCount; got != 2 {
+		t.Fatalf("transport attribution total = %d, want 2", got)
+	}
+	if got := p.ProcDelayHistogram().TotalCount; got != 2 {
+		t.Fatalf("process-delay attribution total = %d, want 2", got)
 	}
 }
 
@@ -770,7 +779,7 @@ func TestFreshStreamLatencyUnaffected(t *testing.T) {
 	v.st.Role = RoleDeep
 	v.matchID = "m1"
 
-	p.recordDeepLatency(v, 600000, "goal")
+	p.recordDeepLatency(v, 600000, 599990, 10, "goal")
 	if got := p.GoalHistogram().TotalCount; got != 1 {
 		t.Fatalf("fresh-stream sample missing from goal histogram: %d", got)
 	}

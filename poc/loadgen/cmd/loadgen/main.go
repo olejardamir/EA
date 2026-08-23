@@ -2055,6 +2055,8 @@ func (r *shardRun) assembleResult(
 	burst := r.pool.BurstHistogram()
 	surge := r.pool.SurgeHistogram()
 	backlog := r.pool.BacklogHistogram()
+	transport := r.pool.TransportHistogram()
+	procDelay := r.pool.ProcDelayHistogram()
 	merged := hist.New(hist.DefaultMaxMs)
 	for _, s := range []hist.Serialized{goal, other} {
 		_ = merged.Merge(&s)
@@ -2065,6 +2067,8 @@ func (r *shardRun) assembleResult(
 	res.Histograms.Burst = wire(burst)
 	res.Histograms.Surge = wire(surge)
 	res.Histograms.BacklogFanOut = wire(backlog)
+	res.Histograms.TransportFanOut = wire(transport)
+	res.Histograms.ProcDelay = wire(procDelay)
 	lateHist := hist.New(hist.DefaultMaxMs)
 	for key, pr := range lateResults {
 		if strings.HasPrefix(key, "late_join:") {
@@ -2357,6 +2361,8 @@ func (r *shardRun) failureResult(runErr error) *coordinator.ShardExperimentResul
 	res.Histograms.Burst = empty
 	res.Histograms.Surge = empty
 	res.Histograms.BacklogFanOut = empty
+	res.Histograms.TransportFanOut = empty
+	res.Histograms.ProcDelay = empty
 	res.CorrectnessCounters = map[string]float64{}
 	for _, name := range gatedCorrectnessCounters {
 		res.CorrectnessCounters[name] = 0

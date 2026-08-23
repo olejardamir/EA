@@ -69,6 +69,11 @@ type ShardExperimentResult struct {
 		// were excluded from the live fan-out evidence (diagnostic class,
 		// never gated).
 		BacklogFanOut HistogramWire `json:"fan_out_backlog"`
+		// Two-sided attribution diagnostics for deep-cohort samples:
+		// publish→wire-arrival (DUT/network) vs wire-arrival→dispatch
+		// (loadgen scheduling). Never gated, evidence-only.
+		TransportFanOut HistogramWire `json:"fan_out_transport"`
+		ProcDelay       HistogramWire `json:"process_delay"`
 	} `json:"histograms"`
 	CorrectnessCounters map[string]float64 `json:"correctness_counters"`
 	Workload            struct {

@@ -115,6 +115,7 @@ type viewer struct {
 	sawDeep    atomic.Bool   // validated ≥1 deep frame (agreement eligibility)
 	lastSeq    atomic.Uint64 // mirror of st.LastSeq for cross-goroutine reads
 	catchUp    atomic.Bool   // resumed stream still replaying buffered history
+	readAt     atomic.Int64  // unix-ms arrival of the current frame's first bytes
 
 	cancelMu  sync.Mutex          // guards curCancel; makes hold-vs-connect race-free
 	curCancel *context.CancelFunc // cancels the in-flight connection attempt
@@ -148,7 +149,9 @@ type Pool struct {
 	otherHist   hist.Histogram
 	burstHist   hist.Histogram
 	surgeHist   hist.Histogram
-	backlogHist hist.Histogram // resumed-stream history replay (not live evidence)
+	backlogHist    hist.Histogram // resumed-stream history replay (not live evidence)
+	transportHist  hist.Histogram // publish→wire-arrival attribution (DUT-side)
+	procHist       hist.Histogram // wire-arrival→dispatch attribution (harness-side)
 	histMu      sync.Mutex     // deep cohort only (256 writers/shard)
 	burstOpen atomic.Bool
 	surgeOpen atomic.Bool
@@ -207,8 +210,10 @@ func New(subBase string, matchIDs []string, capacity int) *Pool {
 		goalHist:    *hist.New(hist.DefaultMaxMs),
 		otherHist:   *hist.New(hist.DefaultMaxMs),
 		burstHist:   *hist.New(hist.DefaultMaxMs),
-		surgeHist:   *hist.New(hist.DefaultMaxMs),
-		backlogHist: *hist.New(hist.DefaultMaxMs),
+		surgeHist:     *hist.New(hist.DefaultMaxMs),
+		backlogHist:   *hist.New(hist.DefaultMaxMs),
+		transportHist: *hist.New(hist.DefaultMaxMs),
+		procHist:      *hist.New(hist.DefaultMaxMs),
 	}
 }
 
@@ -476,6 +481,11 @@ func (p *Pool) streamOnce(v *viewer, url, resumeID string) (frames int64, establ
 func dataPrefix(line []byte) bool { return hasPrefixColon(line, "data") }
 
 func (p *Pool) appendScratch(v *viewer, b []byte) {
+	if v.scratchLen == 0 {
+		// First chunk of a new frame: stamp wire arrival for two-sided
+		// latency attribution (publish→read vs read→dispatch).
+		v.readAt.Store(time.Now().UnixMilli())
+	}
 	b = bytes.TrimLeft(b, " ")
 	if len(v.scratch) < v.scratchLen+len(b) {
 		grow := make([]byte, v.scratchLen+len(b), (v.scratchLen+len(b))*2)
@@ -614,15 +624,26 @@ func (p *Pool) dispatch(v *viewer, id []byte) {
 		if latMs < 0 {
 			latMs = 0
 		}
-		p.recordDeepLatency(v, latMs, ev.EventType)
+		readAtMs := v.readAt.Load()
+		transportMs := int(readAtMs - pubMs)
+		if transportMs < 0 {
+			transportMs = 0
+		}
+		procMs := int(now.UnixMilli() - readAtMs)
+		if procMs < 0 {
+			procMs = 0
+		}
+		p.recordDeepLatency(v, latMs, transportMs, procMs, ev.EventType)
 	}
 }
 
 // recordDeepLatency routes one deep-cohort latency sample with resumed-stream
 // provenance: frames arriving on a stream that is still replaying buffered
 // history carry pre-disconnect publish timestamps (backlog age, not transport
-// latency) and must never enter the live fan-out evidence.
-func (p *Pool) recordDeepLatency(v *viewer, latMs int, eventType string) {
+// latency) and must never enter the live fan-out evidence. transportMs /
+// procMs split the sample into DUT-side (publish→wire arrival) and
+// harness-side (wire arrival→dispatch) attribution diagnostics.
+func (p *Pool) recordDeepLatency(v *viewer, latMs, transportMs, procMs int, eventType string) {
 	if v.catchUp.Load() {
 		if latMs >= liveTailThresholdMs {
 			p.histMu.Lock()
@@ -636,6 +657,10 @@ func (p *Pool) recordDeepLatency(v *viewer, latMs int, eventType string) {
 		v.catchUp.Store(false)
 	}
 	p.routeLatency(latMs, eventType)
+	p.histMu.Lock()
+	p.transportHist.Record(transportMs)
+	p.procHist.Record(procMs)
+	p.histMu.Unlock()
 }
 
 // liveTailThresholdMs bounds catch-up detection for resumed deep streams: a
@@ -695,6 +720,12 @@ func (p *Pool) OtherHistogram() hist.Serialized { return p.otherHist.Serialize()
 // BacklogHistogram returns resumed-stream history-replay latency samples that
 // were excluded from the live fan-out evidence (diagnostic provenance class).
 func (p *Pool) BacklogHistogram() hist.Serialized { return p.backlogHist.Serialize() }
+
+// TransportHistogram / ProcDelayHistogram return the two-sided latency
+// attribution diagnostics for deep-cohort samples (publish→wire-arrival vs
+// wire-arrival→dispatch); never gated, evidence-only.
+func (p *Pool) TransportHistogram() hist.Serialized { return p.transportHist.Serialize() }
+func (p *Pool) ProcDelayHistogram() hist.Serialized { return p.procHist.Serialize() }
 func (p *Pool) BurstHistogram() hist.Serialized { return p.burstHist.Serialize() }
 
 // CanonicalHead is the expected-side match state fetched from the independent
