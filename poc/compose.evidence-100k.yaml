@@ -74,7 +74,7 @@ services:
       context: ./nchan
       network: host
       args:
-        NGINX_DEBUG: "${NGINX_DEBUG:-1}"
+        NGINX_DEBUG: "${NGINX_DEBUG:-0}"
     network_mode: host
     depends_on:
       redis:
@@ -84,6 +84,7 @@ services:
       CONTROL_PORT: "18888"
       NGINX_STATUS_PORT: "8080"
       MIN_CPU_QUOTA: "4"
+      LIVELOCK_WATCHER: "0"
     deploy:
       resources:
         limits:
@@ -108,7 +109,7 @@ services:
       context: ./nchan
       network: host
       args:
-        NGINX_DEBUG: "${NGINX_DEBUG:-1}"
+        NGINX_DEBUG: "${NGINX_DEBUG:-0}"
     network_mode: host
     depends_on:
       redis:
@@ -118,6 +119,7 @@ services:
       CONTROL_PORT: "18889"
       NGINX_STATUS_PORT: "18080"
       MIN_CPU_QUOTA: "4"
+      LIVELOCK_WATCHER: "0"
     deploy:
       resources:
         limits:
@@ -142,7 +144,7 @@ services:
       context: ./nchan
       network: host
       args:
-        NGINX_DEBUG: "${NGINX_DEBUG:-1}"
+        NGINX_DEBUG: "${NGINX_DEBUG:-0}"
     network_mode: host
     depends_on:
       redis:
@@ -152,6 +154,7 @@ services:
       CONTROL_PORT: "28888"
       NGINX_STATUS_PORT: "28080"
       MIN_CPU_QUOTA: "4"
+      LIVELOCK_WATCHER: "0"
     deploy:
       resources:
         limits:
@@ -176,7 +179,7 @@ services:
       context: ./nchan
       network: host
       args:
-        NGINX_DEBUG: "${NGINX_DEBUG:-1}"
+        NGINX_DEBUG: "${NGINX_DEBUG:-0}"
     network_mode: host
     depends_on:
       redis:
@@ -186,6 +189,7 @@ services:
       CONTROL_PORT: "38889"
       NGINX_STATUS_PORT: "38080"
       MIN_CPU_QUOTA: "4"
+      LIVELOCK_WATCHER: "0"
     deploy:
       resources:
         limits:
@@ -210,7 +214,7 @@ services:
       context: ./nchan
       network: host
       args:
-        NGINX_DEBUG: "${NGINX_DEBUG:-1}"
+        NGINX_DEBUG: "${NGINX_DEBUG:-0}"
     network_mode: host
     depends_on:
       redis:
@@ -220,6 +224,7 @@ services:
       CONTROL_PORT: "48888"
       NGINX_STATUS_PORT: "48080"
       MIN_CPU_QUOTA: "4"
+      LIVELOCK_WATCHER: "0"
     deploy:
       resources:
         limits:
