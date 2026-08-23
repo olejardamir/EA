@@ -258,6 +258,7 @@ type shardRun struct {
 	resSnapshots  map[string]*dut.ControlMetrics
 	prefSnapshots map[string]*dut.Preflight
 	netstatSnaps  map[string]map[string]int64
+	nchanMon      *nchanStatusMonitor
 	spareResSnaps map[string]*dut.ControlMetrics
 
 	// R12: REJECT-level resource violations (OOM kill, memory limit, worker
@@ -564,6 +565,13 @@ func (r *shardRun) execute(ctx context.Context) (*coordinator.ShardExperimentRes
 	startedAt := time.Now()
 	r.runCtx = ctx
 	r.runStartWall = startedAt
+
+	// TEMP-DIAG: per-second nchan stub-status + worker-CPU sampling for the
+	// burst/drill stall investigation; exported as generator evidence.
+	if port := subscriberPort(cfg.subURL); port != "" {
+		r.nchanMon = newNchanStatusMonitor(port)
+		go r.nchanMon.Run(ctx)
+	}
 
 	// ── preflight ──
 	if !r.barrier("preflight", "start") {
@@ -1997,7 +2005,25 @@ func (r *shardRun) resourceEvidence() map[string]any {
 		net[stage] = entry
 	}
 	out["tcp_health_stages"] = net
+	if r.nchanMon != nil {
+		out["nchan_status_timeline"] = r.nchanMon.Snapshot()
+	}
 	return out
+}
+
+// subscriberPort extracts the port from a subscriber base URL
+// (http://host.docker.internal:<port>/) so the status monitor targets the
+// same partition the shard's viewers use.
+func subscriberPort(base string) string {
+	i := strings.LastIndex(strings.TrimSuffix(base, "/"), ":")
+	if i < 0 {
+		return ""
+	}
+	port := strings.TrimSuffix(base, "/")[i+1:]
+	if _, err := strconv.Atoi(port); err != nil {
+		return ""
+	}
+	return port
 }
 
 // tcpHealthKeys selects the TcpExt counters relevant to delivery-stall
