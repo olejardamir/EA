@@ -2135,6 +2135,10 @@ func (r *shardRun) assembleResult(
 	} else {
 		r.reasonf("generator runtime evidence never collected")
 	}
+	// Timing validity MUST be computed before the timing evidence is
+	// rendered: computeTimingValidity stamps the run-end wall clock, and a
+	// wire record without run_end_ms fails the coordinator's R10 cross-check.
+	r.valid.TimingValid = r.computeTimingValidity()
 	res.Resources.Generator["timing"] = r.timingEvidence()
 	res.Resources.Nchan = controlMetricsMap(r.nchanMetrics)
 	redisMap := map[string]any{}
@@ -2174,7 +2178,6 @@ func (r *shardRun) assembleResult(
 	}
 	res.Resources.Generator["publisher"] = r.publisherEvidence()
 	res.Resources.Generator["resource_stages"] = r.resourceEvidence()
-	r.valid.TimingValid = r.computeTimingValidity()
 	res.Validity = r.valid
 	res.Verdict = r.classifyShard(scenarios, res.CorrectnessCounters)
 	if res.Verdict != coordinator.VerdictAccept {
