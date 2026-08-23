@@ -860,7 +860,12 @@ func (r *shardRun) runSurge(ctx context.Context) coordinator.ScenarioEvidence {
 		startActive:   r.pool.ActiveCurrent(),
 		expectedStart: expectedStart,
 		expectedAdds:  int64(cfg.surgeLocal),
-		expectedFinal: int64(cfg.localTarget + cfg.surgeLocal),
+		// The surge window must land the population at exactly the
+		// post-surge target. In the 100k split-baseline mode the baseline is
+		// held at localTarget-surgeLocal, so landing at localTarget (start +
+		// adds) IS the target — demanding localTarget+surgeLocal there would
+		// be unreachable by construction.
+		expectedFinal: expectedStart + int64(cfg.surgeLocal),
 		deadlineMs:    int64(cfg.surgeSeconds) * 1000,
 	}
 	before := takeSnapshot(r.pool)
