@@ -1141,6 +1141,29 @@ func (r *shardRun) reconnectScenario(hold pool.ReconnectHoldResult, released int
 		"failed":            failed,
 		"missing_results":   missingResults,
 	}
+	// Per-viewer failure attribution: without it a 16/64 failure is
+	// unattributable (timing? per-match gap? resume race?).
+	if failed > 0 || missingResults > 0 {
+		failedViewers := make([]map[string]any, 0, failed)
+		for id, res := range results {
+			if res.Passed {
+				continue
+			}
+			failedViewers = append(failedViewers, map[string]any{
+				"viewer":           id,
+				"expected_first":   res.ExpectedFirstSeq,
+				"expected_last":    res.ExpectedLastSeq,
+				"received_first":   res.ReceivedFirstSeq,
+				"received_last":    res.ReceivedLastSeq,
+				"missing_required": res.MissingRequired,
+				"duplicates":       res.Duplicates,
+				"out_of_order":     res.OutOfOrder,
+				"target_reached":   res.TargetReached,
+				"recovery_ms":      res.RecoveryMs,
+			})
+		}
+		structured["failed_viewers"] = failedViewers
+	}
 	exact := hold.Selected == reconnectPerShard &&
 		hold.ReadyBeforeHold == reconnectPerShard &&
 		released == reconnectPerShard &&
