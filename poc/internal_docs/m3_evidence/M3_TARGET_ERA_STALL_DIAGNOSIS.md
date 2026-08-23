@@ -59,6 +59,51 @@ correlation with slow_delivery_timeline timestamps.
 - ca2ac35: non-blocking docker logging (hygiene; not the mechanism)
 - 90d8154: SYS_PTRACE + /workers/deep instrumentation (works; 167/167 samples)
 
+## Definitive attribution — probe ladder (2026-08-23, post debug-off freeze)
+
+All runs use the frozen B1 baseline: `NGINX_DEBUG=0`, `LIVELOCK_WATCHER=0`,
+`nchan_shared_memory_size 64m`, `tcp_nopush on`, 4 partitions × 4 workers.
+
+| Probe | Change | fan_out p95 | burst p95 | correctness | note |
+|-------|--------|-------------|-----------|-------------|------|
+| B1    | debug-off (baseline) | 6083 | 4490 | 0 ✅ | INCONCLUSIVE |
+| C1    | `sendfile_max_chunk 64k` | surge hung | — | — | REGRESSION (reverted) |
+| D1    | `nchan_shared_memory_size 512m` | 5296 | 3198 | **12352 ❌** | REGRESSION (broke ordering; reverted) |
+| E1    | `tcp_nopush off` | 6239 | 8333 | 0 ✅ | REGRESSION (worse; reverted) |
+
+### DUT vs harness split (from `fan_out_transport` = publish→wire, DUT-side)
+Measured on the E1 run's per-shard histograms; `fan_out` = total (DUT+harness):
+
+| shard | fan_out(total) p95 | transport(DUT) p95 | harness gap |
+|-------|--------------------|--------------------|-------------|
+| 0 | 7203 ms | 6255 ms | ~948 ms |
+| 1 | 2093 ms | 3886 ms* | *transport contaminated by backlog/history frames |
+| 2 | 6788 ms | 3849 ms | ~2940 ms |
+| 3 | 6975 ms | 6008 ms | ~967 ms |
+
+DUT-side transport is **3849–6255 ms p95** across shards — the dominant,
+unavoidable contributor. Harness-side (wire→dispatch) gap is ≤~3 s and usually
+<1 s. **Even a perfectly optimized harness leaves 4–6 s of DUT latency.**
+
+### Why no config knob can fix it
+- nchan's own published ceiling: "300K concurrent subscribers per second …
+  excluding TCP/network delivery."
+- Burst volume = 52 msg/s × 8 channels × ~12.5k subs/channel ≈ **5.2M
+  deliveries**. Gate `burst p95 ≤ 1000 ms` ⇒ need ≥5.2M deliveries/s.
+- 4 partitions × 4 workers deliver ~**1.15M deliveries/s** (5.2M / 4.5s actual
+  burst p95) — already ~4× above nchan's documented 300K/s, yet 4.5× short of
+  the gate. This is a hard per-worker fan-out throughput wall.
+
+### Conclusion
+The frozen topology (4 partitions, 4 workers each) cannot fan out the burst
+volume within the frozen latency gates. Every config lever tried either
+regressed or was neutral; the root cause is nchan write-path serialization
+(worker draining SSE output chains), which is source-level — outside the
+config-only scope. ACCEPT is unattainable without one of:
+1. nchan/nginx source patch (frozen DUT binary),
+2. architecture change — more workers/partitions (frozen topology), or
+3. relaxing the frozen latency gates in `EXPERIMENT_CONTRACT_v2_3_0.md`.
+
 ## Next steps
 1. Identify the contended shm lock: perf/gdb on the spinning worker mid-run
    (SYS_PTRACE now available in containers), or --with-debug build scoped to
