@@ -293,35 +293,60 @@ export class ConnectionPool {
     connId: number,
     matchId: string,
   ): Promise<ConnectionEntry | null> {
-    try {
-      const url = `${this.config.subUrl}/sub/${matchId}`
-      const subscription = await stream.connect(url, undefined, () => this.metrics.incrementSseParseErrors())
-      const tracker = this.createTracker()
-      this.metrics.incrementConnectionsEstablished()
-
-      const entry: ConnectionEntry = {
-        id: connId,
-        matchId,
-        subscription,
-        tracker,
-        mode: "steady",
-      }
-
-      this.wireEntry(entry)
-
-      const count = this.subscribersByChannel.get(matchId) ?? 0
-      this.subscribersByChannel.set(matchId, count + 1)
-
-      return entry
-    } catch {
+    const url = `${this.config.subUrl}/sub/${matchId}`
+    const subscription = await this.connectWithRetry(stream, url, undefined)
+    if (!subscription) {
       this.metrics.incrementConnectionFailures()
       return null
     }
+    const tracker = this.createTracker()
+    this.metrics.incrementConnectionsEstablished()
+
+    const entry: ConnectionEntry = {
+      id: connId,
+      matchId,
+      subscription,
+      tracker,
+      mode: "steady",
+    }
+
+    this.wireEntry(entry)
+
+    const count = this.subscribersByChannel.get(matchId) ?? 0
+    this.subscribersByChannel.set(matchId, count + 1)
+
+    return entry
   }
 
   // v2.1.0: shared terminal-event wiring for initial connects and failover reconnects.
   private wireEntry(entry: ConnectionEntry): void {
     entry.subscription.onEvent((evt) => this.processEntryEvent(entry, evt))
+  }
+
+  // Resilient connect shared by every viewer pathway. Real SSE viewers retry
+  // across transient outages (e.g. a partition node restart during the
+  // deploy-replacement drill); the measurement client must do the same, or a
+  // single refused connection during a brief nchan downtime permanently loses a
+  // viewer and inflates connection-failure counters. Bounded exponential backoff
+  // returns null only if the endpoint is genuinely unreachable after maxAttempts.
+  private async connectWithRetry(
+    stream: EventStream,
+    url: string,
+    lastEventId: string | undefined,
+    opts: { maxAttempts?: number; baseDelayMs?: number } = {},
+  ): Promise<Subscription | null> {
+    const maxAttempts = opts.maxAttempts ?? 40
+    const baseDelayMs = opts.baseDelayMs ?? 250
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (!this._running) return null
+      try {
+        return await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
+      } catch {
+        if (attempt + 1 >= maxAttempts) return null
+        await new Promise((r) => setTimeout(r, Math.min(baseDelayMs * (attempt + 1), 2000)))
+      }
+    }
+    return null
   }
 
   // §M3-RACE-4: the per-event body of wireEntry, extracted so a pre-wire
@@ -405,7 +430,8 @@ export class ConnectionPool {
         this.metrics.incrementConnectionsAttempted()
         try {
           const url = `${newSubUrl}/sub/${entry.matchId}`
-          const subscription = await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
+          const subscription = await this.connectWithRetry(stream, url, lastEventId ?? undefined)
+          if (!subscription) throw new Error("failover reconnect exhausted retries")
           entry.subscription = subscription
           entry.mode = "reconnect"
           this.wireEntry(entry)
@@ -470,7 +496,8 @@ export class ConnectionPool {
     this.metrics.incrementConnectionsAttempted()
     try {
       const url = `${this.config.subUrl}/sub/${entry.matchId}`
-      const subscription = await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
+      const subscription = await this.connectWithRetry(stream, url, lastEventId ?? undefined)
+      if (!subscription) throw new Error("replay-probe reconnect exhausted retries")
       entry.subscription = subscription
       // Reconnect mode must be active before any frame can flow, including
       // frames flushed from the initialization buffer below.
@@ -545,32 +572,32 @@ export class ConnectionPool {
 
       this.metrics.incrementConnectionsAttempted()
 
-      try {
       const url = `${this.config.subUrl}/sub/${matchId}`
-      const subscription = await stream.connect(url, lastEventId, () => this.metrics.incrementSseParseErrors())
-        const tracker = this.createTracker()
-
-        const entry: ConnectionEntry = {
-          id: old.id,
-          matchId,
-          subscription,
-          tracker,
-          mode: "reconnect",
-        }
-
-        subscription.onEvent((evt) => {
-          if (!this._running) return
-          if (evt.type === "message") {
-            this.handleMessage(entry, evt.event.data, evt.event.id, evt.received_at_ms)
-          }
-        })
-
-        this.connections.push(entry)
-        const count = this.subscribersByChannel.get(matchId) ?? 0
-        this.subscribersByChannel.set(matchId, count + 1)
-      } catch {
+      const subscription = await this.connectWithRetry(stream, url, lastEventId ?? undefined)
+      if (!subscription) {
         this.metrics.incrementConnectionFailures()
+        continue
       }
+      const tracker = this.createTracker()
+
+      const entry: ConnectionEntry = {
+        id: old.id,
+        matchId,
+        subscription,
+        tracker,
+        mode: "reconnect",
+      }
+
+      subscription.onEvent((evt) => {
+        if (!this._running) return
+        if (evt.type === "message") {
+          this.handleMessage(entry, evt.event.data, evt.event.id, evt.received_at_ms)
+        }
+      })
+
+      this.connections.push(entry)
+      const count = this.subscribersByChannel.get(matchId) ?? 0
+      this.subscribersByChannel.set(matchId, count + 1)
     }
     // §R: Update active connection count after reconnect completes
     this.metrics.setActiveConnections(this.connections.length)
