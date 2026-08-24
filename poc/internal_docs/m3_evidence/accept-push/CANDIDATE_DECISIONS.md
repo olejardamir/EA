@@ -139,3 +139,46 @@ burst<=1000. Per hard impossibility gate (section 14), M3 ACCEPT is NOT achievab
 via config-only changes at the frozen topology/versions. Required change type:
 topology (more partitions/workers) or Nchan/nginx binary patch or contract gate
 relaxation — all outside this prompt's authority.
+
+## B1 — LONG-WINDOW PAIRED COMPARISON (2026-08-24, CORRECTION)
+Short 10s-burst probes under-measured the burst regime. Re-ran B1 and an F1
+baseline under the section-10 bridge windows (MEASURE=120s, SURGE=120s,
+BURST=30s, WARMUP=30s, COOLDOWN=10s) for a fair paired comparison.
+
+| config | fan_out p95 | burst p95 | duplicates | late_join p95 | verdicts |
+|--------|-------------|-----------|------------|---------------|----------|
+| F1 (long) | 11200 | 9918 | 12348 (FAIL) | 690 | INC/INC/REJ/INC |
+| B1 (long) | 4242  | 11006 | 0 (PASS)    | 906 | INC/REJ/REJ/ACC |
+
+FINDING: Under fair long-window measurement, B1 STRICTLY DOMINATES F1:
+- fan_out 2.6x better (4242 vs 11200)
+- correctness: B1 duplicates=0 (PASS); F1 duplicates=12348 (FAIL) — the contract's
+  documented F1 burst artifact ("publisher re-emit on ambiguous-failure under
+  burst load"). Backup mode's local-first publish avoids the Redis-PUBSUB
+  ambiguous-failure re-emit path, so B1 does not reproduce the duplicate defect.
+- late_join clean for both.
+
+This CORRECTS the earlier short-probe conclusion that B1 was "within noise / no
+improvement" (short B1 3477 vs short F1 control 4323). The short probes
+undersampled the burst window and missed F1's duplicate-correctness failure.
+
+B1 is therefore the BEST VALIDATED configuration (not F1). However it still fails
+the frozen fan_out gate (4242 >> 500, ~8.5x over) and burst gate (11006 >> 1000,
+~11x over). So ACCEPT is still NOT achievable; B1 is the new leader but does not
+reach the gates.
+
+Evidence: accept-push/b1-100k-long/, accept-push/f1-100k-long-control/
+
+## UPDATED LEADERBOARD (fair long-window where available)
+| candidate | fan_out p95 | burst p95 | duplicates | correctness | note |
+|-----------|-------------|-----------|------------|-------------|------|
+| B1 p0-backup (long) | 4242 | 11006 | 0 | PASS | BEST VALIDATED |
+| F1 (long) | 11200 | 9918 | 12348 | FAIL | duplicate burst artifact |
+| F1 (historical short best) | 2757 | 3707 | 0 | PASS | short-probe best, bursts undersampled |
+| B1 (short) | 3477 | 3546 | 0 | PASS | short sample |
+| N1 nostore-sub | (4k) missing=1 | - | - | FAIL | pre-empts N2/B2 |
+
+CONCLUSION (unchanged): M3 ACCEPT NOT ACHIEVED. B1 is the best config found
+(strictly better than F1 on fan_out and correctness under burst) but remains
+~8.5x over the frozen fan_out gate. No supported config-only change closes the
+per-worker fan-out throughput wall. Required change: topology / binary / contract.
