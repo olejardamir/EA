@@ -1,7 +1,11 @@
 # M3 ACCEPT PUSH — OUTCOME REPORT
 
 Generated: 2026-08-24
-Branch: m3-accept-push  (current HEAD f5ab4487c0915984b90d6abd74bca0da1d6283c4)
+Branch: m3-accept-push  (final merged to main @ ecf23a086b0288498adc80f5560f55792c61117e;
+  working tree clean; submission ZIP live-match-centre-submission.zip SHA
+  b81bb8aba790b320ac7eed8d9d25db118f7aaca02143a4e840bf9b017fc668fd with
+  poc/SOURCE_COMMIT=ecf23a08; extracted-ZIP POC smoke PASS, verdict NOT_APPLICABLE
+  at 100-conn portable profile, build identity nginx 1.27.4 / nchan 1.3.8 / redis 7.2)
 Instruction artifact: M3_ACCEPT_PUSH_EXHAUST_REMAINING_NCHAN_CONFIG_SPACE.md
 Nchan version audited: 1.3.8 (source commit 08ebad8)
 Contract: poc/internal_docs/EXPERIMENT_CONTRACT_v2_3_0.md (frozen v2.3.0, including
