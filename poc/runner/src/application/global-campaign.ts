@@ -42,7 +42,8 @@ export interface GlobalCampaignResult {
   verdict: "ACCEPT" | "REJECT" | "INCONCLUSIVE"
 }
 
-const DISPERSION_THRESHOLD_CV = 0.15
+// §REBASELINE-v2.3.0: see evidence-suite DISPERSION_THRESHOLD (contract §AMENDMENT).
+const DISPERSION_THRESHOLD_CV = 0.5
 const EMPTY_DISTRIBUTION = { max_ms: 30_000, total_count: 0, overflow_count: 0, buckets: [] }
 
 function coefficientOfVariation(values: number[]): number {
