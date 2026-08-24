@@ -46,36 +46,30 @@ The POC did **not** validate the final replacement topology. Its remaining laten
 ## 3. Final selected architecture (one coherent design)
 
 ```
- PROVIDER (HTTPS push, best-effort)
-        |
-        v
- API Gateway HTTP API  -->  SQS FIFO (message group = match_id)
-        |
-        v
- AWS Lambda (canonical processor)
-   - validate / version-normalize event schema
-   - idempotent canonical write (dedup by provider event id)
-   - maintain canonical state (score, match minute) from events
-        |
-        v
- DynamoDB  (CANONICAL TRUTH: events + state, transactional conditional writes, PITR)
-        |
-        v  (history/replay feed + live publication)
+  Next.js App Router client (EventSource, idempotent canonical_seq reducer)
+         |
+         v
+  CloudFront (private SSE origins; cached static Next.js at edge; path behaviors
+             route each match to its partition's private NLB origin)
+         |
+         v
+  single private NLB (one target group + listener per partition; L4 health checks;
+             NLB does NOT do HTTP path/match-ID routing — that is performed by
+             the CloudFront behavior)
+         |
+         v
   Delivery fleet: horizontally partitioned EC2 ASG nodes
     each: Nchan 1.3.8 + partition-local Valkey (ElastiCache)
     match -> partition (deterministic hash); HOT match = dedicated sub-shard
-        |
-        v
-  CloudFront (path behaviors route each match to its partition's private NLB origin;
-              cached static Next.js at edge)
          |
          v
-   single private NLB (one target group + listener per partition; L4 health
-   checks; NLB does NOT do HTTP path/match-ID routing — that is performed by
-   the CloudFront behavior)
-        |
-        v
- Next.js App Router client (EventSource, idempotent canonical_seq reducer)
+  DynamoDB  (CANONICAL TRUTH: events + state, transactional conditional writes, PITR)
+         ^
+  AWS Lambda (canonical processor): validate / version-normalize; idempotent write; derive score & minute
+         ^
+  API Gateway HTTP API  -->  SQS FIFO (message group = match_id)
+         ^
+  PROVIDER (HTTPS push, best-effort)
 ```
 
 ### 3.1 Canonical truth vs delivery/history state

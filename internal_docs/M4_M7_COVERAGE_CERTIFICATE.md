@@ -35,14 +35,14 @@
 
 | Row | Status | Reference |
 |---|---|---|
-| proposal.md exists, ≤1500 words (excl. diagram) | PASS | ≈1,257 prose words |
+| proposal.md exists, ≤1500 words (excl. diagram) | PASS | ≈1,274 prose words |
 | full stack feed→fan | PASS | proposal.md diagram + text |
 | important decisions/options/winners explained | PASS | proposal.md §Cost; M4 §4 |
 | least-trusted assumption named | PASS | proposal.md §Riskiest; README |
 | POC relationship/causal change explained | PASS | proposal.md §Riskiest; README POC write-up |
 | POC remains small experiment code | PASS | poc/ (architecture-revision probe) |
 | one-command local path | PASS | README run command |
-| only Docker + Bash (no Node/npm, no host Python/Git/Redis/Nginx, no cloud) | PASS | README prerequisite (routing env precomputed & committed; source commit committed in `poc/SOURCE_COMMIT`) |
+| Docker (container runtime) only | PASS | README prerequisite; `poc/.env` precomputes routing env + source identity, so `docker compose up` is the sole command; no Node/npm/Python/Git/Redis/Nginx, no cloud |
 | no cloud account | PASS | README |
 | measured result | PASS | README F1 numbers |
 | simulated feed / no full product | PASS | README method |
@@ -93,7 +93,7 @@ FULL M4-M7 COVERAGE: 100%
 
 Method: total `wc -w` of the file minus words inside fenced ``` blocks (only the architecture diagram block is exempted per assignment; other fenced blocks are counted). Counted 2026-08-23.
 
-- `proposal.md`: total 1,348 words; diagram block 91 words; **prose = 1,257 words** (within hard max 1,500; within target 1,200–1,450).
+- `proposal.md`: total 1,365 words; diagram block 91 words; **prose = 1,274 words** (within hard max 1,500; within target 1,200–1,450).
 - `README.md` POC write-up (bounded section "## POC write-up" → "## Material limitations"): **218 words** (within hard max 300; target margin ~180–260).
 
 Both counts preserve margin below the respective ceilings.
