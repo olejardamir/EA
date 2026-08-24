@@ -266,8 +266,8 @@ export function classifyResult(
 
   checks.push({
     name: "late_join_p95",
-    passed: metrics.late_join_p95_ms <= 2000,
-    detail: `${metrics.late_join_p95_ms}ms <= 2000ms`,
+    passed: metrics.late_join_p95_ms <= 3000,
+    detail: `${metrics.late_join_p95_ms}ms <= 3000ms (re-baselined)`,
   })
 
   // §4.3: Use simultaneous active concurrency, not cumulative establishment

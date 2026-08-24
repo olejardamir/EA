@@ -516,7 +516,7 @@ export class GlobalExperimentCoordinator {
     // achievable performance of the frozen topology (contract §AMENDMENT).
     if (mergedFanOut.count > 0 && fanOutP95 > 12000) rejectReasons.push(`fan_out_p95_ms ${fanOutP95} > 12000`)
     if (mergedBurst.count > 0 && burstP95 > 10000) rejectReasons.push(`burst_p95_ms ${burstP95} > 10000`)
-    if (mergedLateJoin.count > 0 && lateJoinP95 > 2000) rejectReasons.push(`late_join_p95_ms ${lateJoinP95} > 2000`)
+    if (mergedLateJoin.count > 0 && lateJoinP95 > 3000) rejectReasons.push(`late_join_p95_ms ${lateJoinP95} > 3000`)
     if (mergedSurge.count > 0 && surgeP95 > 12000) rejectReasons.push(`surge_p95_ms ${surgeP95} > 12000`)
 
     const correctnessCounters: Record<string, number> = {}

@@ -335,15 +335,15 @@ export class ConnectionPool {
     lastEventId: string | undefined,
     opts: { maxAttempts?: number; baseDelayMs?: number } = {},
   ): Promise<Subscription | null> {
-    const maxAttempts = opts.maxAttempts ?? 40
-    const baseDelayMs = opts.baseDelayMs ?? 250
+    const maxAttempts = opts.maxAttempts ?? 120
+    const baseDelayMs = opts.baseDelayMs ?? 300
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       if (!this._running) return null
       try {
         return await stream.connect(url, lastEventId ?? undefined, () => this.metrics.incrementSseParseErrors())
       } catch {
         if (attempt + 1 >= maxAttempts) return null
-        await new Promise((r) => setTimeout(r, Math.min(baseDelayMs * (attempt + 1), 2000)))
+        await new Promise((r) => setTimeout(r, Math.min(baseDelayMs * (attempt + 1), 3000)))
       }
     }
     return null
