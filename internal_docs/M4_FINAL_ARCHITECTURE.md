@@ -46,31 +46,34 @@ The POC did **not** validate the final replacement topology. Its remaining laten
 ## 3. Final selected architecture (one coherent design)
 
 ```
-  Next.js App Router client (EventSource, idempotent canonical_seq reducer)
-         |
-         v
-  CloudFront (private SSE origins; cached static Next.js at edge; path behaviors
-             route each match to its partition's private NLB origin)
-         |
-         v
-  single private NLB (one target group + listener per partition; L4 health checks;
-             NLB does NOT do HTTP path/match-ID routing — that is performed by
-             the CloudFront behavior)
-         |
-         v
-  Delivery fleet: horizontally partitioned EC2 ASG nodes
-    each: Nchan 1.3.8 + partition-local Valkey (ElastiCache)
-    match -> partition (deterministic hash); HOT match = dedicated sub-shard
-         |
-         v
-  DynamoDB  (CANONICAL TRUTH: events + state, transactional conditional writes, PITR)
-         ^
-  AWS Lambda (canonical processor): validate / version-normalize; idempotent write; derive score & minute
-         ^
-  API Gateway HTTP API  -->  SQS FIFO (message group = match_id)
-         ^
-  PROVIDER (HTTPS push, best-effort)
-```
+   PROVIDER (HTTPS push, best-effort)
+          |
+          v
+   API Gateway HTTP API  -->  SQS FIFO (message group = match_id)
+          |
+          v
+   AWS Lambda (canonical processor): validate / version-normalize; idempotent write; derive score & minute
+          |
+          v
+   DynamoDB  (CANONICAL TRUTH: events + state, transactional conditional writes, PITR)
+          |  history/replay feed + live publication
+          v
+   Delivery fleet: horizontally partitioned EC2 ASG nodes
+     each: Nchan 1.3.8 + partition-local Valkey (ElastiCache)
+     match -> partition (deterministic hash); HOT match = dedicated sub-shard
+          |
+          v
+   single private NLB (one target group + listener per partition; L4 health checks;
+              NLB does NOT do HTTP path/match-ID routing — that is performed by
+              the CloudFront behavior)
+          |
+          v
+   CloudFront (private SSE origins; cached static Next.js at edge; path behaviors
+              route each match to its partition's private NLB origin)
+          |
+          v
+   Next.js App Router client (EventSource, idempotent canonical_seq reducer)
+ ```
 
 ### 3.1 Canonical truth vs delivery/history state
 - **DynamoDB** is the single durable canonical source. Every canonical event carries a monotonic `canonical_seq` per match — the one atomic commit boundary for score, state, and visible history.

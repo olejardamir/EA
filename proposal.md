@@ -2,30 +2,32 @@
 
 ## Architecture
 
-```
+ ```
  PROVIDER (HTTPS push, best-effort)
-        |
+         |
+         v
  API Gateway HTTP API --> SQS FIFO (group = match_id)
-        |
+         |
+         v
  Lambda canonical processor
    validate / version-normalize; idempotent write; derive score & minute
-        |
+         |
+         v
+ DynamoDB  ===== CANONICAL TRUTH (events + state, transactional) =====
+         |  history/replay feed + live publication
+         v
+ Delivery fleet: horizontally partitioned EC2 ASG nodes
+   each: Nchan 1.3.8 + partition-local Valkey (ElastiCache)
+   match -> partition (deterministic); HOT match = dedicated sub-shard
+         |
+         v
+ single private NLB (one target group + listener per partition)
+         |
+         v
+ CloudFront (private SSE origins; cached static Next.js at edge)
+         |
+         v
  Next.js App Router client (EventSource; idempotent canonical_seq reducer)
-         |
-  CloudFront (private SSE origins; cached static Next.js at edge)
-         |
-  private NLB (one NLB, per-partition target groups)
-         |
-  Delivery fleet: EC2 ASG nodes, each Nchan 1.3.8 + partition-local Valkey (ElastiCache)
-    match -> partition (deterministic); HOT match = dedicated sub-shard
-         |
-  DynamoDB  ===== CANONICAL TRUTH (events + state, transactional) =====
-         ^
-  Lambda canonical processor (validate/normalize; idempotent write; derive score & minute)
-         ^
-  API Gateway HTTP API --> SQS FIFO (group = match_id)
-         ^
-  PROVIDER (HTTPS push, best-effort)
 ```
 
 Two state planes are kept distinct: **canonical truth** (DynamoDB — the durable, ordered source of score, state, and history) and **delivery/history state** (Valkey/Nchan — a rebuildable cache of canonical truth for fast fan-out and replay).

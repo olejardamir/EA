@@ -19,7 +19,7 @@ docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up 
 
 For a 4k smoke run, prefix scale overrides: `PROBE_TARGET=1000 PROBE_GLOBAL_TARGET=4000 docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up --build --abort-on-container-exit --exit-code-from coordinator`. The optional `./run-arch-revision-probe.sh 100000|4000` wrapper parameterizes scale and stamps evidence, but is **not required** to run the POC.
 
-This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, and four load-generator shards; runs the chosen workload; then **auto-tears-down** (`docker compose ... down --volumes`). For manual cleanup: `cd poc && docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml down --volumes --remove-orphans`.
+This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, and four load-generator shards, then runs the chosen workload until the coordinator exits (the coordinator prints the verdict). The containers stop, but the `global-evidence` Docker volume persists — the command does **not** auto-tear-down. Cleanup (stops containers and removes volumes/networks): `cd poc && docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml down --volumes --remove-orphans`.
 
 **Important — what this command is and is not:** it exercises the **proposed revised topology** (match-aware 16-shard horizontal fan-out). It is NOT a re-run of the frozen v2.3.0 / F1 configuration, and it is a **non-qualifying** development probe, not the terminal measured campaign. The terminal M3 F1 numbers are historical measured evidence and are not reproduced by this command.
 
@@ -27,7 +27,7 @@ This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, a
 
 **Expected runtime:** not independently re-measured in this submission; a fresh run's duration depends on host CPU/RAM/FD capacity and chosen scale (4k smoke vs 100k). The frozen v2.3.0 campaign profile (~20 min/seed, 3 seeds) is recorded in `poc/internal_docs/m3_evidence/`, not regenerated here.
 
-**Results** appear at `poc/evidence-launches/<project>/global-result-*.json`. Interpret the verdict as:
+**Results:** the coordinator writes `global-result-*.json` to the `global-evidence` Docker volume (default project name `poc` → volume `poc_global-evidence`) and prints the verdict. View it with: `docker run --rm -v poc_global-evidence:/evidence alpine sh -c 'cat /evidence/global-result-*.json'`. Interpret the verdict as:
 - `ACCEPT` — all frozen gates passed (not achieved at the frozen topology)
 - `REJECT` — valid run, a gate failed
 - `INCONCLUSIVE` — measurement/environment invalid (e.g., insufficient host resources)

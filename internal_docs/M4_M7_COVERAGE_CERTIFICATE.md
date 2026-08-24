@@ -93,7 +93,7 @@ FULL M4-M7 COVERAGE: 100%
 
 Method: total `wc -w` of the file minus words inside fenced ``` blocks (only the architecture diagram block is exempted per assignment; other fenced blocks are counted). Counted 2026-08-23.
 
-- `proposal.md`: total 1,365 words; diagram block 91 words; **prose = 1,274 words** (within hard max 1,500; within target 1,200–1,450).
+- `proposal.md`: total 1,380 words; diagram block 106 words; **prose = 1,274 words** (within hard max 1,500; within target 1,200–1,450).
 - `README.md` POC write-up (bounded section "## POC write-up" → "## Material limitations"): **218 words** (within hard max 300; target margin ~180–260).
 
 Both counts preserve margin below the respective ceilings.
