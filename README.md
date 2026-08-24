@@ -1,46 +1,38 @@
 # Live Match Centre — POC & Submission
 
-Reviewer-facing entry point. The full design rationale is in `proposal.md`; current architecture, evidence, and cost are in `internal_docs/` (`M4_FINAL_ARCHITECTURE.md`, `M5_PARAMETRIC_COST_MODEL.md`, `M5_CURRENT_EXTERNAL_EVIDENCE_LEDGER.md`, `M5_FINAL_PROPOSAL_EVIDENCE_CLOSURE.md`).
+Reviewer-facing entry point. The full design rationale is in `proposal.md`.
 
-## Run the illustrative topology probe (non-qualifying development probe)
+## Run the POC (one command, container runtime only)
 
-> **The submitted POC result is the frozen M3 F1 measurement** (100k active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms — hard-stopped without ACCEPT). The command below exercises the **proposed replacement topology**, not the frozen M3 campaign; it is an illustrative development probe, **not** the terminal measured POC.
+**Prerequisite:** Docker (the container runtime) only. No AWS account, no credentials, no host Node/npm, no host Python, no host Git, no Redis/Nginx install. All source, routing env, and the pinned source-commit identity ship inside `poc/`; the POC builds and runs with a single container command.
 
-**Prerequisite:** Docker (the container runtime) only. No AWS account, no credentials, no host Node/npm, no host Python, no host Git, no Redis/Nginx install. All routing env and source-commit identity are precomputed and committed in `poc/.env`, so the POC runs with a single container command.
+**Working directory:** extracted ZIP root, then `poc`.
 
-**Working directory:** `poc`
-
-**Command (illustrative probe of the proposed horizontal topology; non-qualifying):**
+**Command:**
 
 ```bash
-cd poc
-docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up --build --abort-on-container-exit --exit-code-from coordinator
+cd poc && docker compose up --build --abort-on-container-exit --exit-code-from runner
 ```
 
-For a 4k smoke run, prefix scale overrides: `PROBE_TARGET=1000 PROBE_GLOBAL_TARGET=4000 docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up --build --abort-on-container-exit --exit-code-from coordinator`. The optional `./run-arch-revision-probe.sh 100000|4000` wrapper parameterizes scale and stamps evidence, but is **not required** to run the POC.
+This builds and starts a Redis canonical store, an Nchan fan-out server, and the TypeScript runner (publisher + SSE subscribers + measurement). The runner drives the simulated feed and prints a **POC RESULTS SUMMARY** plus a machine-readable JSON verdict, then exits; the command stops the containers.
 
-This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, and four load-generator shards, then runs the chosen workload until the coordinator exits (the coordinator prints the verdict). The containers stop, but the `global-evidence` Docker volume persists — the command does **not** auto-tear-down. Cleanup (stops containers and removes volumes/networks): `cd poc && docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml down --volumes --remove-orphans`.
+**Result location:** printed to the terminal (`fan_out p95`, delivery completeness, reconnect/replay correctness). No generated file is required; the run is self-contained.
 
-**Important — what this command is and is not:** it exercises the **proposed revised topology** (match-aware 16-shard horizontal fan-out). It is NOT a re-run of the frozen v2.3.0 / F1 configuration, and it is a **non-qualifying** development probe, not the terminal measured campaign. The terminal M3 F1 numbers are historical measured evidence and are not reproduced by this command.
+**Interpretation:** the verdict is `NOT_APPLICABLE` at this portable reduced scale (the smoke profile is measurement-only) — it exercises the same fan-out measurement path as the historical 100k F1 probe and emits the same metric, but does **not** reproduce the 100k result and is **not** a re-run of M3.
 
-**Terminal M3 result (submitted measured evidence, not re-run here):** the frozen v2.3.0 campaign measured F1 at config source `ffe3ae6` (Redis `io-threads-do-reads`, 4 partitions × 4 workers): 100,000 active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. **M3 was hard-stopped without ACCEPT**: the single best-validated F1 probe met the scale/correctness behavior but missed the frozen latency gates, and the terminal three-run v2.3.0 qualification campaign (seeds 42/43/44) was not run because the configuration was already demonstrably outside the gates. The earlier `run-evidence-100k.sh` (seeds 42–44) is the **historical v2.2.0 campaign and is non-terminal provenance only** — it is not the terminal M3 claim.
+**Expected runtime:** a few minutes (build once, then ~30 s of measurement at 100 connections).
 
-**Expected runtime:** not independently re-measured in this submission; a fresh run's duration depends on host CPU/RAM/FD capacity and chosen scale (4k smoke vs 100k). The frozen v2.3.0 campaign profile (~20 min/seed, 3 seeds) is recorded in `poc/internal_docs/m3_evidence/`, not regenerated here.
+**Cleanup:** `cd poc && docker compose down --volumes --remove-orphans`.
 
-**Results:** the coordinator writes `global-result-*.json` to the `global-evidence` Docker volume (default project name `poc` → volume `poc_global-evidence`) and prints the verdict. View it with: `docker run --rm -v poc_global-evidence:/evidence alpine sh -c 'cat /evidence/global-result-*.json'`. Interpret the verdict as:
-- `ACCEPT` — all frozen gates passed (not achieved at the frozen topology)
-- `REJECT` — valid run, a gate failed
-- `INCONCLUSIVE` — measurement/environment invalid (e.g., insufficient host resources)
-
-A fresh heavy run is **environment-dependent**: on weaker hardware it may classify `INCONCLUSIVE` even though the submitted measured result above stands.
+**What this command is and is not:** it runs the **fixed-capacity Nchan/Redis/SSE fan-out experiment family** at a portable reduced scale (100 connections), the same family whose frozen 100k F1 probe produced the submitted measured evidence. It is a packaging/reproducibility check, not a new 100k campaign and not a re-run of M3.
 
 ## POC write-up
 
-**Assumption.** The overall weakest assumption is provider feed semantics: no real provider or schema was supplied, so it could not be locally tested. The riskiest locally testable assumption was that a fixed Nchan/Redis/SSE fan-out topology could serve 100,000 concurrent viewers at the assignment's latency gates.
+**Assumption.** The overall least-trusted assumption is provider feed semantics: no real provider or schema was supplied, so it could not be locally tested. The riskiest locally testable assumption was that a fixed Nchan/Redis/SSE fan-out tier could serve 100,000 concurrent viewers within the assignment's frozen latency gates.
 
-**Method.** A simulated event stream drives 8 matches with a 60k baseline surging +40k to 100k within 120s, at ~10 events/s steady and ~50/s burst, across four coordinated load-generator shards. Scenarios cover correctness, reconnect, late-join, and restart replacement under the frozen v2.3.0 contract (fan_out p95 ≤500ms, burst p95 ≤1000ms, late-join ≤2000ms, zero missing/duplicate/out-of-order).
+**Method.** The POC simulates the feed locally: a generated event stream drives 8 matches at ~10 events/s steady and ~50/s burst, with a +40k/120s surge, late-join, reconnect, and restart scenarios. Subscribers connect over real SSE through an Nchan fan-out server (the same fixed-capacity tier the production design would rely on); the runner measures fan-out publish→frame latency, delivery completeness, and reconnect/replay correctness. The staged command runs this experiment at a portable reduced scale (100 connections) so it executes on a standard container runtime without cloud or host-language dependencies.
 
-**Result.** The local experiment reached 100,000 active viewers with zero correctness violations; surge and late-join were clean. It measured fan_out p95 2757ms and burst p95 3707ms, missing the frozen latency gates. **M3 was hard-stopped without ACCEPT** — the single best-validated F1 probe met scale/correctness but missed the frozen gates, and the terminal three-run v2.3.0 campaign (seeds 42/43/44) was not run because the config was already demonstrably outside the gates. The limit was isolated to Nchan per-worker fan-out throughput (Redis PUBSUB contention); config-only tuning was exhausted.
+**Result.** At 100k (frozen F1 probe, historical submitted evidence) the experiment reached 100,000 viewers with zero correctness violations but measured fan_out p95 2757 ms and burst p95 3707 ms, missing the frozen 500/1000 ms gates; **M3 was hard-stopped without ACCEPT**. The reduced reviewer run reproduces the same measurement path and emits fan_out p95 at its smaller scale (NOT the 100k failure, and not a re-run of M3).
 
 **Proposal impact.** The POC removes the fixed-capacity assumption. Production uses horizontally bounded fan-out replicas with match/hot-match sharding, resource-aware autoscaling, pre-scaled kickoff capacity, and N+1 headroom. The replacement topology was not itself benchmark-validated by the POC.
 
@@ -52,4 +44,4 @@ M3 was hard-stopped without ACCEPT; 100k scale/correctness succeeded but the fro
 
 AI assistance was used for architecture exploration, POC contract/code iteration, evidence analysis, current-source research, cost calculations, drafting, and auditing. It was directed to preserve requirements, separate fact/assumption/measurement/inference, not change criteria after measurement, surface INCONCLUSIVE/REJECT evidence, use current primary sources, and keep the candidate accountable for every decision.
 
-The AI instruction artifacts that governed this work are preserved with SHA-256 identifiers in `internal_docs/AI_INSTRUCTION_PROVENANCE.md` (notably the M4–M7 closure artifact, `MILESTONES_4_5_6_7_CLOSE_100_PERCENT_OVERNIGHT_PROMPT_ARTIFACT.md`).
+The AI instruction artifacts that governed this work are included at the archive root: `AGENTS.md`, `MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md`, `MILESTONE_3_ASSIGNMENT_SYNCED_EXECUTION_PLAN_v2_FINAL.md`, `PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md`, `MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`, `MILESTONES_4_5_6_7_CLOSE_100_PERCENT_OVERNIGHT_PROMPT_ARTIFACT.md`, and `FINAL_TAKEHOME_NON_M3_REQUIREMENT_CLOSURE_PROMPT_ARTIFACT.md`.

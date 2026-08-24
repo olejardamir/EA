@@ -30,12 +30,14 @@ POC experiment contract v2.0.4                        EXISTS (historical — sup
 POC experiment contract v2.0.5                        EXISTS (canonical active — freezes 4×25,000=100,000 exact topology, coordinated-shard lifecycle, one-publisher ownership, global barriers/histogram merge/simultaneous-global verdict, 3–8 global-run campaign, slow-client 1600–2400 ms pacing, restart exact-range proof, resolved machine provenance)
 POC experiment contract v2.3.0                        EXISTS (TERMINAL M3 — frozen 4×25,000=100,000 exact topology; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms; hard-stopped without ACCEPT at 100k scale; latency gates NOT met)
 poc/                                                  EXISTS (built, tested, PASS at 10k scale; evidence-100k runnable but hard-stopped without ACCEPT at 100k)
-proposal.md                                           DONE (2026-08-23, ≤1500 words, M4 partitioned architecture)
-README.md                                             DONE (2026-08-23, run cmd + limitations + AI disclosure)
+proposal.md                                           DONE (2026-08-23, revised 2026-08-24; 1324 prose words; SSE keepalive + corrected history math)
+README.md                                             DONE (2026-08-24; F1-family portable primary command; POC write-up 235 words)
 M4 architecture reconciliation                        DONE → internal_docs/M4_FINAL_ARCHITECTURE.md
 M5 external evidence/cost                             DONE → internal_docs/M5_*.md (WITHIN $3k)
 M7 source/result coherence                            DONE → internal_docs/M7_POC_SOURCE_RESULT_COHERENCE.md
-final submission ZIP                                  NOT YET CREATED (out of scope of M4–M7 closure; proposal+README+internal_docs exist)
+M8 explainability + clean-room audit                  DONE → internal_docs/FINAL_NON_M3_REQUIREMENT_AUDIT.md (gap ledger, number ledger, decision defenses)
+M9 clean poc/ for delivery                             DONE → .submission-staging/poc minimal (redis+nchan+runner+compose+static .env)
+M10 final submission ZIP + extracted clean-room audit DONE → live-match-centre-submission.zip (whitelist clean; extracted run exit 0, measured fan_out p95=6ms, NOT_APPLICABLE)
 ```
 
 ---
@@ -1071,15 +1073,15 @@ M4  Reconcile result with architecture                  DONE — 100% (fixed 4-p
      |
 M5  Close current evidence + final cost model           DONE — 100% (M5_PARAMETRIC_COST_MODEL.md, M5_CURRENT_EXTERNAL_EVIDENCE_LEDGER.md, M5_FINAL_PROPOSAL_EVIDENCE_CLOSURE.md; conclusion CONDITIONALLY WITHIN BUDGET)
      |
-M6  Write proposal.md <=1,500 words                    DONE — 100% (repo-root proposal.md; 1,016 prose words, diagram excluded)
+M6  Write proposal.md <=1,500 words                    DONE — 100% (repo-root proposal.md; 1,324 prose words, diagram excluded)
      |
-M7  Write README.md + <=300-word POC report + AI process DONE — 100% (repo-root README.md; POC write-up 196 words; M7_POC_SOURCE_RESULT_COHERENCE.md)
+M7  Write README.md + <=300-word POC report + AI process DONE — 100% (repo-root README.md; POC write-up 235 words; M7_POC_SOURCE_RESULT_COHERENCE.md)
      |
-M8  Explainability + clean-room reproducibility audit   NEXT — NOT STARTED
+M8  Explainability + clean-room reproducibility audit   DONE — 100% (internal_docs/FINAL_NON_M3_REQUIREMENT_AUDIT.md; gap ledger, number ledger, decision defenses; clean-room from staged copy + extracted ZIP both exit 0)
      |
-M9  Clean poc/ for delivery
+M9  Clean poc/ for delivery                              DONE — 100% (.submission-staging/poc minimal: redis+nchan+runner+compose.yaml+static non-secret .env; no node_modules/tests/evidence)
      |
-M10 Build and audit final ZIP
+M10 Build and audit final ZIP                           DONE — 100% (live-match-centre-submission.zip; top-level whitelist clean; extracted archive runs primary command exit 0, measured fan_out p95=6ms, NOT_APPLICABLE)
 ```
 
 ---

@@ -73,3 +73,16 @@ purpose:          AI instruction artifact directing the M4–M7 100% closure exe
   the preserved copy is immutable; its SHA-256 above is its canonical identifier.
 - The same rules apply to `internal_docs/MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`:
   the preserved copy is immutable; its SHA-256 above is its canonical identifier.
+
+## Preserved instruction artifact — Final non-M3 requirement closure (this execution)
+
+```text
+artifact path:    internal_docs/FINAL_TAKEHOME_NON_M3_REQUIREMENT_CLOSURE_PROMPT_ARTIFACT.md
+SHA-256:          dcfd6965d3cec4d6ed90a54ab7416bdc61fbd54f881cd6f275322afd64067ce0
+first-use commit: e18246e494476efd3afc4907e99c48ec3b4393de (execution-start HEAD)
+purpose:          AI instruction artifact directing the final non-M3 requirement closure:
+                  requirements audit, production-design coherence audit, proposal/README
+                  finalization, POC packaging/reproducibility, explainability audit (M8),
+                  clean staged submission (M9), and final ZIP construction + clean-room
+                  verification (M10). M3 is explicitly out of scope.
+```
