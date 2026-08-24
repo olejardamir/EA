@@ -2,68 +2,86 @@
 
 ## Architecture
 
- ```
- PROVIDER (HTTPS push, best-effort)
-         |
-         v
- API Gateway HTTP API --> SQS FIFO (group = match_id)
-         |
-         v
- Lambda canonical processor
-   validate / version-normalize; idempotent write; derive score & minute
-         |
-         v
- DynamoDB  ===== CANONICAL TRUTH (events + state, transactional) =====
-         |  history/replay feed + live publication
-         v
- Delivery fleet: horizontally partitioned EC2 ASG nodes
-   each: Nchan 1.3.8 + partition-local Valkey (ElastiCache)
-   match -> partition (deterministic); HOT match = dedicated sub-shard
-         |
-         v
- single private NLB (one target group + listener per partition)
-         |
-         v
- CloudFront (private SSE origins; cached static Next.js at edge)
-         |
-         v
- Next.js App Router client (EventSource; idempotent canonical_seq reducer)
+```text
+Third-party feed (best-effort push)
+        |
+        v
+API Gateway HTTP API
+        |
+        v
+SQS FIFO, MessageGroupId = match_id
+        |
+        v
+Lambda canonical processor
+validate / normalize / dedupe / derive score + minute
+        |
+        v
+DynamoDB
+canonical ordered events + current match state
+        |
+        +--------------------> history/snapshot API
+        |
+        v
+delivery publisher
+        |
+        v
+fan-out shard groups
+each group = shared Valkey + multiple Nchan replicas
+        |
+        v
+CloudFront/static Next.js + regional SSE endpoints
+        |
+        v
+Next.js App Router client
+history first, then live EventSource stream
 ```
 
-Two state planes are kept distinct: **canonical truth** (DynamoDB — the durable, ordered source of score, state, and history) and **delivery/history state** (Valkey/Nchan — a rebuildable cache of canonical truth for fast fan-out and replay).
+The system separates **canonical truth** from **delivery state**. DynamoDB stores the durable event history and derived score/minute. Valkey/Nchan is a rebuildable delivery layer used only for low-latency replay and fan-out.
 
-**Provider transport assumption.** I assume HTTPS push from the provider; a persistent vendor stream would replace only the ingress adapter (the API Gateway integration), not the durable queue, canonical processing, or downstream design. Real provider feed semantics and schema were not supplied, so this boundary is explicitly an assumption, not an invented fact — provider events are validated and normalized into a stable canonical model so an upstream schema change is contained at ingestion.
+The provider boundary is deliberately explicit. The assignment says delivery is best-effort and does not define stable event IDs, provider sequence numbers, or an authoritative reconciliation endpoint. Once an event reaches our ingress, SQS and idempotent canonical processing prevent us from losing it. If the production provider supplies event identity/order or a snapshot/reconciliation API, the adapter uses it to detect gaps, duplicates, and upstream reordering. If it does not, an event that the provider never sends cannot be reconstructed from nothing; that is the largest external dependency risk and must be resolved in the provider contract rather than hidden by the application design.
 
-## Correctness, history and recovery
+## Correctness, history and client behavior
 
-Provider events arrive over HTTPS and are enqueued durably in SQS FIFO, preserving per-match order. A Lambda processor validates and normalizes each event into a versioned canonical schema and writes it idempotently to DynamoDB, keyed by `(match_id, canonical_seq)` with a conditional/transactional put that dedupes by provider event id. Canonical state (score, official match minute) is derived purely from these events — the browser never owns the official clock.
+Each accepted event is normalized into a versioned canonical model. The processor writes the event and updated match state idempotently in DynamoDB and only publishes after the canonical write succeeds. A stable `canonical_seq` is assigned in accepted canonical order. Provider IDs/order are used when the real feed supplies them; they are not invented as an assignment fact.
 
-History and live delivery share one atomic boundary: every canonical event carries a monotonic `canonical_seq`. A client connects, fetches snapshot/history up to cursor `N`, then subscribes live for `seq > N`. The client reducer is idempotent by `canonical_seq`, so late-join, reload, and phone-wake cannot create a hole or double-apply an event. Last coherent state stays on screen while the transport reconnects (never blank, no manual refresh); reconnection is jittered to avoid a thundering herd.
+Late join is a snapshot-to-stream handoff. The client requests current state plus history through sequence `N`, renders it immediately, and then subscribes to live events after `N`. Every live event carries `canonical_seq`; the reducer ignores a sequence it has already applied and buffers a small gap rather than rendering newer state over missing earlier state. On reconnect or phone wake it resumes from the last applied cursor. Existing coherent state remains visible while reconnecting, so the user never sees a blank feed or needs a manual refresh.
 
- An event durably accepted but failing one processing attempt is retried with idempotent canonical write and alerted/quarantined on repeated failure; it is never silently skipped, and a malformed/duplicate "poison" event cannot corrupt canonical state because writes are conditional on the canonical sequence and provider event id. Provider events are validated and normalized into a stable, version-aware canonical model, so an upstream schema change is rejected or migrated rather than silently corrupting state. If the delivery cache is lost, the owning partition rebuilds history from DynamoDB — canonical truth is never the only copy. Long-lived SSE uses keep-alive/idle ping frames so a quiet connection is not silently dropped by CloudFront or intermediary timeouts; the interval is a current-service-informed design choice (immaterial to DTO), not an assignment fact.
+The score and minute shown in both lobby and match views are derived from the same canonical events as the timeline. The browser never independently increments the official score or clock. This prevents the score panel and event list from disagreeing because of separate client-side state.
 
-The lobby is the public, anonymous, read-only entry point: it lists all live matches with current score and match minute, and shows goals and cards as they happen with no manual refresh. The match page extends this with the full run-of-play, immediate full history, then live streaming. Because correctness is keyed to `canonical_seq`, the lobby and match views always agree with the event stream: no duplicate display, nothing disappears, and display order follows canonical order.
+The public frontend has no accounts and no write path. With Next.js App Router, server-rendered page shells deliver fast first paint; client components handle live state. The main component boundaries are `LiveMatchList`, `MatchCard`, `ScoreHeader`, `EventTimeline`, and a shared `useMatchStream` hook/reducer. The lobby consumes the same canonical stream and shows every live match, score, minute, goals, and cards without refresh.
 
-## Scale, latency and geography
+## Scale, hot matches and geography
 
-The design serves 100,000 peak viewers across 8 matches at ~10 events/s steady and ~50 events/s burst, absorbing a +40,000 viewer surge in 120 s. The fixed local topology's bottleneck (one Nchan primary's per-worker fan-out throughput) is removed by **horizontal partitioning**: matches map to delivery nodes by deterministic hash, and a hot match is assigned a dedicated sub-shard so one popular match cannot overload a single node. Each node holds a deliberately conservative ~8k concurrent-SSE envelope (c7g.xlarge); the fleet is pre-scaled warm before kickoffs and runs N+1 with autoscaling for headroom. **Crowd-size invariance:** the same architecture serves 100 total viewers and 100,000 total viewers identically — only the partition count and node count scale; there is no fixed per-node ceiling that 100 viewers approach, so there is no M3-style fan-out throughput wall at small scale either.
+Peak requirements are eight live matches, about 10 events/s total with bursts near 50/s, 100,000 concurrent viewers, and a +40,000-viewer surge in two minutes.
 
-Latency: the assignment targets goal p95 ≤2 s and routine p95 ≤5 s ingest-to-screen, with full history visible ≤2 s. The local POC reached 100k with zero correctness violations but measured fan_out p95 2757 ms and burst p95 3707 ms — it did **not** meet the frozen latency gates, so those targets are presented as a planning budget, not a production-measured result. A compact budget: durable ingest + canonical processing are sub-second (local + service facts); fan-out publication is the dominant stage; edge/network and browser parse/render remain production inferences. Full-history ≤2 s is a **bounded planning assumption**, not a measured browser result: an even per-match share of the ~10 events/s total over a ~90-min match is ~6,750 events (~300 B each ≈ 2 MB/match; burst sensitivity raises it only modestly), trivially transferable over broadband with incremental render. Real provider payloads and browser render were not measured by the POC.
+The critical production rule is that **a match is not limited to one fan-out node**. A match maps to a fan-out shard group, and each group can contain multiple Nchan replicas. All replicas assigned to that match receive the same canonical publication through the group's Valkey channel; the connection endpoint distributes new SSE viewers across those replicas. A very hot match is given its own group and can add replicas without moving existing sockets. New viewers are assigned to the least-loaded healthy replica; existing viewers stay connected until normal reconnect or draining. This means one match can consume many nodes rather than being capped by one node's connection limit.
 
-Geography: origin in eu-west-1; CloudFront edge serves static assets and fronts SSE over private origins. EU (~60%) has low RTT; NA (~40%) is reached via a transatlantic path — a production inference, not a measured result. Multi-region is not justified under the $3k budget; within-region failure domains span at least two AZs. The 60/40 split is addressed separately rather than hidden behind one global claim.
+The fleet is pre-scaled before known kickoffs, keeps N+1 spare capacity, and autoscales on concurrent connections, CPU, memory, and reconnect/admission pressure. A +40,000/120s surge is roughly 333 new viewers/s, so admission capacity is kept warm instead of depending on reactive instance launch time.
 
-## Deployment and operations
+The origin is in `eu-west-1`, close to the 60% European audience. Static Next.js assets are edge-cached. North American viewers use the same correctness path with a longer network leg. The design stays single-region because active-active multi-region is difficult to justify inside the $3,000/month ceiling; production monitoring therefore reports latency separately for Europe and North America rather than assuming identical RTT.
 
-Weekly live deploys are unnoticeable: backend delivery nodes roll via NLB connection draining and Instance Refresh with N+1 spare capacity; canonical state stays compatible across versions; the frontend ships immutable, versioned Next.js assets so an already-open client is not broken. A bad release rolls back without blanking viewers or deleting history. Slow clients are disconnected (bounded buffering) and resume from cursor. Observability covers provider ingest health, queue depth, processor errors, canonical-sequence anomalies, delivery-node CPU/memory/connections/OOM, Valkey health, target health, and CloudFront errors — plus sampled end-to-end viewer-screen latency (goals vs routine, EU vs NA) via server ingest timestamps and anonymous, low-rate browser telemetry. Production SLAs are observed, not asserted by the POC: SSE reconnect p95, history replay p95, end-to-end goal p95/p99 on EU and NA, and completeness (missing/out-of-order/dupes) on the production stream.
+## Latency, deployment and operations
+
+The assignment targets p95 ingest-to-screen latency of at most 2 s for goals, 5 s for other events, and full history visible within 2 s. These are production SLOs, not claims that the local POC measured internet/browser end-to-end latency.
+
+A 90-minute match at an even share of the stated 10 events/s total is about 6,750 events. At an assumed ~300 B/event that is about 2 MB of event data, so the network transfer is modest; browser parsing/rendering must still be measured before launch. Goals are prioritized through the same pipeline, with queue age, publish latency, SSE delivery latency, and sampled browser render telemetry tracked separately.
+
+Weekly deploys use rolling replacement with connection draining and N+1 capacity. Existing SSE connections are allowed to drain; reconnects resume from `canonical_seq`. Schema changes are backward-compatible across one deployment window, and frontend assets are immutable/versioned so an already-open page keeps working during deployment.
+
+Operational alarms cover ingest silence, malformed provider data, queue depth, canonical sequence anomalies, Lambda failures, DynamoDB throttling, Nchan/Valkey health, connection counts, CPU/memory, reconnect storms, history latency, and sampled end-to-end latency. Slow consumers have bounded buffers and reconnect from their cursor rather than consuming unbounded server memory.
 
 ## Cost and trade-offs
 
-Modeled baseline ≈ **$2,318/month** (2026-08-23 pricing, eu-west-1): delivery compute (16 × c7g.xlarge, 1-yr Savings Plan) ~$1,121; partition-local Valkey (16 × cache.t4g.medium reserved) ~$504; CloudFront Business flat-rate $200 (covers up to 50 TB DTO — base ~13.5 TB at H=120 fits); ingest/canonical (API Gateway + SQS FIFO + Lambda + DynamoDB) ~$290; NLB/NAT/CloudWatch/S3/Route53 ~$203. The dominant traffic assumption is 120 peak-equivalent match-hours/month at 100k concurrency; base data-transfer-out (~13.5 TB at H=120, per `100k × 1.25 evt/s × 250 B × 3600 × H`) sits inside the CloudFront Business 50 TB cap, so egress is effectively flat at the base. The conclusion is **within budget** with ~23% margin. Sensitivity: only sustained peak-hours beyond ~440/month (DTO > 50 TB) pushes past $3k, so the budget is **conditionally within** at very high live-hour volume.
+The modeled peak-month baseline is about **$2,318/month** under the stated workload assumptions: roughly $1,121 for 16 `c7g.xlarge` delivery instances, $504 for 16 `cache.t4g.medium` Valkey nodes, $200 for CloudFront Business, about $290 for API Gateway/SQS/Lambda/DynamoDB, and about $203 for NLB/NAT/CloudWatch/S3/Route53. The estimate assumes about 120 peak-equivalent match-hours/month and ~250 B live payloads. At those assumptions it is below the $3,000 ceiling with about 23% headroom. The cost claim is conditional on that traffic model and must be re-priced before launch.
 
-Key trade-offs: self-hosted horizontally partitioned Nchan/Valkey over managed fan-out (cost/control at 100k SSE, and it directly fixes the POC bottleneck); DynamoDB over relational (serverless idempotent writes); single-region over multi-region (budget); CloudFront over direct ALB (private-origin protection + static CDN, with the honest caveat that live SSE is not edge-cached).
+The main trade-offs are SSE/Nchan over custom WebSockets for simpler one-way public streaming; DynamoDB over a relational database for idempotent event/state writes at low operational load; single-region over active-active multi-region for cost; and self-hosted fan-out over a managed pub/sub service for predictable control of 100,000 long-lived connections.
 
-## Riskiest assumption and POC
+## Riskiest assumption and proof of concept
 
-The overall least-trusted assumption is **provider feed semantics** — no real provider or schema was supplied, so it was not locally testable. The riskiest locally testable assumption was fixed fan-out capacity at assignment scale.
+The largest overall risk is the third-party feed contract: best-effort push alone cannot guarantee detection of an event that is never sent, and the assignment does not provide the identity/order/reconciliation semantics needed to test that locally.
 
-The local experiment reaches 100,000 active viewers with **perfect viewer-facing delivery** (duplicates/missing/out_of_order/state_violations = 0). The best validated configuration is **B1** (p0-only backup, p1/p2/p3 distributed): long-window fan_out p95 4242 ms, burst p95 11006 ms, late_join p95 906 ms, duplicates=0 — strictly better than the historical F1 probe on fan_out and correctness. The ORIGINAL frozen gates (fan_out<=500 / burst<=1000 ms) are NOT met by any supported Nchan 1.3.8 storage mode; that is a hard ~4.5x per-worker fan-out throughput wall of the fixed 4-partition topology. On 2026-08-24 the stakeholder authorized contract **§AMENDMENT-2**, re-baselining the gates to the validated achievable envelope (fan_out<=16000, burst<=13000, surge<=13000, late_join<=3000; duplicates/out_of_order tolerated <=12348; state_agreement_violations tolerated <=125). Under that authorized envelope **B1 is ACCEPTED** (all gates pass with exact viewer delivery; only a tolerated deep-head observer-cohort drift of 125/1024 remains, inherent to p0-only backup). The terminal three-run v2.3.0 campaign (seeds 42/43/44) was not required once B1 cleared the authorized envelope. The proposal's production design replaces the fixed-capacity assumption with horizontally partitioned fan-out replicas, hot-match sub-sharding, resource-aware autoscaling, pre-scaled kickoff capacity, and N+1 headroom. The replacement topology was not itself benchmark-validated by the POC; its remaining claims rest on current service facts, explicit quotas, conservative assumptions, cost analysis, and required pre-launch production load testing.
+The riskiest **locally testable** assumption is fan-out capacity: whether a fixed Nchan/Redis/SSE tier can serve assignment-scale concurrency while preserving correctness and sufficiently low latency. The POC simulates the feed and measures real SSE delivery.
+
+The best correctness-clean 100,000-viewer run reached 100,000 active viewers with zero viewer-facing missing, duplicate, out-of-order, or state-consistency violations, but measured fan-out p95 was about **4.242 s**, burst p95 about **11.006 s**, and late-join p95 about **0.906 s**. Those results disprove the fixed-capacity production assumption: fan-out latency alone is too high to confidently meet the assignment's 2 s/5 s ingest-to-screen targets.
+
+Therefore the production proposal does not scale by making one fan-out node larger. It scales a hot match across multiple delivery replicas, keeps capacity warm, and preserves DynamoDB as canonical truth. The replacement topology is a design response to the measured failure and must itself pass production-scale load testing before launch.

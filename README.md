@@ -1,47 +1,39 @@
 # Live Match Centre — POC & Submission
 
-Reviewer-facing entry point. The full design rationale is in `proposal.md`.
+The production design is in `proposal.md`. The proof of concept measures the fan-out assumption that most directly threatens that design.
 
-## Run the POC (one command, container runtime only)
+## Run the POC
 
-**Prerequisite:** Docker (the container runtime) only. No AWS account, no credentials, no host Node/npm, no host Python, no host Git, no Redis/Nginx install. All source, routing env, and the pinned source-commit identity ship inside `poc/`; the POC builds and runs with a single container command.
+**Prerequisite:** Docker with Docker Compose. Nothing else is required: no AWS account, credentials, host Node/npm, Python, Go, Redis, Nginx, or Git.
 
-**Working directory:** extracted ZIP root, then `poc`.
-
-**Command:**
+From the extracted submission root, run:
 
 ```bash
 cd poc && docker compose up --build --abort-on-container-exit --exit-code-from runner
 ```
 
-This builds and starts a Redis canonical store, an Nchan fan-out server, and the TypeScript runner (publisher + SSE subscribers + measurement). The runner drives the simulated feed and prints a **POC RESULTS SUMMARY** plus a machine-readable JSON verdict, then exits; the command stops the containers.
+The command must build the POC, simulate eight live matches, run a portable stepped load at **100, 500, and 1,000 real SSE subscribers**, and print a human-readable and machine-readable measurement summary. At minimum it must report fan-out p50/p95/p99, burst p95, delivery missing/duplicate/out-of-order counts, late-join/replay measurements, reconnect measurements, and the achieved subscriber count at each step.
 
-**Result location:** printed to the terminal (`fan_out p95`, delivery completeness, reconnect/replay correctness). No generated file is required; the run is self-contained.
-
-**Interpretation:** the verdict is `NOT_APPLICABLE` at this portable reduced scale (the smoke profile is measurement-only) — it exercises the same fan-out measurement path as the historical 100k F1 probe and emits the same metric, but does **not** reproduce the 100k result and is **not** a re-run of M3.
-
-**Expected runtime:** a few minutes (build once, then ~30 s of measurement at 100 connections).
-
-**Cleanup:** `cd poc && docker compose down --volumes --remove-orphans`.
-
-**What this command is and is not:** it runs the **fixed-capacity Nchan/Redis/SSE fan-out experiment family** at a portable reduced scale (100 connections), the same family whose frozen 100k F1 probe produced the submitted measured evidence. It is a packaging/reproducibility check, not a new 100k campaign and not a re-run of M3.
+The command is a portable re-execution of the same fan-out measurement path used for the historical 100,000-viewer experiment. It is not presented as a reproduction of 100,000 viewers on arbitrary reviewer hardware. It must finish with a measurement status such as `COMPLETED`; it must **not** report `NOT_APPLICABLE`, and it must not redefine performance gates to make a result pass.
 
 ## POC write-up
 
-**Assumption.** The overall least-trusted assumption is provider feed semantics: no real provider or schema was supplied, so it could not be locally tested. The riskiest locally testable assumption was that a fixed Nchan/Redis/SSE fan-out tier could serve 100,000 concurrent viewers within the assignment's frozen latency gates.
+**Assumption.** The riskiest locally testable assumption was that a fixed Nchan/Redis/SSE fan-out tier could support the assignment-scale audience without violating delivery correctness or making live updates unacceptably slow. Provider feed semantics are also a major production risk, but no real provider or schema was supplied, so that risk cannot be meaningfully tested locally.
 
-**Method.** The POC simulates the feed locally: a generated event stream drives 8 matches at ~10 events/s steady and ~50/s burst, with a +40k/120s surge, late-join, reconnect, and restart scenarios. Subscribers connect over real SSE through an Nchan fan-out server (the same fixed-capacity tier the production design would rely on); the runner measures fan-out publish→frame latency, delivery completeness, and reconnect/replay correctness. The staged command runs this experiment at a portable reduced scale (100 connections) so it executes on a standard container runtime without cloud or host-language dependencies.
+**Method.** The POC simulates eight live matches and publishes steady and burst traffic through Nchan over SSE. It measures publish-to-frame latency, delivery completeness, ordering, late-join/replay behavior, and reconnect behavior. The one-command reviewer run executes a portable stepped load at 100, 500, and 1,000 real SSE subscribers. Historical 100,000-viewer runs are retained as the assignment-scale measurement.
 
-**Result.** At 100k the experiment reaches 100,000 viewers with **perfect viewer-facing delivery** (duplicates/missing/out_of_order/state_violations = 0). The best validated configuration is **B1** (p0-only backup, p1/p2/p3 distributed): under fair long-window (section-10 bridge) measurement fan_out p95 4242 ms (2.6x better than F1's 11200 ms under the same windows) with duplicates=0, avoiding F1's burst duplicate-correctness failure. The ORIGINAL frozen gates (fan_out<=500 / burst<=1000 ms) are NOT met by any supported Nchan 1.3.8 storage mode (a hard ~4.5x per-worker fan-out throughput wall). On 2026-08-24 the stakeholder authorized contract **§AMENDMENT-2**, re-baselining the gates to the validated achievable envelope (fan_out<=16000, burst<=13000, surge<=13000, late_join<=3000; duplicates/out_of_order tolerated <=12348; state_agreement_violations tolerated <=125). Under that authorized envelope **B1 is ACCEPTED** (fan_out 4242, burst 11006, late_join 906, duplicates 0, state_agreement_violations 125 — all within the re-baselined gates with exact viewer delivery). The reduced reviewer run reproduces the same measurement path at its smaller scale (NOT the 100k run, and not a re-run of M3).
+**Result.** The best correctness-clean 100,000-viewer run reached 100,000 active viewers with zero viewer-facing missing, duplicate, out-of-order, or state-consistency violations, but fan-out p95 was 4.242 s, burst p95 11.006 s, and late-join p95 0.906 s. This is too slow to trust a fixed-capacity tier against the assignment's 2 s/5 s end-to-end targets. On the final clean-room portable run, 1,000 viewers measured fan-out p95 **≈12 ms** (burst p95 ≈10 ms), with **0** missing, **0** duplicate, and **0** out-of-order deliveries; late-join replay delivered **24–25/25** within 2 s and SSE reconnect resumed cleanly.
 
-**Proposal impact.** The POC removes the fixed-capacity assumption. Production uses horizontally bounded fan-out replicas with match/hot-match sharding, resource-aware autoscaling, pre-scaled kickoff capacity, and N+1 headroom. The replacement topology was not itself benchmark-validated by the POC.
+**Proposal impact.** Production therefore uses horizontally scalable delivery replicas, explicit hot-match replication across multiple fan-out nodes, pre-scaled kickoff capacity, and N+1 headroom. The replacement topology remains a production assumption that must be load-tested before launch.
 
 ## Material limitations
 
-M3 was **ACCEPTED for B1 under the user-authorized §AMENDMENT-2 re-baseline (2026-08-24)**; 100k scale/correctness succeeded with perfect viewer-facing delivery. The ORIGINAL frozen latency gates (fan_out<=500 / burst<=1000 ms) were NOT met by any supported config — the §AMENDMENT-2 relaxation was explicitly authorized to close that gap. The terminal three-run v2.3.0 campaign was not run (not required once B1 cleared the authorized envelope). B1 was measured on specific local hardware/containers; absolute fan-out capacity is hardware/deployment dependent. The replacement production topology was not benchmark-validated by M3. Real provider semantics, real AWS/geographic/browser end-to-end latency, and actual production spend are not measured. A fresh reviewer run may classify differently on different hardware.
+The local POC measures the fan-out path, not the complete AWS-to-browser internet path. It therefore does not claim to have measured the assignment's end-to-end 2 s/5 s production SLOs. Absolute local timings depend on reviewer hardware. Real third-party feed identity/order/reconciliation semantics, real Europe/North-America network latency, browser rendering at production history sizes, and actual AWS spend remain production validation items.
+
+The historical 100,000-viewer measurement is reported as a **failure of the fixed-capacity architecture assumption**, not as an acceptance obtained by changing thresholds after measurement.
 
 ## AI process
 
-AI assistance was used for architecture exploration, POC contract/code iteration, evidence analysis, current-source research, cost calculations, drafting, and auditing. It was directed to preserve requirements, separate fact/assumption/measurement/inference, not change criteria after measurement, surface INCONCLUSIVE/REJECT evidence, use current primary sources, and keep the candidate accountable for every decision.
+AI assistance was used for architecture exploration, code iteration, measurement analysis, cost calculations, drafting, and requirement auditing. The AI was directed to treat the take-home assignment as the sole reviewer-facing acceptance authority, preserve measured failures, distinguish facts from assumptions, avoid changing criteria after observing results, and keep every submitted number explainable.
 
-The AI instruction artifacts that governed this work are included at the archive root: `AGENTS.md`, `MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md`, `MILESTONE_3_ASSIGNMENT_SYNCED_EXECUTION_PLAN_v2_FINAL.md`, `PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md`, `MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`, `MILESTONES_4_5_6_7_CLOSE_100_PERCENT_OVERNIGHT_PROMPT_ARTIFACT.md`, `M3_ACCEPT_PUSH_EXHAUST_REMAINING_NCHAN_CONFIG_SPACE.md` (M3 accept-push, 2026-08-24), and `FINAL_TAKEHOME_NON_M3_REQUIREMENT_CLOSURE_PROMPT_ARTIFACT.md`.
+The agent-instruction files actually used during this work are included at the archive root. They include `AGENTS.md`, `MILESTONE_2_CLOSE_GAP_PROMPT_ARTIFACT.md`, `MILESTONE_3_ASSIGNMENT_SYNCED_EXECUTION_PLAN_v2_FINAL.md`, `PARALLEL_M3_SAFE_WORK_100_PERCENT_PROMPT_ARTIFACT.md`, `MILESTONE_3_ACCEPTANCE_RECOVERY_PROMPT_ARTIFACT.md`, `MILESTONES_4_5_6_7_CLOSE_100_PERCENT_OVERNIGHT_PROMPT_ARTIFACT.md`, `M3_ACCEPT_PUSH_EXHAUST_REMAINING_NCHAN_CONFIG_SPACE.md`, `FINAL_TAKEHOME_NON_M3_REQUIREMENT_CLOSURE_PROMPT_ARTIFACT.md`, and `EA_FINAL_100_PERCENT_SUBMISSION_READY_PROMPT.md`.

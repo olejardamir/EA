@@ -1,4 +1,8 @@
-# Launch with ./run-smoke.sh; it injects the checkout SHA automatically.
+# Final submission POC — one-command portable fan-out measurement.
+# Runs from an extracted submission ZIP root with only Docker/Docker Compose.
+# Builds Redis, Nchan (nginx + nchan module), and the TS runner; simulates eight
+# live matches; steps real SSE subscriber load at 100 / 500 / 1000; measures
+# fan-out latency and delivery correctness; reports COMPLETED.
 services:
   redis:
     image: redis:7.2-bookworm@sha256:6461ca4ac0c5c9d81d53685c3bf76aa81f464a9de6cf3a97b80a1da8d1bb1de4
@@ -7,7 +11,6 @@ services:
     command: ["redis-server"]
     volumes:
       - ./redis-cgroup-entrypoint.sh:/redis-cgroup-entrypoint.sh:ro
-      - redis-cgroup-evidence:/redis-cgroup
     deploy:
       resources:
         limits:
@@ -48,11 +51,7 @@ services:
     build:
       context: ./runner
       network: host
-      args:
-        GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
     network_mode: host
-    volumes:
-      - redis-cgroup-evidence:/redis-cgroup:ro
     depends_on:
       nchan:
         condition: service_healthy
@@ -61,26 +60,12 @@ services:
       NCHAN_SUB_URL: "http://localhost:8081"
       NCHAN_CONTROL_URL: "http://localhost:18888"
       REDIS_URL: "redis://localhost:6379"
-      TARGET_CONNECTIONS: "100"
+      STEP_CONNECTIONS: "100,500,1000"
       WARMUP_SECONDS: "5"
-      MEASURE_SECONDS: "10"
+      MEASURE_SECONDS: "25"
       BURST_SECONDS: "5"
       SURGE_SECONDS: "5"
       COOLDOWN_SECONDS: "3"
-      SLOW_CONSUMER_FRACTION: "0.05"
-      RUN_PROFILE: "smoke"
-      RUN_MODE: "single"
-      # §3.15: Source commit identity — passed from host since .git is not copied into the image
-      GIT_COMMIT_SHA: "${GIT_COMMIT_SHA:?Use ./run-smoke.sh}"
-      # §3.8.A: Per-service CPU limits for normalized CPU metrics
-      NCHAN_CPU_MAX_QUOTA: "400000"
-      NCHAN_CPU_MAX_PERIOD: "100000"
-      NCHAN_MEMORY_GB: "8"
-      NCHAN_NOFILE_SOFT: "200000"
-      NCHAN_NOFILE_HARD: "200000"
-      REDIS_CPU_MAX_QUOTA: "200000"
-      REDIS_CPU_MAX_PERIOD: "100000"
-      REDIS_MEMORY_GB: "2"
     deploy:
       resources:
         limits:
@@ -91,5 +76,3 @@ services:
         soft: 100000
         hard: 100000
 
-volumes:
-  redis-cgroup-evidence:

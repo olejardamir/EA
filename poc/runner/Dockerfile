@@ -10,4 +10,4 @@ RUN npm ci --ignore-scripts
 
 COPY src/ ./src/
 
-CMD ["npx", "tsx", "src/main.ts"]
+CMD ["npx", "tsx", "src/submission-run.ts"]
