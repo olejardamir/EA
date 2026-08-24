@@ -797,7 +797,7 @@ AI process section present
 
 # Milestone 8 — Explainability and Reproducibility Audit
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-24)** — gap ledger, number ledger (ASSIGNMENT_FACT / POC_OBSERVATION / CALCULATION / PLANNING_ASSUMPTION / CURRENT_OFFICIAL_FACT / PRODUCTION_INFERENCE), and decision defenses written to `internal_docs/FINAL_NON_M3_REQUIREMENT_AUDIT.md`; clean-room POC run from staged copy and from extracted ZIP both exit 0 (measured `fan_out p95=6ms`, verdict `NOT_APPLICABLE`).
 
 ## Goal
 
@@ -867,7 +867,7 @@ A reviewer can run the POC and the candidate can explain every submitted claim w
 
 # Milestone 9 — Clean the POC Directory for Submission
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-24)** — staged `.submission-staging/poc` is minimal: `compose.yaml` (smoke-portable F1-family, 100-conn reduced scale), cleaned static non-secret `.env` (project name + `GIT_COMMIT_SHA` only), `nchan/` build context, `runner/` (Dockerfile + manifests + `src` excluding `tests/`/`node_modules/`). No `node_modules/`, tests, evidence, or generated debris in the staged tree or the ZIP `poc/`.
 
 ## Goal
 
@@ -900,7 +900,7 @@ The POC directory is small, understandable, reproducible, and contains no genera
 
 # Milestone 10 — Build and Audit the Final ZIP
 
-**Status: NOT STARTED**
+**Status: DONE (2026-08-24)** — `live-match-centre-submission.zip` built; top-level whitelist clean (only `proposal.md`, `README.md`, `poc/`, `AGENTS.md`, and the actual AI instruction artifacts; no `internal_docs/`, `evidence-launches/`, `m3_evidence/`, `node_modules/`, `.git/`, or the requirement PDF). Extracted-archive clean-room run of the exact primary `cd poc && docker compose up --build --abort-on-container-exit --exit-code-from runner` passed (exit 0, `fan_out p95=6ms`, `NOT_APPLICABLE`); proposal 1322 prose words, README POC write-up 235 words.
 
 ## Goal
 
