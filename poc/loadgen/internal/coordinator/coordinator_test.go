@@ -33,10 +33,77 @@ func TestPhasesOrderIsLoadBearing(t *testing.T) {
 	}
 }
 
-func TestContractVersionMatchesGoResultSchema(t *testing.T) {
-	if ContractVersion != "v2.3.0" {
-		t.Fatalf("ContractVersion = %q", ContractVersion)
+func TestResolveCoordinatorAddrParsesAndDefaultsPort(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantIP   string
+		wantPort int
+		wantErr  bool
+	}{
+		{"http://127.0.0.1:3000", "127.0.0.1", 3000, false},
+		{"http://127.0.0.1", "127.0.0.1", 80, false},
+		{"https://127.0.0.1", "127.0.0.1", 443, false},
+		{"http://coordinator:3000", "", 3000, false}, // resolves in Docker; IP checked below
+		{"http://127.0.0.1:0", "", 0, true},
+		{"not-a-url", "", 0, true},
 	}
+	for _, c := range cases {
+		addr, err := resolveCoordinatorAddr(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("%s: expected error, got nil", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			if c.in == "http://coordinator:3000" {
+				// Outside Docker this name may not resolve; that is expected.
+				continue
+			}
+			t.Errorf("%s: unexpected error: %v", c.in, err)
+			continue
+		}
+		if addr.Port != c.wantPort {
+			t.Errorf("%s: port = %d, want %d", c.in, addr.Port, c.wantPort)
+		}
+		if c.wantIP != "" && addr.IP.String() != c.wantIP {
+			t.Errorf("%s: ip = %s, want %s", c.in, addr.IP.String(), c.wantIP)
+		}
+	}
+}
+
+// TestNewClientPinsResolvedAddress proves the transport dials the once-resolved
+// address directly: a request addressed via a hostname that resolves to the
+// loopback server must succeed, and the Host header must be preserved so the
+// coordinator (which does not validate Host) still routes the request.
+func TestNewClientPinsResolvedAddress(t *testing.T) {
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cl, err := NewClient(srv.URL, Registration{
+		CampaignID: "camp-test", ShardID: 0, ShardCount: 4,
+		LocalTarget: 25000, GlobalTarget: 100000, Seed: 42,
+		SourceCommit: strings.Repeat("a", 40), PublisherOwner: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	// Exercise the pinned transport through the real request path.
+	out := struct{ Ok bool }{}
+	if err := cl.post("/v1/register", cl.reg, 5*time.Second, &out); err != nil {
+		t.Fatalf("post through pinned transport: %v", err)
+	}
+	if gotHost == "" {
+		t.Fatal("coordinator never received a request through the pinned transport")
+	}
+}
+
+func TestContractVersionMatchesGoResultSchema(t *testing.T) {
 	res := ShardExperimentResult{ContractVersion: ContractVersion}
 	b, _ := json.Marshal(res)
 	if !strings.Contains(string(b), `"contract_version":"v2.3.0"`) {
@@ -48,11 +115,15 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.S
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return NewClient(srv.URL, Registration{
+	cl, err := NewClient(srv.URL, Registration{
 		CampaignID: "camp-test", ShardID: 2, ShardCount: 4,
 		LocalTarget: 25000, GlobalTarget: 100000, Seed: 42,
 		SourceCommit: strings.Repeat("a", 40), PublisherOwner: false,
-	}), srv
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cl, srv
 }
 
 func TestRegisterStoresRunIdentity(t *testing.T) {

@@ -56,7 +56,8 @@ func testConfig(shardID int) *config {
 
 func testShardRun(cfg *config) (*shardRun, *pool.Pool) {
 	p := pool.New("http://127.0.0.1:1/sub", matchIDs(), cfg.localTarget)
-	cl := coordinator.NewClient("http://127.0.0.1:1", coordinator.Registration{
+	// Literal IP always resolves; the harness fix resolves once at startup.
+	cl, _ := coordinator.NewClient("http://127.0.0.1:1", coordinator.Registration{
 		CampaignID: cfg.campaignID, ShardID: cfg.shardID, ShardCount: cfg.shardTotal,
 	})
 	cl.ExperimentRunID = "run-test-0001"
