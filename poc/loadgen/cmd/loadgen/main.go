@@ -397,7 +397,11 @@ func main() {
 		SourceCommit:   cfg.sourceCommit,
 		PublisherOwner: cfg.publisherOwner,
 	}
-	cl := coordinator.NewClient(cfg.coordinatorURL, reg)
+	cl, err := coordinator.NewClient(cfg.coordinatorURL, reg)
+	if err != nil {
+		logf("coordinator resolve failed: %v", err)
+		os.Exit(3)
+	}
 	runID, err := cl.Register()
 	if err != nil {
 		logf("register failed: %v", err)

@@ -5,9 +5,13 @@ package coordinator
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -72,12 +76,83 @@ type Client struct {
 	samplerDone chan struct{}
 }
 
-func NewClient(baseURL string, reg Registration) *Client {
+// NewClient resolves the coordinator endpoint exactly once (loadgen startup)
+// and pins a custom transport to the resolved TCP address. This prevents every
+// late-join barrier call from re-querying Docker's embedded resolver
+// (127.0.0.11), which under the faster late-join call burst can return
+// "server misbehaving" and abort the run at the late-join:end barrier. The
+// coordinator IP on the bridge network is stable for the run, so a single
+// resolution is safe and sufficient. Resolution failure is fail-fast: it
+// surfaces the DNS problem at startup rather than mid-run.
+func NewClient(baseURL string, reg Registration) (*Client, error) {
+	addr, err := resolveCoordinatorAddr(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		// Ignore the per-request address and always dial the once-resolved
+		// coordinator IP: no DNS lookup occurs during the run.
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+			return d.DialContext(ctx, "tcp", addr.String())
+		},
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 100,
+		IdleConnTimeout:     120 * time.Second,
+	}
 	return &Client{
 		baseURL: baseURL,
 		reg:     reg,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
+	}, nil
+}
+
+// resolveCoordinatorAddr resolves the host in baseURL once and returns a pinned
+// TCP address. IP literals pass through without a DNS query; service names
+// (e.g. "coordinator") are resolved a single time against the container
+// resolver. IPv4 is preferred on dual-stack hosts.
+func resolveCoordinatorAddr(baseURL string) (*net.TCPAddr, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator url parse: %w", err)
 	}
+	host := u.Hostname()
+	port := u.Port()
+	switch {
+	case port == "":
+		if u.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	case port == "0":
+		return nil, fmt.Errorf("coordinator url has invalid port 0")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator dns resolve (host=%s): %w", host, err)
+	}
+	var chosen net.IP
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			chosen = v4
+			break
+		}
+	}
+	if chosen == nil && len(ips) > 0 {
+		chosen = ips[0]
+	}
+	if chosen == nil {
+		return nil, fmt.Errorf("coordinator dns resolve returned no address (host=%s)", host)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil {
+		return nil, fmt.Errorf("coordinator port parse: %w", err)
+	}
+	return &net.TCPAddr{IP: chosen, Port: p}, nil
 }
 
 func (c *Client) post(path string, body any, timeout time.Duration, out any) error {
