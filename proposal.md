@@ -10,16 +10,22 @@
  Lambda canonical processor
    validate / version-normalize; idempotent write; derive score & minute
         |
- DynamoDB  ===== CANONICAL TRUTH (events + state, transactional) =====
-        |  history/replay + live publication
- Delivery fleet: EC2 ASG nodes, each Nchan 1.3.8 + partition-local Valkey (ElastiCache)
-   match -> partition (deterministic); HOT match = dedicated sub-shard
-        |
- NLB (target groups per partition)
-        |
- CloudFront (private SSE origins; cached static Next.js at edge)
-        |
  Next.js App Router client (EventSource; idempotent canonical_seq reducer)
+         |
+  CloudFront (private SSE origins; cached static Next.js at edge)
+         |
+  private NLB (one NLB, per-partition target groups)
+         |
+  Delivery fleet: EC2 ASG nodes, each Nchan 1.3.8 + partition-local Valkey (ElastiCache)
+    match -> partition (deterministic); HOT match = dedicated sub-shard
+         |
+  DynamoDB  ===== CANONICAL TRUTH (events + state, transactional) =====
+         ^
+  Lambda canonical processor (validate/normalize; idempotent write; derive score & minute)
+         ^
+  API Gateway HTTP API --> SQS FIFO (group = match_id)
+         ^
+  PROVIDER (HTTPS push, best-effort)
 ```
 
 Two state planes are kept distinct: **canonical truth** (DynamoDB — the durable, ordered source of score, state, and history) and **delivery/history state** (Valkey/Nchan — a rebuildable cache of canonical truth for fast fan-out and replay).
@@ -50,7 +56,7 @@ Weekly live deploys are unnoticeable: backend delivery nodes roll via NLB connec
 
 ## Cost and trade-offs
 
-Modeled baseline ≈ **$2,318/month** (2026-08-23 pricing, eu-west-1): delivery compute (16 × c7g.xlarge, 1-yr Savings Plan) ~$1,121; partition-local Valkey (16 × cache.t4g.medium reserved) ~$504; CloudFront Business flat-rate $200 (covers up to 50 TB DTO — base ~39 TB fits); ingest/canonical (API Gateway + SQS FIFO + Lambda + DynamoDB) ~$290; NLB/NAT/CloudWatch/S3/Route53 ~$203. The dominant traffic assumption is ~120 live match-hours/month at ~50k average concurrency; base data-transfer-out (~39 TB) sits inside the CloudFront Business 50 TB cap, so egress is effectively flat at the base. The conclusion is **within budget** with ~23% margin. Sensitivity: only sustained peak-hours beyond ~440/month (fleet runtime growth) pushes past $3k, so the budget is **conditionally within** at very high live-hour volume.
+Modeled baseline ≈ **$2,318/month** (2026-08-23 pricing, eu-west-1): delivery compute (16 × c7g.xlarge, 1-yr Savings Plan) ~$1,121; partition-local Valkey (16 × cache.t4g.medium reserved) ~$504; CloudFront Business flat-rate $200 (covers up to 50 TB DTO — base ~13.5 TB at H=120 fits); ingest/canonical (API Gateway + SQS FIFO + Lambda + DynamoDB) ~$290; NLB/NAT/CloudWatch/S3/Route53 ~$203. The dominant traffic assumption is ~120 live match-hours/month at ~50k average concurrency; base data-transfer-out (~13.5 TB at H=120, per `100k × 1.25 evt/s × 250 B × 3600 × H`) sits inside the CloudFront Business 50 TB cap, so egress is effectively flat at the base. The conclusion is **within budget** with ~23% margin. Sensitivity: only sustained peak-hours beyond ~440/month (DTO > 50 TB) pushes past $3k, so the budget is **conditionally within** at very high live-hour volume.
 
 Key trade-offs: self-hosted horizontally partitioned Nchan/Valkey over managed fan-out (cost/control at 100k SSE, and it directly fixes the POC bottleneck); DynamoDB over relational (serverless idempotent writes); single-region over multi-region (budget); CloudFront over direct ALB (private-origin protection + static CDN, with the honest caveat that live SSE is not edge-cached).
 

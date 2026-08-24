@@ -2,23 +2,26 @@
 
 Reviewer-facing entry point. The full design rationale is in `proposal.md`; current architecture, evidence, and cost are in `internal_docs/` (`M4_FINAL_ARCHITECTURE.md`, `M5_PARAMETRIC_COST_MODEL.md`, `M5_CURRENT_EXTERNAL_EVIDENCE_LEDGER.md`, `M5_FINAL_PROPOSAL_EVIDENCE_CLOSURE.md`).
 
-## Run the POC
+## Run the illustrative topology probe (non-qualifying development probe)
 
-**Prerequisite:** Docker and a Bash shell. No AWS account, no credentials, no host Node/npm, no host Python (routing env is precomputed and committed), no host Git (source commit is committed in `poc/SOURCE_COMMIT`), no Redis/Nginx install. The launcher is a Bash script; all application components run in containers.
+> **The submitted POC result is the frozen M3 F1 measurement** (100k active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms — hard-stopped without ACCEPT). The command below exercises the **proposed replacement topology**, not the frozen M3 campaign; it is an illustrative development probe, **not** the terminal measured POC.
 
-**Working directory:** repository root, then `cd poc`.
+**Prerequisite:** Docker (the container runtime) only. No AWS account, no credentials, no host Node/npm, no host Python, no host Git, no Redis/Nginx install. All routing env and source-commit identity are precomputed and committed in `poc/.env`, so the POC runs with a single container command.
 
-**Command (post-terminal horizontal-topology probe):**
+**Working directory:** `poc`
+
+**Command (illustrative probe of the proposed horizontal topology; non-qualifying):**
 
 ```bash
 cd poc
-./run-arch-revision-probe.sh 100000      # full-scale dev probe (environment-dependent, non-qualifying)
-./run-arch-revision-probe.sh 4000        # portable smoke / reduced validation
+docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up --build --abort-on-container-exit --exit-code-from coordinator
 ```
+
+For a 4k smoke run, prefix scale overrides: `PROBE_TARGET=1000 PROBE_GLOBAL_TARGET=4000 docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml up --build --abort-on-container-exit --exit-code-from coordinator`. The optional `./run-arch-revision-probe.sh 100000|4000` wrapper parameterizes scale and stamps evidence, but is **not required** to run the POC.
 
 This builds and starts Nchan/Redis delivery nodes, a publisher, a coordinator, and four load-generator shards; runs the chosen workload; then **auto-tears-down** (`docker compose ... down --volumes`). For manual cleanup: `cd poc && docker compose -f compose.arch-revision-100k.yaml -f compose.arch-probe.yaml down --volumes --remove-orphans`.
 
-**Important — what this command is and is not:** it exercises the **post-terminal revised topology** (match-aware 16-shard horizontal fan-out). It is NOT a re-run of the frozen v2.3.0 / F1 configuration, and it is a **non-qualifying** development probe, not the terminal measured campaign. The terminal M3 F1 numbers are historical measured evidence and are not reproduced by this command.
+**Important — what this command is and is not:** it exercises the **proposed revised topology** (match-aware 16-shard horizontal fan-out). It is NOT a re-run of the frozen v2.3.0 / F1 configuration, and it is a **non-qualifying** development probe, not the terminal measured campaign. The terminal M3 F1 numbers are historical measured evidence and are not reproduced by this command.
 
 **Terminal M3 result (submitted measured evidence, not re-run here):** the frozen v2.3.0 campaign measured F1 at config source `ffe3ae6` (Redis `io-threads-do-reads`, 4 partitions × 4 workers): 100,000 active viewers, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms. **M3 was hard-stopped without ACCEPT**: the single best-validated F1 probe met the scale/correctness behavior but missed the frozen latency gates, and the terminal three-run v2.3.0 qualification campaign (seeds 42/43/44) was not run because the configuration was already demonstrably outside the gates. The earlier `run-evidence-100k.sh` (seeds 42–44) is the **historical v2.2.0 campaign and is non-terminal provenance only** — it is not the terminal M3 claim.
 

@@ -28,8 +28,8 @@ POC experiment contract v2.0.2                        EXISTS (corrected, superse
 POC experiment contract v2.0.3                        EXISTS (corrected, supersedes v2.0.2 — resolves resource-envelope/timing-text contradictions)
 POC experiment contract v2.0.4                        EXISTS (historical — superseded by v2.0.5; two conflicting v2.0.4 files resolved)
 POC experiment contract v2.0.5                        EXISTS (canonical active — freezes 4×25,000=100,000 exact topology, coordinated-shard lifecycle, one-publisher ownership, global barriers/histogram merge/simultaneous-global verdict, 3–8 global-run campaign, slow-client 1600–2400 ms pacing, restart exact-range proof, resolved machine provenance)
-POC experiment contract v2.3.0                        EXISTS (TERMINAL M3 — frozen 4×25,000=100,000 exact topology; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms; INCONCLUSIVE at 100k scale; latency gates NOT met)
-poc/                                                  EXISTS (built, tested, PASS at 10k scale; evidence-100k runnable but INCONCLUSIVE at 100k)
+POC experiment contract v2.3.0                        EXISTS (TERMINAL M3 — frozen 4×25,000=100,000 exact topology; best validated F1 = 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms; hard-stopped without ACCEPT at 100k scale; latency gates NOT met)
+poc/                                                  EXISTS (built, tested, PASS at 10k scale; evidence-100k runnable but hard-stopped without ACCEPT at 100k)
 proposal.md                                           DONE (2026-08-23, ≤1500 words, M4 partitioned architecture)
 README.md                                             DONE (2026-08-23, run cmd + limitations + AI disclosure)
 M4 architecture reconciliation                        DONE → internal_docs/M4_FINAL_ARCHITECTURE.md
@@ -529,7 +529,7 @@ Every claim carries an explicit evidence level; the never-validated partitioned 
 
 # Final Closure Status
 
-- All five milestones (M3 terminal at v2.3.0/F1 INCONCLUSIVE; M4 architecture reconciliation; M5 external evidence/cost; M6 proposal/README; M7 coherence) are CLOSED.
+- All five milestones (M3 hard-stopped without ACCEPT at v2.3.0/F1 frozen topology; M4 architecture reconciliation; M5 external evidence/cost; M6 proposal/README; M7 coherence) are CLOSED.
 - No fundamental design change remains before submission.
 - Generated purely from the v10 closure prompt (SHA `e3e31916164ab700bc76beca9712fa428f269709ba76a13c923ceb2ef30bf597`), per `internal_docs/AI_INSTRUCTION_PROVENANCE.md`.
 

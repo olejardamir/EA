@@ -8,14 +8,13 @@ case "$VIEWERS" in ''|*[!0-9]*) echo "viewers must be an integer" >&2; exit 2;; 
 (( VIEWERS >= 4000 && VIEWERS <= 100000 )) || { echo "probe scale must be 4000..100000" >&2; exit 2; }
 (( VIEWERS % 4 == 0 )) || { echo "viewers must divide evenly across 4 shards" >&2; exit 2; }
 
-SOURCE_COMMIT="$(cat "$POC_DIR/SOURCE_COMMIT" 2>/dev/null || git -C "$POC_DIR" rev-parse HEAD 2>/dev/null || git -C "$(dirname "$POC_DIR")" rev-parse HEAD 2>/dev/null || echo "unknown")"
 PROBE_TARGET=$(( VIEWERS / 4 ))
 STAMP="$(date +%Y%m%dT%H%M%S)"
 PROJECT="ea-arch-${VIEWERS}-${STAMP,,}"
 
 # Match-aware routes are precomputed (port scheme in compose.arch-revision-100k.yaml /
-# generate-fanout-confs.py) and committed as arch-routes.env so the launcher needs no host Python.
-set -a; source "$POC_DIR/arch-routes.env"; set +a
+# generate-fanout-confs.py) and committed in poc/.env so the launcher needs no host Python.
+set -a; source "$POC_DIR/.env"; set +a
 
 echo "[arch-probe] viewers=${VIEWERS} per-shard=${PROBE_TARGET} project=${PROJECT}"
 PUB_KEYS="$(printf '%s' "$NCHAN_PUB_ROUTES" | grep -o 'match-[0-9]*' | wc -l | tr -d ' ')"
@@ -32,9 +31,7 @@ fi
 
 echo "[arch-probe] launching..."
 set +e
-NCHAN_PUB_ROUTES="$NCHAN_PUB_ROUTES" NCHAN_SUB_ROUTES="$NCHAN_SUB_ROUTES" \
- GIT_COMMIT_SHA="$SOURCE_COMMIT" \
- COMPOSE_PROJECT_NAME="$PROJECT" \
+COMPOSE_PROJECT_NAME="$PROJECT" \
  CAMPAIGN_ID="$PROJECT" \
  EXPERIMENT_RUN_ID="${PROJECT}-run0" \
  GLOBAL_RUN_INDEX=0 \

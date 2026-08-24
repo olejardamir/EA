@@ -11,8 +11,8 @@ Every claim in `proposal.md` / `M4_FINAL_ARCHITECTURE.md` carries exactly one of
 |---|---|---|
 | **ASSIGNMENT_FACT** | Stated in the take-home spec | 100k peak; 8 matches; 10/50 eps; +40k/120s; 60/40 geo; $3k budget; ~2s goal / ~5s routine |
 | **POC_OBSERVATION** | Measured by the local experiment (frozen v2.3.0) | F1: 100k active, correctness 0, fan_out p95 2757 ms, burst p95 3707 ms, surge/late-join clean |
-| **CALCULATION** | Derived by explicit arithmetic from the above | cost ledger, viewer-delivery math, DTO ~39 TB/mo |
-| **PLANNING_ASSUMPTION** | A conservative design choice, not measured | per-node ~8k SSE envelope; ~300 B/event payload; ~120 live match-hours/month |
+| **CALCULATION** | Derived by explicit arithmetic from the above | cost ledger, viewer-delivery math, DTO ~13.5 TB/mo at H=120 (100k × 1.25 evt/s × 250 B × 3600 × 120) |
+| **PLANNING_ASSUMPTION** | A conservative design choice, not measured | per-node ~8k SSE envelope; ~250 B/event payload; ~120 live match-hours/month |
 | **CURRENT_OFFICIAL_FACT** | 2026-08 AWS pricing/quota from primary sources | CloudFront Business $200/mo; c7g.xlarge rate; Valkey/cache.t4g rate; SQS/Lambda/APIGW/DynamoDB rates; NLB/NAT |
 | **PRODUCTION_INFERENCE** | Reasoned from facts but not measured here | EU/NA end-to-end latency; e2e budget decomposition; pre-launch capacity requirement; CloudFront live-stream behavior |
 | **UNRESOLVED_EXTERNAL_ASSUMPTION** | Outside our control, not supplied | real provider feed semantics/transport/schema/order/replay; real AWS deploy; real weekly deploy cadence; real production spend |

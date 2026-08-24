@@ -70,8 +70,9 @@ The POC did **not** validate the final replacement topology. Its remaining laten
               cached static Next.js at edge)
          |
          v
-  private NLB per partition (L4 target groups + health checks; NLB does NOT do
-  HTTP path/match-ID routing — that is performed by the CloudFront behavior)
+   single private NLB (one target group + listener per partition; L4 health
+   checks; NLB does NOT do HTTP path/match-ID routing — that is performed by
+   the CloudFront behavior)
         |
         v
  Next.js App Router client (EventSource, idempotent canonical_seq reducer)
@@ -84,7 +85,7 @@ The POC did **not** validate the final replacement topology. Its remaining laten
 ### 3.2 Horizontal partitioning & hot-match sub-sharding
 - Matches are mapped to partitions by deterministic hash. Each partition owns a bounded connection/capacity envelope (planned **~8k concurrent SSE per node**, c7g.xlarge — deliberately conservative; the M3 failing node itself served 25k across 4 partitions, so 8k is a planning margin, not a universal per-node claim).
 - A hot match (e.g., 40k+ viewers) is assigned a **dedicated partition / sub-shard** (its own node(s)), so one popular match cannot recreate the single-node fan-out bottleneck that limited the fixed local topology.
-- Partitions are fronted by a private NLB target group each; **CloudFront path behaviors (or a thin routing edge)** map each match to its partition and send subscribers to that partition's private NLB origin. NLB itself is L4 — it does not route by HTTP path or match-ID; the match→partition mapping is realized by CloudFront behaviors (or by the client being handed the partition's origin URL).
+- Partitions are fronted by a **single** private NLB, one target group (and listener) per partition; **CloudFront path behaviors (or a thin routing edge)** map each match to its partition and send subscribers to that partition's NLB listener/target group. NLB itself is L4 — it does not route by HTTP path or match-ID; the match→partition mapping is realized by CloudFront behaviors (or by the client being handed the partition's origin URL).
 
 ### 3.3 History-to-live handoff (no gap, no double-apply)
 Client connects, fetches snapshot/history up to cursor `N`, then subscribes live for `seq > N`. The browser reducer is idempotent by `canonical_seq`. This closes late-join, reload, and phone-wake races in one rule.
