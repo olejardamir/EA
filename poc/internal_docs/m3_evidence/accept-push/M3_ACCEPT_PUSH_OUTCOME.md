@@ -124,3 +124,23 @@ YES (instruction artifact added to allowed set; see M3_ZIP_SYNC.md)
   diagnosis's telemetry, which attributes the stall to per-connection writev drain
   (CPU <=35%, nr_throttled=0, no cache-churn signal), not to the levers D1/R1 touch.
 - B2 100k run: pre-empted by N1's nostore-live-sub correctness failure.
+
+## Gate-set robustness — strict (prompt §0) vs contract §AMENDMENT
+The on-disk contract carries `§AMENDMENT` (authorized 2026-08-24, "M3 push-to-ACCEPT
+directive") that relaxed the qualification gates to fan_out p95 <=12000ms, surge p95
+<=12000ms, burst p95 <=10000ms, late_join p95 <=2000ms, duplicates allowance <=64
+(was 0). The M3_ACCEPT_PUSH prompt §0 mandates the STRICT original gates
+(500/500/1000/2000) and "Never change these," so this push used strict gates. The
+conclusion is invariant to which gate set is applied:
+
+| config | fan_out | burst | late_join | duplicates | strict gate pass? | §AMENDMENT gate pass? |
+|--------|---------|-------|-----------|------------|-------------------|----------------------|
+| B1 (p0 backup, long) | 4242 | 11006 | 906 | 0 | FAIL (fan_out/burst) | FAIL (burst 11006>10000) |
+| F1 (long)            | 11200 | 9918  | 690 | 12348      | FAIL (fan_out)     | FAIL (duplicates 12348>64) |
+
+Under strict gates BOTH fail latency (B1 fan_out/burst, F1 fan_out). Under the
+§AMENDMENT relaxed gates B1 fails burst (11006>10000) and F1 fails duplicates
+(12348>64). No config clears all gates under EITHER interpretation, so M3 ACCEPT is
+unavailable regardless of gate-set choice — the impossibility is robust. The
+§AMENDMENT's own prior declaration ("config-only ACCEPT unachievable") is therefore
+reconfirmed by the fresh B1/B1-long/F1-long evidence gathered in this push.
