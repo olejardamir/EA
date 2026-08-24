@@ -189,7 +189,7 @@ timeout.
   - `nchan_shared_memory_size 512m` → correctness violation, out_of_order 12352 (D1)
   - `tcp_nopush off` → worse delivery (E1)
   - `worker_processes 4→8` → CPU oversubscription (G2)
-  - `nchan_redis_storage_mode backup` → infra abort (G1/G1b) + invalid DNS pin (H1/H2)
+  - `nchan_redis_storage_mode backup` → infra abort (G1/G1b) + invalid DNS pin (H1/H2); **see M3 FINAL PUSH UPDATE below for the resolved outcome**
 - **Residual is a fundamental throughput wall, not a tunable**: DUT-side
   `fan_out_transport` is 1919–3129 ms p95 after the redis win; nchan's own
   documented ceiling (300K subs/s excluding TCP) vs required ~5.2M deliveries/s
@@ -212,3 +212,43 @@ timeout.
 INCONCLUSIVE at the frozen v2.3.0 contract, and escalate the three amendment
 options above to the contract owner. Do not broaden the contract or patch the
 binary without explicit authorization.
+
+---
+
+## M3 FINAL PUSH UPDATE (2026-08-24)
+
+Final focused push executed on branch `m3-final-push` per
+`M3_FINAL_PUSH_CURRENT_STATE_DEADLINE_FOCUSED.md`.
+
+**Phase A — coordinator control-plane DNS fix: DONE (validated).** The Go loadgen
+client now resolves the coordinator host exactly once at startup and pins a custom
+`http.Transport` that dials the resolved IP directly, so zero Docker-embedded-DNS
+(127.0.0.11) lookups occur during the run. A 4k smoke probe confirmed all 12
+phase barriers (including `late-join:start`) advance with no `server misbehaving`
+errors. The earlier G1/G1b/H1/H2 abort root cause (Docker DNS under the faster
+late-join call burst) is eliminated.
+
+**Phase B/C — `storage_mode backup` candidate: INVALID (late-join correctness regression).**
+The exact G1 candidate (`nchan_redis_storage_mode backup;` on nchan-2/3/4/spare,
+p0 unchanged) was re-applied on top of F1 + the harness fix and run as a 4k probe.
+With DNS fixed, the run reaches the late-join scenario but then fails:
+
+- shard 0 (owner p0): completes all 64 late-join rounds instantly
+  (`match-008 round 7 passed=true recovery_ms=1 missing=0`).
+- shards 1/2/3 (non-owner p1/p2/p3): every late-join round fails
+  `passed=false recovery_ms=30000 missing=190` — the `/history/` (oldest) replay
+  serves from the partition-local memory store, which lacks the pre-existing
+  channel history, so the reconnect/late-join cohort observes missing messages.
+- They never reach `late-join:end`; shard 0's barrier call times out (11 min) and
+  the run aborts `verdict=INCONCLUSIVE`.
+
+This is a **DUT storage-semantics regression under backup mode**, not a
+harness/control-plane defect. Per prompt §9 Case 4 / §14B the candidate was
+reverted to the clean F1 baseline and M3 tuning stopped. Best validated result
+remains **F1** (fan_out p95 2757 ms, burst p95 3707 ms, correctness 0, peak 100k).
+
+**Net:** the only remaining worthwhile lever (backup) is blocked by a deeper
+backup-mode late-join correctness regression, confirming the original
+INCONCLUSIVE disposition. No contract/topology/binary/gate changes were made.
+Evidence: `m3_evidence/M3_FINAL_PUSH_BACKUP_PROBE.md` + preserved probe logs.
+
