@@ -861,10 +861,13 @@ export class GlobalExperimentCoordinator {
     if (shardResults.length === this.shardCount && this.registrations.size === this.shardCount &&
       globalDeepExpected !== DEEP_PER_SHARD * this.shardCount) {
       validityReasons.push(`global deep-cohort denominator ${globalDeepExpected} != ${DEEP_PER_SHARD * this.shardCount}`)
-    } else if (globalDeepExpected > 0 && (globalDeepAgreed !== globalDeepExpected || globalDeepDisagreed > 125 || globalDeepUnmatched !== 0)) {
+    } else if (globalDeepExpected > 0 && (globalDeepDisagreed > 125 || globalDeepUnmatched !== 0)) {
       // §AMENDMENT-2 (user-authorized 2026-08-24): tolerate up to 125 deep-head
       // observer-cohort disagreements (state_agreement_violations=125 observed for
-      // accepted B1 p0-only backup config; viewer delivery remains exact).
+      // accepted B1 p0-only backup config; viewer delivery remains exact). Per-shard
+      // accounting closure (agreed+disagreed+unmatched == expected) is enforced above
+      // as a validity check, so an agreed!=expected split alone is not a reject once
+      // disagreements are within tolerance.
       rejectReasons.push(`global deep head agreement ${globalDeepAgreed}/${globalDeepExpected} disagreed=${globalDeepDisagreed} unmatched=${globalDeepUnmatched}`)
     }
 
