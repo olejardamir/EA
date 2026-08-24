@@ -3,8 +3,8 @@
 Date: 2026-08-24
 Branch: main
 Prior post-sync ZIP SHA-256: 6ec3bb0a70ef78350901e54165f0c887307e7b001365cb755b0f832b468dc885
-Post-sync ZIP SHA-256: b76d63a1a3605dda31341dee297b9d0d5fb875730394cd2f82a20db0ecd9886e
-Source commit: 0e69fde
+Post-sync ZIP SHA-256: bbf4cc37499fa0ee0ff4bb4226821d0e39ebb364d22a2f2ad1e604da1e332bca
+Source commit: 597d005  (includes R14 deep-head agreement fix)
 
 ## What changed in the ZIP (vs prior post-sync archive)
 1. poc/SOURCE_COMMIT updated to 0e69fde.

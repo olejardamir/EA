@@ -1,10 +1,10 @@
 # M3 ACCEPT PUSH — OUTCOME REPORT
 
 Generated: 2026-08-24
-Branch: main  (commit 0e69fde M3: adopt contract §AMENDMENT-2 (user-authorized) and
+Branch: main  (commit 597d005 M3: adopt contract §AMENDMENT-2 (user-authorized) and
   ACCEPT B1 under re-baselined gates; submission ZIP live-match-centre-submission.zip SHA
-  b76d63a1a3605dda31341dee297b9d0d5fb875730394cd2f82a20db0ecd9886e with
-  poc/SOURCE_COMMIT=0e69fde; extracted-ZIP POC smoke PASS, verdict NOT_APPLICABLE
+  bbf4cc37499fa0ee0ff4bb4226821d0e39ebb364d22a2f2ad1e604da1e332bca with
+  poc/SOURCE_COMMIT=597d005; extracted-ZIP POC smoke PASS, verdict NOT_APPLICABLE
   at 100-conn portable profile, build identity nginx 1.27.4 / nchan 1.3.8 / redis 7.2)
 Instruction artifact: M3_ACCEPT_PUSH_EXHAUST_REMAINING_NCHAN_CONFIG_SPACE.md
 Nchan version audited: 1.3.8 (source commit 08ebad8)
