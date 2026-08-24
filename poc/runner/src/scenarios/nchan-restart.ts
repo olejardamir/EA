@@ -124,7 +124,12 @@ export class NchanRestartScenario implements Scenario {
 
   // §v2.1.0: settle window after mass failover — lets Last-Event-ID replay and
   // resumed live delivery flow through every pool tracker before deltas are read.
-  private static readonly FAILOVER_SETTLE_MS = 12_000
+  // Replay-settle window after failing the pool over to the spare. The missed
+  // range must fully drain into the (reconnect-mode) trackers BEFORE promotion to
+  // steady, or the tail of the replay arrives post-promotion and is misclassified
+  // as steady duplicate/out-of-order. 30s comfortably spans a full restart + replay
+  // under burst load.
+  private static readonly FAILOVER_SETTLE_MS = 30_000
 
   constructor(opts: NchanRestartOptions) {
     this.opts = opts
