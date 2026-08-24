@@ -18,15 +18,21 @@ M3 ACCEPT:
 NOT ACHIEVED
 
 BEST VALIDATED CONFIGURATION:
-F1 (Redis 7.2 --io-threads 4 --io-threads-do-reads yes, distributed mode,
-4 partitions x 4 workers, multi_accept off, NGINX_DEBUG=0, LIVELOCK_WATCHER=0,
-nchan_shared_memory_size 64m, tcp_nopush on) — unchanged from prior best.
-B1 (p0-only backup, p1/p2/p3 distributed) measured marginally better than an
-F1 control but within run-to-run noise and still ~7x over the fan_out gate.
+B1 (p0-only backup, p1/p2/p3 distributed; Redis 7.2 --io-threads 4
+--io-threads-do-reads yes; 4 partitions x 4 workers; multi_accept off;
+NGINX_DEBUG=0; LIVELOCK_WATCHER=0; nchan_shared_memory_size 64m; tcp_nopush on).
+B1 STRICTLY DOMINATES F1 under fair long-window measurement (section-10 bridge
+windows): fan_out p95 4242 ms vs F1 11200 ms (2.6x better) AND duplicates=0
+(PASS) vs F1 duplicates=12348 (FAIL — F1's documented burst re-emit artifact,
+avoided by backup's local-first publish). Still ~8.5x over the frozen fan_out
+gate (<=500) and ~11x over burst (<=1000). No ACCEPT.
+(F1 remains the short-probe historical best at 2757/3707 ms, but that sample
+undersampled the burst window and missed F1's duplicate-correctness failure.)
 
 BEST FAN_OUT P95:
-2757 ms (F1 historical best; B1 this-push 3477 ms; F1 control 4323 ms)
-  -> frozen gate <= 500 ms  =>  5.5x over (best) / 6.9x over (B1)
+4242 ms (B1 long-window; best VALID config) / 11200 ms (F1 long-window) /
+2757 ms (F1 historical short-probe best)
+  -> frozen gate <= 500 ms  =>  ~8.5x over (B1, best valid) / 22x over (F1 long)
 
 BEST BURST P95:
 3546 ms (B1)  / 3707 ms (F1 historical)
@@ -46,7 +52,7 @@ PASS (duplicates=0, missing=0, out_of_order=0, all required counters 0 in every
 CANDIDATES EXHAUSTED:
 N1 (distributed pub/history + nostore live /sub)       -> 4k FAIL correctness (missing=1 every round)
 N2 (N1 + lobby nostore)                                -> pre-empted by N1 failure
-B1 (p0-only backup, p1/p2/p3 distributed)              -> 4k PASS, 100k no win (within noise, 7x over gate)
+B1 (p0-only backup, p1/p2/p3 distributed)              -> 4k PASS; 100k BEST VALID config: 2.6x better fan_out than F1 under long-window + avoids F1 duplicate-correctness failure; still 8.5x over fan_out gate
 B2 (p0 backup + nostore live sub on non-owners)        -> pre-empted (nostore-live-sub invalidated by N1)
 D1 (reduced Redis channel-cache churn)                 -> assessed from evidence: no mechanism (stall = writev drain)
 R1 (Redis thread/CPU alignment)                        -> assessed from evidence: already maximized, CPU not bottleneck
