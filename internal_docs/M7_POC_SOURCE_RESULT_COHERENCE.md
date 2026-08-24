@@ -22,7 +22,7 @@ This section records the complete chain the v10 prompt requires, so the reviewer
 ### 0.3 Current shipped POC source (what the reviewer runs)
 
 - The runnable POC code shipped in this repo is the **architecture-revision probe** in `poc/`: `compose.arch-revision-100k.yaml`, `compose.arch-probe.yaml`, `run-arch-revision-probe.sh`, and the precomputed `poc/.env` (routing env + `GIT_COMMIT_SHA`).
-- **Source identity:** recorded authoritatively in `poc/.env` as `GIT_COMMIT_SHA` (= current `main` HEAD; the gitignored `poc/SOURCE_COMMIT` mirrors it). The reviewer command stamps evidence with this value.
+- **Source identity:** recorded authoritatively in `poc/.env` as `GIT_COMMIT_SHA`, which pins the shipped POC implementation baseline (`9617f5c…`). Subsequent commits may contain documentation or source-identity metadata only and do not change the pinned baseline. The gitignored `poc/SOURCE_COMMIT` mirrors it. The reviewer command stamps evidence with this value.
 
 ### 0.4 What changed after F1
 

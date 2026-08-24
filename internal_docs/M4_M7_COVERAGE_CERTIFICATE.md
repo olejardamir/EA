@@ -71,7 +71,7 @@
 | M6 no unsupported certainty | PASS |
 | M6 no conflict with README/POC | PASS |
 | M7 run instructions tested appropriately | PASS (clean-path/compose verified; smoke vs qualifying distinguished) |
-| M7 POC source/result coherence | PASS (M7_POC_SOURCE_RESULT_COHERENCE.md) |
+| M7 POC source/result coherence | PASS (M7_POC_SOURCE_RESULT_COHERENCE.md; `GIT_COMMIT_SHA` pins shipped baseline, later commits are doc/metadata only) |
 | M7 ≤300-word write-up / values / impact / limitations / AI | PASS |
 
 ## D. AGENTS.md production-design gates — PASS
