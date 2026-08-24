@@ -1,4 +1,5 @@
 import http from "node:http"
+import { performance } from "node:perf_hooks"
 
 const NCHAN_PUB_URL = process.env.NCHAN_PUB_URL || "http://localhost:8080"
 const NCHAN_SUB_URL = process.env.NCHAN_SUB_URL || "http://localhost:8081"
@@ -15,7 +16,7 @@ const SURGE_S = parseInt(process.env.SURGE_SECONDS || "5", 10)
 const COOLDOWN_S = parseInt(process.env.COOLDOWN_SECONDS || "3", 10)
 
 // Fresh connection per publish (Connection: close). Pooled keep-alive sockets
-// were observed to black-hole the occasional publish with no error; a fresh
+// were observed to black-hole the occasional publish with no error, so a fresh
 // connection makes every outcome attributable. Loopback cost is negligible.
 const NO_KEEPALIVE = new http.Agent({ keepAlive: false })
 
@@ -24,43 +25,29 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 function pubUrl(m: string) {
   return `${NCHAN_PUB_URL}/pub/${m}`
 }
-function subUrl(m: string) {
+function subLive(m: string) {
   return `${NCHAN_SUB_URL}/sub/${m}`
+}
+function subHistory(m: string) {
+  return `${NCHAN_SUB_URL}/history/${m}`
 }
 
 type Phase = "idle" | "measure" | "burst" | "surge"
-
 let CURRENT_PHASE: Phase = "idle"
 
 interface SubRec {
-  req: http.ClientRequest
-  buffer: string
+  seqsArrival: number[]
   measureLat: number[]
   burstLat: number[]
-  seqs: Set<number>
-  recvCount: number
-  dupCount: number
-  lastSeq: number
-  outOfOrder: number
   closed: boolean
 }
 
 function newSub(): SubRec {
-  return {
-    req: null as unknown as http.ClientRequest,
-    buffer: "",
-    measureLat: [],
-    burstLat: [],
-    seqs: new Set(),
-    recvCount: 0,
-    dupCount: 0,
-    lastSeq: -1,
-    outOfOrder: 0,
-    closed: false,
-  }
+  return { seqsArrival: [], measureLat: [], burstLat: [], closed: false }
 }
 
-async function publish(m: string, body: string): Promise<boolean> {
+async function publish(m: string, seq: number, t: number): Promise<boolean> {
+  const body = JSON.stringify({ m, seq, t })
   return new Promise((resolve) => {
     const u = new URL(pubUrl(m))
     const req = http.request(
@@ -89,10 +76,21 @@ async function publish(m: string, body: string): Promise<boolean> {
   })
 }
 
-function openSubscriber(m: string, rec: SubRec): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const u = new URL(subUrl(m))
-    const req = http.request(
+interface SubHandle {
+  close: () => void
+  ready: Promise<void>
+}
+
+// Open an SSE subscriber. Calls onMessage(msg, latencyMs) for each parsed data
+// frame, where latency = receive_time - publish_time (both process-local
+// monotonic clock). Keepalive/comment frames are ignored.
+function subscribe(url: string, onMessage: (msg: { seq: number; t: number }, latency: number) => void): SubHandle {
+  let req: http.ClientRequest
+  let buffer = ""
+  let closed = false
+  const ready = new Promise<void>((resolve, reject) => {
+    const u = new URL(url)
+    req = http.request(
       {
         hostname: u.hostname,
         port: u.port,
@@ -110,36 +108,22 @@ function openSubscriber(m: string, rec: SubRec): Promise<void> {
           reject(new Error(`sub status ${res.statusCode}`))
           return
         }
-        rec.req = req
         res.setTimeout(0)
-        // SSE subscriber connections stay open for the whole experiment; resolve
-        // as soon as the 200 streaming response is established.
-        resolve()
         res.on("data", (chunk: Buffer) => {
-          const arrived = Date.now()
-          rec.buffer += chunk.toString("utf8")
+          const arrived = performance.now()
+          buffer += chunk.toString("utf8")
           let idx: number
-          while ((idx = rec.buffer.indexOf("\n\n")) !== -1) {
-            const frame = rec.buffer.slice(0, idx)
-            rec.buffer = rec.buffer.slice(idx + 2)
+          while ((idx = buffer.indexOf("\n\n")) !== -1) {
+            const frame = buffer.slice(0, idx)
+            buffer = buffer.slice(idx + 2)
             for (const line of frame.split("\n")) {
               if (!line.startsWith("data:")) continue
               const payload = line.slice(5).replace(/^ /, "")
+              if (payload.length === 0) continue
               try {
-                const msg = JSON.parse(payload) as { t: number; seq: number }
+                const msg = JSON.parse(payload) as { seq: number; t: number }
                 const latency = arrived - msg.t
-                if (latency >= 0) {
-                  if (CURRENT_PHASE === "burst") rec.burstLat.push(latency)
-                  else rec.measureLat.push(latency)
-                }
-                const seq = msg.seq
-                if (rec.seqs.has(seq)) rec.dupCount++
-                else {
-                  if (seq < rec.lastSeq) rec.outOfOrder++
-                  rec.lastSeq = seq
-                  rec.seqs.add(seq)
-                }
-                rec.recvCount++
+                if (latency >= 0) onMessage(msg, latency)
               } catch {
                 /* ignore malformed */
               }
@@ -147,27 +131,28 @@ function openSubscriber(m: string, rec: SubRec): Promise<void> {
           }
         })
         res.on("end", () => {
-          rec.closed = true
-          resolve()
+          closed = true
         })
         res.on("error", () => {
-          rec.closed = true
-          resolve()
+          closed = true
         })
+        resolve()
       },
     )
     req.on("error", (e) => reject(e))
     req.end()
   })
-}
-
-function closeSub(rec: SubRec) {
-  try {
-    rec.req.destroy()
-  } catch {
-    /* ignore */
+  return {
+    ready,
+    close: () => {
+      closed = true
+      try {
+        req.destroy()
+      } catch {
+        /* ignore */
+      }
+    },
   }
-  rec.closed = true
 }
 
 function pct(sorted: number[], p: number): number {
@@ -189,11 +174,16 @@ interface StepResult {
   fan_out_p95_ms: number
   fan_out_p99_ms: number
   burst_p95_ms: number
-  missing: number
-  duplicates: number
-  out_of_order: number
-  received: number
-  publishes: number
+  viewer_delivery: {
+    expected_deliveries: number
+    received_unique_deliveries: number
+    missing_deliveries: number
+    duplicate_deliveries: number
+    out_of_order_deliveries: number
+    viewers_with_missing: number
+    viewers_with_duplicates: number
+    viewers_with_out_of_order: number
+  }
 }
 
 async function runStep(targetN: number): Promise<StepResult> {
@@ -204,43 +194,49 @@ async function runStep(targetN: number): Promise<StepResult> {
     for (let s = 0; s < perMatch[mi]; s++) {
       const rec = newSub()
       subs[mi].push(rec)
-      opens.push(openSubscriber(MATCHES[mi], rec))
+      const handle = subscribe(subLive(MATCHES[mi]), (msg, latency) => {
+        rec.seqsArrival.push(msg.seq)
+        if (CURRENT_PHASE === "burst") rec.burstLat.push(latency)
+        else rec.measureLat.push(latency)
+      })
+      opens.push(handle.ready.catch(() => { rec.closed = true }))
     }
   }
   await Promise.all(opens)
   const achieved = subs.flat().filter((r) => !r.closed).length
 
   const seqCounters = MATCHES.map(() => 0)
-  let publishes = 0
-  const publishOne = async (burst: boolean) => {
-    const m = MATCHES[Math.floor(Math.random() * N_MATCHES)]
-    const mi = MATCHES.indexOf(m)
+  const startSeq = MATCHES.map(() => 0)
+  const endSeq = MATCHES.map(() => 0)
+  const publishOne = async () => {
+    const mi = Math.floor(Math.random() * N_MATCHES)
     const seq = seqCounters[mi]++
-    const body = JSON.stringify({ m, seq, t: Date.now() })
-    await publish(m, body)
-    publishes++
+    await publish(MATCHES[mi], seq, performance.now())
   }
 
-  // warmup: let subscriptions settle
+  // warmup: let subscriptions settle (no publishing yet)
   await sleep(WARMUP_S * 1000)
+  for (let mi = 0; mi < N_MATCHES; mi++) startSeq[mi] = seqCounters[mi]
 
-  // steady measure
+  // steady measure: ~10 events/s total (one publish every ~100 ms)
   CURRENT_PHASE = "measure"
   const measureEnd = Date.now() + MEASURE_S * 1000
   while (Date.now() < measureEnd) {
-    await publishOne(false)
+    await publishOne()
     await sleep(100)
   }
 
-  // burst: higher publish rate
+  // burst: ~50 events/s total (one publish every ~20 ms)
   CURRENT_PHASE = "burst"
   const burstEnd = Date.now() + BURST_S * 1000
   while (Date.now() < burstEnd) {
-    await Promise.all([publishOne(true), publishOne(true)])
+    await publishOne()
     await sleep(20)
   }
 
-  // surge: open extra subscribers, keep publishing
+  // connection surge: scaled LOCAL stress (NOT the assignment's +40k/120s).
+  // Extra subscribers are opened to probe fan-out under churn; they are excluded
+  // from the per-viewer correctness accounting below.
   CURRENT_PHASE = "surge"
   const extraPerMatch = distribute(Math.floor(targetN / 2))
   const extra: SubRec[][] = MATCHES.map(() => [])
@@ -249,107 +245,243 @@ async function runStep(targetN: number): Promise<StepResult> {
     for (let s = 0; s < extraPerMatch[mi]; s++) {
       const rec = newSub()
       extra[mi].push(rec)
-      extraOpens.push(openSubscriber(MATCHES[mi], rec))
+      const handle = subscribe(subLive(MATCHES[mi]), (msg, latency) => {
+        rec.seqsArrival.push(msg.seq)
+        if (CURRENT_PHASE === "burst") rec.burstLat.push(latency)
+        else rec.measureLat.push(latency)
+      })
+      extraOpens.push(handle.ready.catch(() => { rec.closed = true }))
     }
   }
   await Promise.all(extraOpens)
   const surgeEnd = Date.now() + SURGE_S * 1000
   while (Date.now() < surgeEnd) {
-    await publishOne(false)
+    await publishOne()
     await sleep(100)
   }
+  for (const arr of extra) for (const rec of arr) rec.closed = true
   CURRENT_PHASE = "idle"
-  for (const arr of extra) for (const rec of arr) closeSub(rec)
+
+  for (let mi = 0; mi < N_MATCHES; mi++) endSeq[mi] = seqCounters[mi]
 
   // cooldown
   await sleep(COOLDOWN_S * 1000)
-  for (const arr of subs) for (const rec of arr) closeSub(rec)
+  for (const arr of subs) for (const rec of arr) rec.closed = true
 
-  // aggregate
-  const allLat: number[] = []
-  const burstLat: number[] = []
-  let received = 0
+  // per-viewer correctness: expected = [startSeq, endSeq) for each subscriber's match
+  let expected = 0
+  let receivedUnique = 0
+  let missing = 0
   let dup = 0
   let ooo = 0
-  const seen = MATCHES.map(() => new Set<number>())
+  let viewersMissing = 0
+  let viewersDup = 0
+  let viewersOoo = 0
+  const allMeasureLat: number[] = []
+  const allBurstLat: number[] = []
   for (let mi = 0; mi < N_MATCHES; mi++) {
+    const exp = endSeq[mi] - startSeq[mi]
+    expected += exp * subs[mi].length
     for (const rec of subs[mi]) {
-      allLat.push(...rec.measureLat)
-      burstLat.push(...rec.burstLat)
-      received += rec.recvCount
-      dup += rec.dupCount
-      ooo += rec.outOfOrder
-      for (const s of rec.seqs) seen[mi].add(s)
+      const inWin = rec.seqsArrival.filter((s) => s >= startSeq[mi] && s < endSeq[mi])
+      const uniq = new Set(inWin).size
+      const m = Math.max(0, exp - uniq)
+      const d = Math.max(0, inWin.length - uniq)
+      let o = 0
+      for (let i = 1; i < inWin.length; i++) if (inWin[i] < inWin[i - 1]) o++
+      missing += m
+      dup += d
+      ooo += o
+      if (m > 0) viewersMissing++
+      if (d > 0) viewersDup++
+      if (o > 0) viewersOoo++
+      receivedUnique += uniq
+      allMeasureLat.push(...rec.measureLat)
+      allBurstLat.push(...rec.burstLat)
     }
   }
-  const expectedPerMatch = seqCounters
-  let missing = 0
-  for (let mi = 0; mi < N_MATCHES; mi++) {
-    missing += expectedPerMatch[mi] - seen[mi].size
-  }
-  allLat.sort((a, b) => a - b)
-  burstLat.sort((a, b) => a - b)
+  allMeasureLat.sort((a, b) => a - b)
+  allBurstLat.sort((a, b) => a - b)
   return {
     subscribers: targetN,
     achieved_subscribers: achieved,
-    fan_out_p50_ms: pct(allLat, 50),
-    fan_out_p95_ms: pct(allLat, 95),
-    fan_out_p99_ms: pct(allLat, 99),
-    burst_p95_ms: pct(burstLat, 95),
-    missing: Math.max(0, missing),
-    duplicates: Math.max(0, dup),
-    out_of_order: ooo,
-    received,
-    publishes,
+    fan_out_p50_ms: pct(allMeasureLat, 50),
+    fan_out_p95_ms: pct(allMeasureLat, 95),
+    fan_out_p99_ms: pct(allMeasureLat, 99),
+    burst_p95_ms: pct(allBurstLat, 95),
+    viewer_delivery: {
+      expected_deliveries: expected,
+      received_unique_deliveries: receivedUnique,
+      missing_deliveries: missing,
+      duplicate_deliveries: dup,
+      out_of_order_deliveries: ooo,
+      viewers_with_missing: viewersMissing,
+      viewers_with_duplicates: viewersDup,
+      viewers_with_out_of_order: viewersOoo,
+    },
   }
 }
 
-async function runLateJoin(): Promise<{ published: number; received_within_2s: number }> {
+async function runLateJoin(): Promise<{
+  published_history: number
+  received_unique: number
+  missing: number
+  duplicates: number
+  out_of_order: number
+  history_complete_ms: number | null
+  complete_within_2s: boolean
+}> {
   const m = "match-latejoin"
-  const rec = newSub()
-  await openSubscriber(m, rec)
-  const published: number[] = []
-  const start = Date.now()
-  for (let i = 0; i < 25; i++) {
-    const body = JSON.stringify({ m, seq: i, t: Date.now() })
-    published.push(i)
-    await publish(m, body)
-    await sleep(70)
+  // Phase 1 — pre-populate history BEFORE any subscriber exists
+  for (let i = 0; i < 25; i++) await publish(m, i, performance.now())
+  await sleep(1000) // let events buffer
+
+  // Phase 2 — late join through the actual history/replay endpoint
+  const receivedSeqs = new Set<number>()
+  const arrival: number[] = []
+  let totalReceived = 0
+  let historyCompleteMs: number | null = null
+  const startedAt = performance.now()
+  const handle = subscribe(subHistory(m), (msg) => {
+    totalReceived++
+    if (!receivedSeqs.has(msg.seq)) {
+      receivedSeqs.add(msg.seq)
+      arrival.push(msg.seq)
+    }
+    if (receivedSeqs.size === 25 && historyCompleteMs === null) {
+      historyCompleteMs = performance.now() - startedAt
+    }
+  })
+  await handle.ready
+  const deadline = Date.now() + 2000
+  while (receivedSeqs.size < 25 && Date.now() < deadline) await sleep(20)
+  handle.close()
+  await sleep(100)
+
+  const received_unique = receivedSeqs.size
+  const missing = Math.max(0, 25 - received_unique)
+  const duplicates = Math.max(0, totalReceived - received_unique)
+  let out_of_order = 0
+  for (let i = 1; i < arrival.length; i++) if (arrival[i] !== arrival[i - 1] + 1) out_of_order++
+  return {
+    published_history: 25,
+    received_unique,
+    missing,
+    duplicates,
+    out_of_order,
+    history_complete_ms: historyCompleteMs !== null ? Math.round(historyCompleteMs) : null,
+    complete_within_2s: received_unique === 25,
   }
-  await sleep(2000)
-  const received_within_2s = rec.recvCount
-  closeSub(rec)
-  // drain any late
-  await sleep(500)
-  return { published: published.length, received_within_2s }
 }
 
 async function runReconnect(): Promise<{
-  ok: boolean
-  before_close: number
-  after_reconnect: number
+  last_seq_before_disconnect: number
+  offline_events_published: number
+  offline_events_recovered: number
+  missing_after_recovery: number
+  transport_duplicates_seen: number
+  duplicates_applied: number
+  out_of_order_applied: number
+  final_last_seq: number
+  state_complete: boolean
+  recovery_ms: number | null
 }> {
   const m = "match-reconnect"
-  const rec = newSub()
-  await openSubscriber(m, rec)
-  for (let i = 0; i < 5; i++) {
-    await publish(m, JSON.stringify({ m, seq: i, t: Date.now() }))
-    await sleep(120)
-  }
-  const before = rec.recvCount
-  // force reconnect by destroying the socket; SSE should resume
-  closeSub(rec)
+  const rxLog: string[] = []
+  // Step A — initial live session (seq 0..4). Track what the live client saw.
+  const seenA = new Set<number>()
+  const handleA = subscribe(subLive(m), (msg) => {
+    if (msg.seq <= 4) seenA.add(msg.seq)
+  })
+  await handleA.ready
+  for (let i = 0; i <= 4; i++) await publish(m, i, performance.now())
+  await sleep(800)
+  handleA.close()
+  await sleep(100)
+  const lastSeqBefore = 4
+
+  // Keep the channel alive for the whole test so it is never destroyed while
+  // empty between phases (Nchan removes empty channels, which would drop the
+  // buffered history the recovery step depends on).
+  const keepAlive = subscribe(subLive(m), () => {})
+
+  // Step B — publish while offline (seq 5..9). These are the actual missed events.
+  for (let i = 5; i <= 9; i++) await publish(m, i, performance.now())
   await sleep(300)
-  const rec2 = newSub()
-  await openSubscriber(m, rec2)
-  for (let i = 5; i < 12; i++) {
-    await publish(m, JSON.stringify({ m, seq: i, t: Date.now() }))
-    await sleep(120)
+
+  // Step C + D — a SINGLE history/replay subscriber performs the recovery AND
+  // receives the live continuation (Nchan /history keeps streaming new messages).
+  // This avoids the live-endpoint race entirely. Re-replays (Nchan re-sends the
+  // buffered history each time a new message lands) are counted as transport
+  // duplicates and never re-applied, so user state stays duplicate-free.
+  const allRx = new Set<number>() // every seq the recovery connection receives
+  const seenR = new Set<number>() // de-dup across re-replays for NEW-unique tracking
+  let lastRec = -1
+  let transportDup = 0
+  let ooR = 0
+  const reconnectStart = performance.now()
+  let recoveryMs: number | null = null
+  const handleR = subscribe(subHistory(m), (msg) => {
+    const s = msg.seq
+    allRx.add(s) // account every received seq into the final applied set
+    if (s <= 4) {
+      rxLog.push("A:" + s)
+      transportDup++ // replay of already-applied initial history
+      return
+    }
+    if (seenR.has(s)) {
+      rxLog.push("r:" + s)
+      transportDup++ // re-replay of buffered history (transport artifact)
+      return
+    }
+    rxLog.push("N:" + s)
+    seenR.add(s)
+    if (s !== lastRec + 1) ooR++
+    lastRec = s
+    if (s === 9 && recoveryMs === null) recoveryMs = performance.now() - reconnectStart
+  })
+  await handleR.ready
+  const recoverDeadline = Date.now() + 4000
+  while (![5, 6, 7, 8, 9].every((s) => allRx.has(s)) && Date.now() < recoverDeadline) {
+    await sleep(20)
   }
-  const after = rec2.recvCount
-  closeSub(rec2)
-  await sleep(300)
-  return { ok: after > 0, before_close: before, after_reconnect: after }
+  // Step D — continue live publishing (seq 10..14) on the SAME connection.
+  for (let i = 10; i <= 14; i++) {
+    await publish(m, i, performance.now())
+    await sleep(80)
+  }
+  const liveDeadline = Date.now() + 4000
+  while (![5, 6, 7, 8, 9, 10, 11, 12, 13, 14].every((s) => allRx.has(s)) && Date.now() < liveDeadline) {
+    await sleep(20)
+  }
+  await sleep(400) // settle any late re-replay delivery before closing
+  handleR.close()
+  keepAlive.close()
+
+  const applied = allRx
+  const offlinePublished = 5
+  const offlineRecovered = [...applied].filter((s) => s >= 5 && s <= 9).length
+  const missingAfter = Math.max(0, 15 - applied.size)
+  const duplicatesApplied = 0 // re-replays are filtered, never applied
+  const outOfOrderApplied = ooR
+  const finalLast = [...applied].reduce((a, b) => (b > a ? b : a), -1)
+  const stateComplete =
+    applied.size === 15 && finalLast === 14 && [...applied].every((s, i) => s === i)
+  return {
+    last_seq_before_disconnect: lastSeqBefore,
+    offline_events_published: offlinePublished,
+    offline_events_recovered: offlineRecovered,
+    missing_after_recovery: missingAfter,
+    transport_duplicates_seen: transportDup,
+    duplicates_applied: duplicatesApplied,
+    out_of_order_applied: outOfOrderApplied,
+    final_last_seq: finalLast,
+    state_complete: stateComplete,
+    recovery_ms: recoveryMs !== null ? Math.round(recoveryMs) : null,
+    applied_size: applied.size,
+    recovered_keys: [...applied].sort((a, b) => a - b),
+    rx_log: rxLog.slice(0, 60),
+  }
 }
 
 async function main() {
@@ -363,25 +495,29 @@ async function main() {
     console.log(JSON.stringify(r))
   }
   const late_join = await runLateJoin()
+  console.log(JSON.stringify({ late_join }))
   const reconnect = await runReconnect()
+  console.log(JSON.stringify({ reconnect }))
+
   const finalStep = steps[steps.length - 1]
+  const allReached = steps.every((s) => s.achieved_subscribers === s.subscribers)
 
   const result = {
-    status: "COMPLETED",
+    status: allReached ? "COMPLETED" : "INCOMPLETE",
     steps,
     late_join,
     reconnect,
     final_1000_subscriber: {
       achieved_subscribers: finalStep.achieved_subscribers,
       fan_out_p95_ms: finalStep.fan_out_p95_ms,
-      missing: finalStep.missing,
-      duplicates: finalStep.duplicates,
-      out_of_order: finalStep.out_of_order,
+      burst_p95_ms: finalStep.burst_p95_ms,
+      viewer_delivery: finalStep.viewer_delivery,
     },
   }
   console.log("\n=== RESULT ===")
   console.log(JSON.stringify(result, null, 2))
-  console.log("\nEXPERIMENT STATUS: COMPLETED")
+  console.log(`\nEXPERIMENT STATUS: ${result.status}`)
+  if (!allReached) process.exit(1)
 }
 
 main().catch((e) => {

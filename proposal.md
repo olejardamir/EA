@@ -76,6 +76,8 @@ The modeled peak-month baseline is about **$2,318/month** under the stated workl
 
 The main trade-offs are SSE/Nchan over custom WebSockets for simpler one-way public streaming; DynamoDB over a relational database for idempotent event/state writes at low operational load; single-region over active-active multi-region for cost; and self-hosted fan-out over a managed pub/sub service for predictable control of 100,000 long-lived connections.
 
+The $2,318 base case assumes roughly even event distribution. A 100,000-viewer hot match at 250 B/event and 120 live hours would transfer about 13.5 TB/month at 1.25 events/s, 54 TB at 5 events/s, and 108 TB at 10 events/s. The latter cases can exceed the modeled CloudFront plan allowance, so the budget is conditional on real match event distribution, payload size, and negotiated/selected transfer pricing; if hot-match traffic exceeds the included transfer allowance, production must upgrade the distribution pricing plan, use negotiated/PAYG pricing, reduce payload size, compress where applicable, or revise the cost model. The base design remains modeled below $3,000/month only under the stated base assumptions.
+
 ## Riskiest assumption and proof of concept
 
 The largest overall risk is the third-party feed contract: best-effort push alone cannot guarantee detection of an event that is never sent, and the assignment does not provide the identity/order/reconciliation semantics needed to test that locally.
