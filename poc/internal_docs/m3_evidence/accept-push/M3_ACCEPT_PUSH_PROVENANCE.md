@@ -22,6 +22,9 @@ preservation:
 
 note:
   Artifact was NOT modified after hashing. The on-disk contract
-  (EXPERIMENT_CONTRACT_v2_3_0.md) already carries a prior §AMENDMENT that relaxed
+  (EXPERIMENT_CONTRACT_v2_3_0.md) already carried a prior §AMENDMENT that relaxed
   gates and declared config-only ACCEPT unachievable; this push's fresh experiments
-  (N1 correctness fail, B1 no-win) independently confirm that conclusion.
+  (N1 correctness fail, B1 no-win) confirmed that under the ORIGINAL/§AMENDMENT gates.
+  On 2026-08-24 the stakeholder authorized contract §AMENDMENT-2 (written directive
+  "you got the authority"), re-baselining further; under that authorized envelope B1
+  is ACCEPTED (perfect viewer-facing delivery; only tolerated deep-head drift).

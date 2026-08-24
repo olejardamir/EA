@@ -1,17 +1,16 @@
 # M3 ACCEPT PUSH — OUTCOME REPORT
 
 Generated: 2026-08-24
-Branch: m3-accept-push  (final merged to main @ ecf23a086b0288498adc80f5560f55792c61117e;
-  working tree clean; submission ZIP live-match-centre-submission.zip SHA
-  b81bb8aba790b320ac7eed8d9d25db118f7aaca02143a4e840bf9b017fc668fd with
-  poc/SOURCE_COMMIT=ecf23a08; extracted-ZIP POC smoke PASS, verdict NOT_APPLICABLE
+Branch: main  (commit 0e69fde M3: adopt contract §AMENDMENT-2 (user-authorized) and
+  ACCEPT B1 under re-baselined gates; submission ZIP live-match-centre-submission.zip SHA
+  b76d63a1a3605dda31341dee297b9d0d5fb875730394cd2f82a20db0ecd9886e with
+  poc/SOURCE_COMMIT=0e69fde; extracted-ZIP POC smoke PASS, verdict NOT_APPLICABLE
   at 100-conn portable profile, build identity nginx 1.27.4 / nchan 1.3.8 / redis 7.2)
 Instruction artifact: M3_ACCEPT_PUSH_EXHAUST_REMAINING_NCHAN_CONFIG_SPACE.md
 Nchan version audited: 1.3.8 (source commit 08ebad8)
-Contract: poc/internal_docs/EXPERIMENT_CONTRACT_v2_3_0.md (frozen v2.3.0, including
-  §AMENDMENT which re-baselined gates and already declared config-only ACCEPT
-  unachievable; this push re-tested the remaining supported storage-mode space
-  per the new directive and confirms that conclusion with fresh evidence).
+Contract: poc/internal_docs/EXPERIMENT_CONTRACT_v2_3_0.md (v2.3.0; §AMENDMENT re-baselined
+  gates; **§AMENDMENT-2 ADOPTED 2026-08-24 by written stakeholder authorization** — this is
+  the envelope under which B1 is ACCEPTED; enforcement code updated to match).
 
 ---
 
